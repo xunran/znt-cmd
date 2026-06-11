@@ -72,6 +72,7 @@ type Config struct {
 	ConversationDirectEnabled    bool     `json:"conversation_direct_enabled,omitempty"`
 	ConversationRetrievalEnabled bool     `json:"conversation_retrieval_enabled,omitempty"`
 	ConversationMaxRetrieved     int      `json:"conversation_max_retrieved,omitempty"`
+	ExternalBridgeProvider       string   `json:"external_bridge_provider,omitempty"`
 	ExternalBridgeBaseURL        string   `json:"external_bridge_base_url,omitempty"`
 	ExternalBridgeToken          string   `json:"external_bridge_token,omitempty"`
 
@@ -227,6 +228,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.ExternalBridgeToken) != "" && strings.TrimSpace(c.ExternalBridgeBaseURL) == "" {
 		return fmt.Errorf("external_bridge_token requires external_bridge_base_url")
+	}
+	if err := validateOneOf("external_bridge_provider", c.ExternalBridgeProvider, "", "array", "a2a"); err != nil {
+		return err
 	}
 	switch strings.ToLower(strings.TrimSpace(c.ConversationJudgeMode)) {
 	case "", "heuristic", "model", "hybrid":
@@ -422,6 +426,9 @@ func merge(base Config, override Config) Config {
 	if override.ExternalBridgeBaseURL != "" {
 		base.ExternalBridgeBaseURL = override.ExternalBridgeBaseURL
 	}
+	if override.ExternalBridgeProvider != "" {
+		base.ExternalBridgeProvider = override.ExternalBridgeProvider
+	}
 	if override.ExternalBridgeToken != "" {
 		base.ExternalBridgeToken = override.ExternalBridgeToken
 	}
@@ -485,6 +492,7 @@ func applyEnvMap(cfg Config, env map[string]string) Config {
 	setString("CLEAN_CORE_MODEL_THINKING", &cfg.ModelThinking)
 	setString("CLEAN_CORE_MODEL_REASONING_EFFORT", &cfg.ModelReasoningEffort)
 	setString("CLEAN_CORE_CONVERSATION_JUDGE_MODE", &cfg.ConversationJudgeMode)
+	setString("CLEAN_CORE_EXTERNAL_BRIDGE_PROVIDER", &cfg.ExternalBridgeProvider)
 	setString("CLEAN_CORE_EXTERNAL_BRIDGE_BASE_URL", &cfg.ExternalBridgeBaseURL)
 	setString("CLEAN_CORE_EXTERNAL_BRIDGE_TOKEN", &cfg.ExternalBridgeToken)
 	if v := strings.TrimSpace(env["CLEAN_CORE_MODEL_MAX_TOKENS"]); v != "" {
@@ -826,6 +834,8 @@ func parseSimpleYAML(data []byte) (Config, error) {
 			cfg.ConversationMaxRetrieved = parsed
 		case "external_bridge_base_url":
 			cfg.ExternalBridgeBaseURL = value
+		case "external_bridge_provider":
+			cfg.ExternalBridgeProvider = value
 		case "external_bridge_token":
 			cfg.ExternalBridgeToken = value
 		case "readiness":

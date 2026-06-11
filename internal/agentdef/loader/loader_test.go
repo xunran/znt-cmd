@@ -16,9 +16,6 @@ func TestStaticLoader(t *testing.T) {
 	if def.AgentID != "test-agent" {
 		t.Fatalf("unexpected definition: %#v", def)
 	}
-	if def.Runtime.MaxRepairAttempts != 1 || def.Runtime.MaxModelRetries != 1 {
-		t.Fatalf("expected static agent repair/retry defaults, got %#v", def.Runtime)
-	}
 	_, err = static.Load(context.Background(), "tenant_1", "missing", "v1")
 	var runtimeErr *contracts.RuntimeError
 	if err == nil || !contractsErrorAs(err, &runtimeErr) || runtimeErr.Code != contracts.CodeAgentVersionNotFound {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	agentpackage "znt/internal/agentdef/package"
@@ -428,6 +429,19 @@ func mapSQLError(err error) error {
 		return storagerepo.ErrNotFound
 	}
 	return err
+}
+
+func isSchemaNotReadyError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	switch pgErr.Code {
+	case "42P01", "42703": // undefined_table, undefined_column
+		return true
+	default:
+		return false
+	}
 }
 
 func duplicateIfNoRows(result sql.Result, err error) error {
@@ -1250,6 +1264,9 @@ SELECT tenant_id, provider_id, provider_type, name, description, endpoint, statu
 FROM tool_providers
 ORDER BY tenant_id, provider_id`)
 	if err != nil {
+		if isSchemaNotReadyError(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -1270,6 +1287,9 @@ SELECT tenant_id, group_id, name, description, status, version
 FROM tool_groups
 ORDER BY tenant_id, group_id`)
 	if err != nil {
+		if isSchemaNotReadyError(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -1292,6 +1312,9 @@ SELECT tenant_id, tool_id, group_id, name, description, when_to_use_json,
 FROM tool_manifests
 ORDER BY tenant_id, tool_id`)
 	if err != nil {
+		if isSchemaNotReadyError(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	defer rows.Close()

@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"znt/internal/agentcapability"
@@ -11,6 +12,7 @@ import (
 	"znt/internal/agentfactory"
 	"znt/internal/app/config"
 	"znt/internal/asset/artifact"
+	"znt/internal/bridge/a2a"
 	"znt/internal/bridge/array"
 	contextconversation "znt/internal/context/conversation"
 	"znt/internal/contracts"
@@ -381,7 +383,12 @@ func New(cfg config.Config) (*Core, error) {
 	}
 	var bridgeAdapter contracts.CollaborationProvider
 	if cfg.ExternalBridgeBaseURL != "" {
-		bridgeAdapter = array.NewHTTPAdapter(cfg.ExternalBridgeBaseURL, cfg.ExternalBridgeToken)
+		switch strings.ToLower(strings.TrimSpace(cfg.ExternalBridgeProvider)) {
+		case "a2a":
+			bridgeAdapter = a2a.NewHTTPAdapter(cfg.ExternalBridgeBaseURL, cfg.ExternalBridgeToken)
+		default:
+			bridgeAdapter = array.NewHTTPAdapter(cfg.ExternalBridgeBaseURL, cfg.ExternalBridgeToken)
+		}
 	}
 	arrayBridge := array.NewBridgeWithStoreAndAdapter(bridgeStore, bridgeAdapter)
 	coordinator.ExternalSync = array.NewGovernedSyncer(arrayBridge, traceRecorder, auditLogger)

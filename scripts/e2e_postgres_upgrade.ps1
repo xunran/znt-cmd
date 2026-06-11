@@ -53,6 +53,8 @@ try {
         throw "no old migrations selected up to version $OldMigrationVersion"
     }
     $summary.old_migrations = $selected
+    $currentMigrationCount = @(Get-ChildItem -Path $resolvedMigrationDir -Filter "*.sql").Count
+    $summary.current_migration_count = $currentMigrationCount
 
     Push-Location $root
     try {
@@ -80,7 +82,7 @@ try {
     } finally {
         Pop-Location
     }
-    Assert-True ($summary.current_migration_status -match "applied=2 total=2") "all current migrations should be applied"
+    Assert-True ($summary.current_migration_status -match "applied=$currentMigrationCount total=$currentMigrationCount") "all current migrations should be applied"
     Assert-True ($summary.current_migration_status -match "live_schema=ready") "upgraded Postgres live schema should be ready"
 
     $server = Start-CleanCoreServer -Port $Port -LogPath (Join-Path $ReportDir "server.log") -ExtraEnv @{

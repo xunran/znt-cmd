@@ -60,12 +60,6 @@ func TestInvokeExposedToolIsIdempotent(t *testing.T) {
 	if call.ToolVersion == "" || call.ExecutionProfile == "" {
 		t.Fatalf("expected tool call execution snapshot, got %#v", call)
 	}
-	if call.TraceID != "trace_1" {
-		t.Fatalf("expected trace on tool call, got %q", call.TraceID)
-	}
-	if _, ok := call.Arguments["trace_id"]; ok {
-		t.Fatalf("trace_id should not be injected into tool arguments: %#v", call.Arguments)
-	}
 }
 
 func TestInvokeRejectsNonExposedTool(t *testing.T) {

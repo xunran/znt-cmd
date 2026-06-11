@@ -16,9 +16,6 @@ func TestFallbackPolicySetKeepsDefaultPolicyFamilies(t *testing.T) {
 	if policy.RuntimePolicy.MaxSteps == 0 || policy.PromptPolicy.MaxPromptTokens == 0 || policy.HandoffPolicy.MaxContextTokens == 0 {
 		t.Fatalf("expected default policy families to be populated: %#v", policy)
 	}
-	if policy.RuntimePolicy.MaxRepairAttempts != 1 {
-		t.Fatalf("expected default runtime repair attempts, got %#v", policy.RuntimePolicy)
-	}
 	if !policy.ToolRepairPolicy.Enabled || policy.ToolRepairPolicy.MaxRepairAttempts == 0 {
 		t.Fatalf("expected default tool repair policy, got %#v", policy.ToolRepairPolicy)
 	}

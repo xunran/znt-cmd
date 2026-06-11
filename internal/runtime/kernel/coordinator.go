@@ -2,7 +2,6 @@ package kernel
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -1094,12 +1093,10 @@ func (c Coordinator) dispatchToolCalls(ctx context.Context, envelope contracts.A
 		if call.Arguments == nil {
 			call.Arguments = map[string]any{}
 		}
-		call.TraceID = envelope.TraceID
-		call = normalizeKnownToolCallArguments(call)
+		if _, ok := call.Arguments["trace_id"]; !ok {
+			call.Arguments["trace_id"] = string(envelope.TraceID)
+		}
 		if call.ToolID == "origin.agent.delegate" {
-			if _, ok := call.Arguments["trace_id"]; !ok {
-				call.Arguments["trace_id"] = string(envelope.TraceID)
-			}
 			if _, ok := call.Arguments["parent_task_id"]; !ok {
 				call.Arguments["parent_task_id"] = string(taskID)
 			}
@@ -1562,71 +1559,6 @@ func (c Coordinator) snapshotToolCall(tenantID contracts.TenantID, call contract
 		call.ExecutionProfile = definition.ExecutionProfile
 	}
 	return call
-}
-
-func normalizeKnownToolCallArguments(call contracts.ToolCall) contracts.ToolCall {
-	if !isTiqianGuanBackendToolCall(call) || call.Arguments == nil {
-		return call
-	}
-	toolName := firstNonEmptyString(call.Arguments["tool_name"], call.Arguments["toolName"])
-	if toolName == "" {
-		return call
-	}
-
-	normalized := map[string]any{
-		"tool_name": toolName,
-	}
-	if nested, ok := call.Arguments["arguments"].(map[string]any); ok {
-		normalized["arguments"] = copyToolArgumentsWithoutTrace(nested)
-		call.Arguments = normalized
-		return call
-	}
-
-	args := map[string]any{}
-	for key, value := range call.Arguments {
-		switch key {
-		case "tool_name", "toolName", "arguments", "args", "parameters", "trace_id", "traceId":
-			continue
-		default:
-			args[key] = value
-		}
-	}
-	normalized["arguments"] = args
-	call.Arguments = normalized
-	return call
-}
-
-func isTiqianGuanBackendToolCall(call contracts.ToolCall) bool {
-	toolID := strings.TrimSpace(call.ToolID)
-	name := strings.TrimSpace(call.Name)
-	return toolID == "znt-guan.ask_tiqianguan_backend_tool" ||
-		toolID == "ask_tiqianguan_backend_tool" ||
-		name == "znt-guan.ask_tiqianguan_backend_tool" ||
-		name == "ask_tiqianguan_backend_tool"
-}
-
-func copyToolArgumentsWithoutTrace(input map[string]any) map[string]any {
-	output := make(map[string]any, len(input))
-	for key, value := range input {
-		if key == "trace_id" || key == "traceId" {
-			continue
-		}
-		output[key] = value
-	}
-	return output
-}
-
-func firstNonEmptyString(values ...any) string {
-	for _, value := range values {
-		text, ok := value.(string)
-		if !ok {
-			continue
-		}
-		if trimmed := strings.TrimSpace(text); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }
 
 func toolCallIdempotencyKey(runID contracts.AgentRunID, stepID string, call contracts.ToolCall) (string, error) {
@@ -2117,7 +2049,7 @@ func (c Coordinator) toolSummaries(ctx context.Context, runID contracts.AgentRun
 		if result.Error != nil {
 			summary = result.Error.Message
 		} else if len(result.Output) > 0 {
-			summary = summarizeToolOutput(result.Output)
+			summary = "tool output available"
 		}
 		out = append(out, contracts.ToolResultSummary{
 			ToolCallID: result.ToolCallID,
@@ -2126,25 +2058,6 @@ func (c Coordinator) toolSummaries(ctx context.Context, runID contracts.AgentRun
 		})
 	}
 	return out
-}
-
-func summarizeToolOutput(output map[string]any) string {
-	data, err := json.Marshal(output)
-	if err != nil {
-		return "tool output available"
-	}
-	return truncateRunes("output="+string(data), 1800)
-}
-
-func truncateRunes(value string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
-	}
-	return string(runes[:limit]) + "...[truncated]"
 }
 
 func (c Coordinator) artifactRefs(ctx context.Context, runID contracts.AgentRunID) []contracts.ArtifactRef {

@@ -37,6 +37,15 @@ func TestRunnerDetectsChecksumMismatch(t *testing.T) {
 	}
 }
 
+func TestChecksumNormalizesLineEndings(t *testing.T) {
+	lf := "CREATE TABLE tasks(id TEXT);\nSELECT 1;\n"
+	crlf := "CREATE TABLE tasks(id TEXT);\r\nSELECT 1;\r\n"
+	cr := "CREATE TABLE tasks(id TEXT);\rSELECT 1;\r"
+	if checksum(lf) != checksum(crlf) || checksum(lf) != checksum(cr) {
+		t.Fatal("expected checksum to be stable across line endings")
+	}
+}
+
 type fakeInspector struct {
 	tables  map[string]bool
 	columns map[string]map[string]ColumnInfo

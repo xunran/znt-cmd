@@ -68,14 +68,6 @@ func (Validator) Normalize(decision contracts.Decision, candidateTools []contrac
 					call.ToolID = tool.ToolID
 					warnings = append(warnings, fmt.Sprintf("tool call %q normalized name to tool_id", call.Name))
 				}
-			} else if _, ok := byID[call.ToolID]; !ok {
-				if tool, ok := byName[call.ToolID]; ok {
-					call.ToolID = tool.ToolID
-					if call.Name == "" {
-						call.Name = tool.Name
-					}
-					warnings = append(warnings, fmt.Sprintf("tool call %q normalized tool name used as tool_id", tool.Name))
-				}
 			}
 			if call.Name == "" {
 				if tool, ok := byID[call.ToolID]; ok {

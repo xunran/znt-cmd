@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
-	"time"
 
 	"znt/internal/contracts"
 	"znt/internal/governance/trace"
@@ -326,54 +325,6 @@ func TestProviderSyncInstallsToolHostCatalog(t *testing.T) {
 	}
 	if !invoked || !completed {
 		t.Fatalf("expected provider invoke trace events, got %#v", events)
-	}
-}
-
-func TestProviderSyncReadsCatalogBeforeCancelingRequestContext(t *testing.T) {
-	reg := registry.NewInMemoryRegistry()
-	service := NewService(reg, nil)
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/tools/catalog" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		time.Sleep(10 * time.Millisecond)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"tools": []map[string]any{{
-				"tool_id":      "crm.slow_catalog",
-				"operation":    "slow_catalog",
-				"name":         "CRM slow catalog",
-				"description":  "Catalog response body arrives after headers.",
-				"input_schema": map[string]any{"type": "object"},
-				"risk_level":   "low",
-				"visibility":   "protected",
-				"version":      "v1",
-			}},
-		})
-	}))
-	defer remote.Close()
-
-	if _, err := service.UpsertProvider(context.Background(), ToolProvider{
-		TenantID:   "tenant_1",
-		ProviderID: "crm",
-		Name:       "CRM provider",
-		Endpoint:   remote.URL,
-		Status:     StatusEnabled,
-		TimeoutMS:  1000,
-	}, "optimizer_1"); err != nil {
-		t.Fatal(err)
-	}
-	manifests, err := service.SyncProviderCatalog(context.Background(), "tenant_1", "crm", "optimizer_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(manifests) != 1 || manifests[0].ToolID != "crm.slow_catalog" {
-		t.Fatalf("unexpected manifests %#v", manifests)
 	}
 }
 

@@ -151,12 +151,6 @@ func TestCoordinatorToolLoopThenReply(t *testing.T) {
 	if len(calls) != 1 || calls[0].ToolVersion == "" || calls[0].ExecutionProfile == "" {
 		t.Fatalf("expected tool call execution snapshot, got %#v", calls)
 	}
-	if calls[0].TraceID != "trace_1" {
-		t.Fatalf("expected trace on tool call, got %q", calls[0].TraceID)
-	}
-	if _, ok := calls[0].Arguments["trace_id"]; ok {
-		t.Fatalf("trace_id should not be injected into tool arguments: %#v", calls[0].Arguments)
-	}
 	events, err := traceRecorder.ListByTrace(context.Background(), "trace_1")
 	if err != nil {
 		t.Fatal(err)
@@ -173,35 +167,6 @@ func TestCoordinatorToolLoopThenReply(t *testing.T) {
 	}
 	if model.Calls != 2 {
 		t.Fatalf("expected two model calls, got %d", model.Calls)
-	}
-}
-
-func TestNormalizeTiqianGuanBackendToolArguments(t *testing.T) {
-	call := normalizeKnownToolCallArguments(contracts.ToolCall{
-		ToolID: "znt-guan.ask_tiqianguan_backend_tool",
-		Name:   "ask_tiqianguan_backend_tool",
-		Arguments: map[string]any{
-			"tool_name": "get_withdrawal_order",
-			"order_id":  "2026020646647160",
-			"trace_id":  "trace_should_not_be_forwarded",
-		},
-	})
-
-	if call.Arguments["tool_name"] != "get_withdrawal_order" {
-		t.Fatalf("expected tool_name to be preserved, got %#v", call.Arguments)
-	}
-	args, ok := call.Arguments["arguments"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected nested arguments, got %#v", call.Arguments)
-	}
-	if args["order_id"] != "2026020646647160" {
-		t.Fatalf("expected order_id to be nested, got %#v", args)
-	}
-	if _, ok := call.Arguments["trace_id"]; ok {
-		t.Fatalf("trace_id should not remain top-level, got %#v", call.Arguments)
-	}
-	if _, ok := args["trace_id"]; ok {
-		t.Fatalf("trace_id should not be forwarded as business argument, got %#v", args)
 	}
 }
 
@@ -568,44 +533,6 @@ func TestCoordinatorStopsWhenMaxToolCallsExceeded(t *testing.T) {
 	}
 	if result.Status != contracts.RunFailed || result.Error == nil {
 		t.Fatalf("expected failed result with error, got %#v", result)
-	}
-}
-
-func TestCoordinatorToolSummariesIncludeOutputPreview(t *testing.T) {
-	repo := toolrepo.NewInMemoryRepository()
-	call := contracts.ToolCall{
-		ToolCallID: "toolcall_1",
-		TenantID:   "tenant_1",
-		ToolID:     "znt-guan.ask_tiqianguan_backend_tool",
-		RunID:      "run_1",
-		Arguments:  map[string]any{"tool_name": "get_withdrawal_order", "arguments": map[string]any{"loanNo": "2026020646647160"}},
-	}
-	if _, _, err := repo.SaveCall(context.Background(), call); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.SaveResult(context.Background(), contracts.ToolResult{
-		ToolResultID: "toolres_1",
-		ToolCallID:   call.ToolCallID,
-		Status:       contracts.ToolResultSucceeded,
-		Output: map[string]any{
-			"loanNo":            "2026020646647160",
-			"applicationStatus": "APPROVED",
-			"merchantName":      "test merchant",
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	coordinator := Coordinator{ToolRepo: repo}
-	summaries := coordinator.toolSummaries(context.Background(), "run_1")
-	if len(summaries) != 1 {
-		t.Fatalf("expected one summary, got %#v", summaries)
-	}
-	summary := summaries[0].Summary
-	if !strings.Contains(summary, "2026020646647160") || !strings.Contains(summary, "applicationStatus") {
-		t.Fatalf("expected tool output preview in summary, got %q", summary)
-	}
-	if strings.Contains(summary, "tool output available") {
-		t.Fatalf("summary should not use placeholder when output exists: %q", summary)
 	}
 }
 

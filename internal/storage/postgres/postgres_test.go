@@ -1,7 +1,10 @@
 package postgres
 
 import (
+	"errors"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"znt/internal/agentcapability"
 	agentpackage "znt/internal/agentdef/package"
@@ -59,4 +62,19 @@ func TestRepositoryTypesImplementRuntimeInterfaces(t *testing.T) {
 	var _ agentcapability.Store = (*AgentCapabilityStore)(nil)
 	var _ agentfactory.Store = (*AgentDraftRequestStore)(nil)
 	var _ tone.Store = (*TonePolicyStore)(nil)
+}
+
+func TestSchemaNotReadyErrorDetection(t *testing.T) {
+	if !isSchemaNotReadyError(&pgconn.PgError{Code: "42P01"}) {
+		t.Fatal("undefined table should be treated as schema not ready")
+	}
+	if !isSchemaNotReadyError(&pgconn.PgError{Code: "42703"}) {
+		t.Fatal("undefined column should be treated as schema not ready")
+	}
+	if isSchemaNotReadyError(&pgconn.PgError{Code: "23505"}) {
+		t.Fatal("unique violation should not be treated as schema not ready")
+	}
+	if isSchemaNotReadyError(errors.New("plain error")) {
+		t.Fatal("plain errors should not be treated as schema not ready")
+	}
 }

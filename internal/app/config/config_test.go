@@ -50,6 +50,8 @@ func TestLoadModelRequestOptionsFromEnv(t *testing.T) {
 	t.Setenv("CLEAN_CORE_CONVERSATION_DIRECT_ENABLED", "true")
 	t.Setenv("CLEAN_CORE_CONVERSATION_RETRIEVAL_ENABLED", "false")
 	t.Setenv("CLEAN_CORE_CONVERSATION_MAX_RETRIEVED", "3")
+	t.Setenv("CLEAN_CORE_EXTERNAL_BRIDGE_PROVIDER", "a2a")
+	t.Setenv("CLEAN_CORE_EXTERNAL_BRIDGE_BASE_URL", "https://bridge.example.test")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -69,6 +71,9 @@ func TestLoadModelRequestOptionsFromEnv(t *testing.T) {
 	}
 	if cfg.ConversationJudgeTimeoutMS != 1500 || !cfg.ConversationDirectEnabled || cfg.ConversationRetrievalIsEnabled() || cfg.ConversationMaxRetrieved != 3 {
 		t.Fatalf("expected conversation runtime options from env, got %#v", cfg)
+	}
+	if cfg.ExternalBridgeProvider != "a2a" || cfg.ExternalBridgeBaseURL != "https://bridge.example.test" {
+		t.Fatalf("expected external bridge options from env, got %#v", cfg)
 	}
 }
 
@@ -137,6 +142,8 @@ conversation_judge_timeout_ms: 2500
 conversation_direct_enabled: true
 conversation_retrieval_enabled: false
 conversation_max_retrieved: 4
+external_bridge_provider: a2a
+external_bridge_base_url: https://bridge.example.test
 disable_http_direct: true
 `), 0o600); err != nil {
 		t.Fatal(err)
@@ -156,6 +163,9 @@ disable_http_direct: true
 	}
 	if cfg.ConversationJudgeTimeoutMS != 2500 || !cfg.ConversationDirectEnabled || cfg.ConversationRetrievalIsEnabled() || cfg.ConversationMaxRetrieved != 4 {
 		t.Fatalf("expected yaml conversation runtime options, got %#v", cfg)
+	}
+	if cfg.ExternalBridgeProvider != "a2a" || cfg.ExternalBridgeBaseURL != "https://bridge.example.test" {
+		t.Fatalf("expected yaml external bridge options, got %#v", cfg)
 	}
 	if !cfg.DisableHTTPDirect {
 		t.Fatalf("expected yaml http direct release switch, got %#v", cfg)
@@ -180,5 +190,13 @@ func TestConversationRuntimeOptionValidation(t *testing.T) {
 	cfg.ConversationMaxRetrieved = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected negative conversation_max_retrieved to fail validation")
+	}
+}
+
+func TestExternalBridgeProviderValidation(t *testing.T) {
+	cfg := Default()
+	cfg.ExternalBridgeProvider = "grpc"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid external_bridge_provider to fail validation")
 	}
 }

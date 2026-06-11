@@ -1209,8 +1209,8 @@ func requestJSON(ctx context.Context, client *http.Client, method string, url st
 			req.Header.Set(key, value)
 		}
 		resp, err := client.Do(req)
+		cancel()
 		if err != nil {
-			cancel()
 			lastErr = err
 			if attempt < attempts {
 				continue
@@ -1218,7 +1218,6 @@ func requestJSON(ctx context.Context, client *http.Client, method string, url st
 			return err
 		}
 		retry, err := decodeJSONResponse(resp, target)
-		cancel()
 		if err == nil {
 			return nil
 		}

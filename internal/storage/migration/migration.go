@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -103,12 +104,17 @@ func (r Runner) Status(ctx context.Context, migrations []Migration) ([]AppliedMi
 }
 
 func checksum(sql string) string {
-	sum := sha256.Sum256([]byte(sql))
+	sum := sha256.Sum256([]byte(normalizeSQLForChecksum(sql)))
 	return hex.EncodeToString(sum[:])
 }
 
 func ChecksumSQL(sql string) string {
 	return checksum(sql)
+}
+
+func normalizeSQLForChecksum(sql string) string {
+	sql = strings.ReplaceAll(sql, "\r\n", "\n")
+	return strings.ReplaceAll(sql, "\r", "\n")
 }
 
 type InMemoryStore struct {

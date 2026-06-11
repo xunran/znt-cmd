@@ -48,23 +48,6 @@ func TestValidatorNormalizesNameOnlyToolCall(t *testing.T) {
 	}
 }
 
-func TestValidatorNormalizesToolNameUsedAsToolID(t *testing.T) {
-	v := New()
-	result, err := v.Normalize(contracts.Decision{
-		Type: contracts.DecisionTypeToolCall,
-		ToolCalls: []contracts.ToolCall{{
-			ToolID: "ask_tiqianguan_backend_tool",
-		}},
-	}, []contracts.ToolCard{{ToolID: "znt-guan.ask_tiqianguan_backend_tool", Name: "ask_tiqianguan_backend_tool"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	call := result.Decision.ToolCalls[0]
-	if call.ToolID != "znt-guan.ask_tiqianguan_backend_tool" || call.Name != "ask_tiqianguan_backend_tool" || len(result.Warnings) == 0 {
-		t.Fatalf("expected short tool name to normalize to provider-qualified tool id, got %#v", result)
-	}
-}
-
 func TestValidatorRejectsInvalidConfidence(t *testing.T) {
 	v := New()
 	err := v.Validate(contracts.Decision{

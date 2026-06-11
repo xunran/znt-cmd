@@ -66,6 +66,9 @@ func (s Service) Invoke(ctx context.Context, req Request) (contracts.ToolResult,
 	if args == nil {
 		args = map[string]any{}
 	}
+	if _, ok := args["trace_id"]; !ok {
+		args["trace_id"] = string(req.Envelope.TraceID)
+	}
 	call := contracts.ToolCall{
 		ToolCallID:     contracts.ToolCallID(idgen.New("toolcall")),
 		TenantID:       req.Caller.TenantID,
