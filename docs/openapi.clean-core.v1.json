@@ -7928,6 +7928,7 @@
       },
       "AgentResourceCreateRequest": {
         "type": "object",
+        "description": "Creates the agent asset shell. Skill definitions and exported tools are not required here; add them later with /v1/agents/{agent_id}/skills, /v1/agents/{agent_id}/exported-tools, or through an AgentPackage draft. Optional tool_bindings only configure which tools the agent may use.",
         "required": [
           "agent_id"
         ],
@@ -7955,6 +7956,7 @@
             "type": "string"
           },
           "tool_bindings": {
+            "description": "Optional allow/deny config for tools this agent may use; this does not create tool manifests and is not required for agent creation.",
             "$ref": "#/components/schemas/AgentToolsConfig"
           },
           "metadata": {
@@ -10297,6 +10299,7 @@
       },
       "AgentExportedTool": {
         "type": "object",
+        "description": "A tool exported by an existing agent. tool_id is required for exported tool creation, not for /v1/agents asset creation.",
         "required": [
           "tool_id",
           "name",
@@ -11575,6 +11578,7 @@
       },
       "AgentPackageSkillDraftPayload": {
         "type": "object",
+        "description": "Payload for creating or updating a skill under an existing agent. This is separate from agent asset creation, so skill_id is required here but not by /v1/agents.",
         "required": [
           "skill_id"
         ],

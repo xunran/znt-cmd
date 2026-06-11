@@ -2353,6 +2353,40 @@ func TestAgentResourceAPIDisableBlocksRunHandoffAndAgentTool(t *testing.T) {
 	}
 }
 
+func TestAgentCreateDoesNotRequireSkillOrToolIDs(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+
+	create := doJSON(handler, "POST", "/v1/agents", map[string]any{
+		"agent_id": "agent-without-skills",
+		"name":     "Agent Without Skills",
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("agent create without skill_id failed %d body %s", create.Code, create.Body.String())
+	}
+	if !bytes.Contains(create.Body.Bytes(), []byte("agent-without-skills")) {
+		t.Fatalf("expected created agent response, got %s", create.Body.String())
+	}
+
+	skill := doJSON(handler, "POST", "/v1/agents/agent-without-skills/skills", map[string]any{
+		"name": "Missing Skill ID",
+	})
+	if skill.Code != http.StatusBadRequest || !bytes.Contains(skill.Body.Bytes(), []byte("skill_id")) {
+		t.Fatalf("expected skill upsert to require skill_id, got %d body %s", skill.Code, skill.Body.String())
+	}
+
+	exportedTool := doJSON(handler, "POST", "/v1/agents/agent-without-skills/exported-tools", map[string]any{
+		"name":        "Missing Tool ID",
+		"description": "Exported tool without an id.",
+	})
+	if exportedTool.Code != http.StatusBadRequest || !bytes.Contains(exportedTool.Body.Bytes(), []byte("tool_id")) {
+		t.Fatalf("expected exported tool upsert to require tool_id, got %d body %s", exportedTool.Code, exportedTool.Body.String())
+	}
+}
+
 func TestAgentResourceAPIDisableBlocksSourceHandoffEntrypoints(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {

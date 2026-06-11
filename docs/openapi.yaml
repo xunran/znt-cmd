@@ -2419,10 +2419,12 @@ components:
           additionalProperties: true
         skill_ids:
           type: array
+          description: Optional initial skill bindings; agent creation must be allowed without skills.
           items:
             type: string
         tool_ids:
           type: array
+          description: Optional initial tool bindings; agent creation must be allowed without tools.
           items:
             type: string
         provider_ids:
@@ -2485,10 +2487,12 @@ components:
           type: string
         skill_ids:
           type: array
+          description: Optional replacement skill bindings; omit to leave skills unchanged.
           items:
             type: string
         tool_ids:
           type: array
+          description: Optional replacement tool bindings; omit to leave tools unchanged.
           items:
             type: string
         provider_ids:

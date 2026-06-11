@@ -8,3 +8,4 @@ docs/*
 .clean-core-migrations.json
 tmp
 dist
+.tmp
