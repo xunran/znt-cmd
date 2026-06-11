@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "clean-core.fullname" . }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "clean-core.fullname" . }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: 8080

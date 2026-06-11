@@ -1,0 +1,134 @@
+package migration
+
+import "strings"
+
+var RequiredSchemaObjects = []string{
+	"create table agent_package_versions",
+	"create table agent_assets",
+	"create table agent_package_canary_hits",
+	"create table agent_package_drafts",
+	"create table agent_package_proposals",
+	"create table agent_prompt_profiles",
+	"create table agent_skill_definitions",
+	"create table agent_tool_bindings",
+	"create table agent_collaborators",
+	"create table agent_exported_tools",
+	"create table agent_package_eval_results",
+	"create table eval_suites",
+	"create table eval_suite_results",
+	"create table agent_definitions",
+	"create table policy_sets",
+	"create table policy_drafts",
+	"create table policy_versions",
+	"create table tasks",
+	"create table task_events",
+	"create table agent_runs",
+	"create table task_plans",
+	"create table plan_steps",
+	"create table plan_events",
+	"create table agent_handoffs",
+	"create table governance_process_templates",
+	"create table governance_process_runs",
+	"create table governance_gate_runs",
+	"create table governance_reviews",
+	"create table governance_conflicts",
+	"create table handoff_context_packages",
+	"create table tool_providers",
+	"create table tool_groups",
+	"create table tool_manifests",
+	"create table tool_manifest_versions",
+	"create table tool_runtime_registry_cache",
+	"create table runtime_hook_providers",
+	"create table runtime_hook_manifests",
+	"create table agent_runtime_hook_bindings",
+	"create table runtime_hook_events",
+	"create table tool_calls",
+	"create table tool_results",
+	"create table artifacts",
+	"create table artifact_contents",
+	"create table memory_events",
+	"create table trace_events",
+	"create table audit_events",
+	"create table external_task_bindings",
+	"create table group_members",
+	"create table group_permission_policies",
+	"create table memory_scopes",
+	"create table knowledge_bases",
+	"create table knowledge_documents",
+	"create table knowledge_ingestion_jobs",
+	"create table cross_group_share_policies",
+	"create table group_task_bindings",
+	"create table skill_update_requests",
+	"create table agent_capabilities",
+	"create table agent_draft_requests",
+	"create table tone_policies",
+	"create index idx_tasks_tenant_status",
+	"create index idx_task_events_task_time",
+	"create index idx_tool_calls_tenant_run",
+	"create index idx_trace_events_tenant_trace_time",
+	"create index idx_memory_events_tenant_agent",
+	"create index idx_memory_events_tenant_user",
+	"create index idx_policy_versions_lookup",
+	"create index idx_agent_package_canary_hits_tenant_agent",
+	"create index idx_agent_assets_tenant_status",
+	"create index idx_agent_package_proposals_tenant_draft",
+	"create index idx_agent_prompt_profiles_agent_status",
+	"create index idx_agent_skill_definitions_agent_status",
+	"create index idx_agent_tool_bindings_agent_status",
+	"create index idx_agent_collaborators_agent_status",
+	"create index idx_agent_exported_tools_agent_status",
+	"create index idx_eval_suites_tenant",
+	"create index idx_eval_suite_results_tenant_suite",
+	"create index idx_group_members_group",
+	"create index idx_group_permission_policies_group",
+	"create index idx_memory_scopes_owner_group",
+	"create index idx_knowledge_bases_tenant_group",
+	"create index idx_knowledge_documents_tenant_base",
+	"create index idx_knowledge_ingestion_jobs_base",
+	"create index idx_cross_group_share_policies_groups",
+	"create index idx_group_task_bindings_group_time",
+	"create index idx_group_task_bindings_task",
+	"create index idx_skill_update_requests_group",
+	"create index idx_agent_capabilities_tenant_agent",
+	"create index idx_agent_draft_requests_group",
+	"create index idx_tool_providers_tenant_status",
+	"create index idx_tool_providers_tenant_health",
+	"create index idx_tool_groups_tenant_status",
+	"create index idx_tool_manifests_tenant_group",
+	"create index idx_tool_manifests_tenant_status",
+	"create index idx_tool_manifest_versions_tool",
+	"create index idx_runtime_hook_providers_tenant_status",
+	"create index idx_runtime_hook_providers_tenant_health",
+	"create index idx_runtime_hook_manifests_phase",
+	"create index idx_agent_runtime_hook_bindings_agent_phase",
+	"create index idx_runtime_hook_events_run",
+	"create index idx_runtime_hook_events_trace",
+	"create index idx_governance_process_templates_tenant_status",
+	"create index idx_governance_process_runs_tenant_subject",
+	"create index idx_governance_process_runs_trace",
+	"create index idx_governance_gate_runs_process",
+	"create unique index idx_governance_gate_runs_definition",
+	"create index idx_governance_reviews_gate",
+	"create index idx_governance_reviews_process",
+	"create index idx_governance_conflicts_process",
+}
+
+func MissingRequiredObjects(migrations []Migration) []string {
+	sql := strings.ToLower(combinedSQL(migrations))
+	missing := make([]string, 0)
+	for _, object := range RequiredSchemaObjects {
+		if !strings.Contains(sql, object) {
+			missing = append(missing, object)
+		}
+	}
+	return missing
+}
+
+func combinedSQL(migrations []Migration) string {
+	var builder strings.Builder
+	for _, migration := range migrations {
+		builder.WriteString(migration.SQL)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
+}

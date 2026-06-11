@@ -1,0 +1,10 @@
+.git
+.github
+.tools
+docs/*
+!docs/openapi.clean-core.v1.json
+!docs/e2e_regression_matrix.md
+*.log
+.clean-core-migrations.json
+tmp
+dist

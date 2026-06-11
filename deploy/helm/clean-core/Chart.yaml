@@ -1,0 +1,6 @@
+apiVersion: v2
+name: clean-core
+description: Clean Core runtime service
+type: application
+version: 0.1.0
+appVersion: 0.1.0-alpha

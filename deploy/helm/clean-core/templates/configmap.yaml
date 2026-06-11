@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "clean-core.fullname" . }}-config
+data:
+  CLEAN_CORE_ENV: {{ .Values.config.env | quote }}
+  CLEAN_CORE_HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
+  CLEAN_CORE_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  CLEAN_CORE_READINESS: {{ .Values.config.readiness | quote }}
+  CLEAN_CORE_READINESS_MODE: {{ .Values.config.readinessMode | quote }}
+  CLEAN_CORE_METRICS_AUTH_MODE: {{ .Values.config.metricsAuthMode | quote }}
+  CLEAN_CORE_AGENT_RUN_EXECUTION_MODE: {{ .Values.config.agentRunExecutionMode | quote }}
+  CLEAN_CORE_DB_MAX_OPEN_CONNS: {{ .Values.config.dbMaxOpenConns | quote }}
+  CLEAN_CORE_DB_MAX_IDLE_CONNS: {{ .Values.config.dbMaxIdleConns | quote }}
+  CLEAN_CORE_DB_READINESS_MAX_OPEN_CONNS: {{ .Values.config.dbReadinessMaxOpenConns | quote }}
+  CLEAN_CORE_DB_READINESS_MAX_IDLE_CONNS: {{ .Values.config.dbReadinessMaxIdleConns | quote }}
+  CLEAN_CORE_DB_CONN_MAX_LIFETIME_SECONDS: {{ .Values.config.dbConnMaxLifetimeSeconds | quote }}
+  CLEAN_CORE_DB_CONN_MAX_IDLE_TIME_SECONDS: {{ .Values.config.dbConnMaxIdleTimeSeconds | quote }}
+  CLEAN_CORE_HTTP_READ_HEADER_TIMEOUT_SECONDS: {{ .Values.config.httpReadHeaderTimeoutSeconds | quote }}
+  CLEAN_CORE_HTTP_READ_TIMEOUT_SECONDS: {{ .Values.config.httpReadTimeoutSeconds | quote }}
+  CLEAN_CORE_HTTP_WRITE_TIMEOUT_SECONDS: {{ .Values.config.httpWriteTimeoutSeconds | quote }}
+  CLEAN_CORE_HTTP_IDLE_TIMEOUT_SECONDS: {{ .Values.config.httpIdleTimeoutSeconds | quote }}
+  CLEAN_CORE_HTTP_MAX_BODY_BYTES: {{ .Values.config.httpMaxBodyBytes | quote }}
+  CLEAN_CORE_RUN_MAX_CONCURRENT: {{ .Values.config.runMaxConcurrent | quote }}
+  CLEAN_CORE_TENANT_RUN_MAX_CONCURRENT: {{ .Values.config.tenantRunMaxConcurrent | quote }}
+  CLEAN_CORE_AGENT_RUN_MAX_CONCURRENT: {{ .Values.config.agentRunMaxConcurrent | quote }}
+  CLEAN_CORE_MODEL_PROVIDER: {{ .Values.config.modelProvider | quote }}
+  CLEAN_CORE_MODEL_MAX_TOKENS: {{ .Values.config.modelMaxTokens | quote }}
+  CLEAN_CORE_MODEL_TEMPERATURE: {{ .Values.config.modelTemperature | quote }}
+  CLEAN_CORE_MODEL_THINKING: {{ .Values.config.modelThinking | quote }}
+  CLEAN_CORE_MODEL_REASONING_EFFORT: {{ .Values.config.modelReasoningEffort | quote }}

@@ -1,0 +1,79 @@
+image:
+  repository: clean-core
+  tag: local
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+service:
+  port: 8080
+
+config:
+  env: production
+  httpAddr: ":8080"
+  logLevel: info
+  readiness: "true"
+  readinessMode: deep
+  metricsAuthMode: auto
+  agentRunExecutionMode: async
+  dbMaxOpenConns: "25"
+  dbMaxIdleConns: "10"
+  dbReadinessMaxOpenConns: "2"
+  dbReadinessMaxIdleConns: "2"
+  dbConnMaxLifetimeSeconds: "1800"
+  dbConnMaxIdleTimeSeconds: "300"
+  httpReadHeaderTimeoutSeconds: "5"
+  httpReadTimeoutSeconds: "30"
+  httpWriteTimeoutSeconds: "300"
+  httpIdleTimeoutSeconds: "120"
+  httpMaxBodyBytes: "4194304"
+  runMaxConcurrent: "100"
+  tenantRunMaxConcurrent: "50"
+  agentRunMaxConcurrent: "20"
+  modelProvider: openai-compatible
+  modelMaxTokens: "2048"
+  modelTemperature: "0"
+  modelThinking: ""
+  modelReasoningEffort: ""
+
+secret:
+  serviceToken: ""
+  databaseURL: ""
+  modelBaseURL: ""
+  modelAPIKey: ""
+  modelName: ""
+  externalBridgeBaseURL: ""
+  externalBridgeToken: ""
+
+migration:
+  enabled: true
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+probes:
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6

@@ -1,0 +1,25 @@
+[Unit]
+Description=Clean Core single-node server
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clean-core
+Group=clean-core
+WorkingDirectory=/opt/clean-core
+EnvironmentFile=/etc/clean-core/clean-core.env
+ExecStartPre=/opt/clean-core/clean-core-server -migration up -migration-dir /opt/clean-core/migrations
+ExecStart=/opt/clean-core/clean-core-server
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/clean-core /var/log/clean-core
+
+[Install]
+WantedBy=multi-user.target

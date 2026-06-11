@@ -1,0 +1,1 @@
+{"schema":"clean-core-migration-checksums.v1","migrations":[{"version":"001","name":"clean_core_base","file":"001_clean_core_base.sql","checksum":"b0c2d65445b02b932ca55e308c71310112b91555089a866ebd7638b183f0ec37"}]}

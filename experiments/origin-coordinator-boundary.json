@@ -1,0 +1,21 @@
+{
+  "name": "origin-coordinator-boundary-ab",
+  "base_package": "agent_packages/origin-coordinator",
+  "eval_suite": "eval/smoke.yaml",
+  "variants": [
+    {
+      "name": "base"
+    },
+    {
+      "name": "strict-boundary",
+      "developer_append": "When capability is not explicitly configured, prefer unsupported over a speculative answer."
+    }
+  ],
+  "models": [
+    {
+      "name": "env-default",
+      "provider": "openai-compatible",
+      "temperature": 0
+    }
+  ]
+}

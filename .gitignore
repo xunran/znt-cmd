@@ -1,0 +1,13 @@
+.tools/
+.clean-core-migrations.json
+bin/
+coverage.out
+tmp/
+*.test
+# Local secret env files are ignored; checked-in templates stay allowed.
+.env
+.env.*
+*.env.ps1
+!.env.example
+!*.env.example
+!*.env.example.ps1

@@ -1,0 +1,1 @@
+{"time":"2026-06-11T09:22:58.0080737+08:00","level":"ERROR","msg":"server init failed","error":"failed to connect to `host=127.0.0.1 user=clean_core database=clean_core`: dial error (dial tcp 127.0.0.1:5432: connectex: No connection could be made because the target machine actively refused it.)"}

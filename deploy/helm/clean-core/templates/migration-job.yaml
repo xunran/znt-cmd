@@ -1,0 +1,20 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "clean-core.fullname" . }}-migration
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["-migration", "up", "-migration-dir", "/migrations"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "clean-core.fullname" . }}-config
+            - secretRef:
+                name: {{ include "clean-core.fullname" . }}-secret
+{{- end }}
