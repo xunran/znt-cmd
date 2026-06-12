@@ -2,6 +2,7 @@ package loader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,33 @@ import (
 
 type Loader interface {
 	Load(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion) (contracts.AgentDefinition, error)
+}
+
+type ChainLoader struct {
+	Loaders []Loader
+}
+
+func (l ChainLoader) Load(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion) (contracts.AgentDefinition, error) {
+	var notFound error
+	for _, current := range l.Loaders {
+		if current == nil {
+			continue
+		}
+		definition, err := current.Load(ctx, tenantID, agentID, version)
+		if err == nil {
+			return definition, nil
+		}
+		var runtimeErr *contracts.RuntimeError
+		if errors.As(err, &runtimeErr) && runtimeErr.Code == contracts.CodeAgentVersionNotFound {
+			notFound = err
+			continue
+		}
+		return contracts.AgentDefinition{}, err
+	}
+	if notFound != nil {
+		return contracts.AgentDefinition{}, notFound
+	}
+	return contracts.AgentDefinition{}, contracts.NewRuntimeError(contracts.CodeAgentVersionNotFound, fmt.Sprintf("agent %s version %s not found", agentID, version), nil)
 }
 
 type PromptProfileProvider interface {

@@ -70,6 +70,21 @@ func skillDefinitionVersionViews(ctx context.Context, appCore *core.Core, tenant
 	return out, nil
 }
 
+func skillDefinitionListKey(skill contracts.SkillDefinition) string {
+	skillID := strings.TrimSpace(skill.Card.SkillID)
+	if skillID == "" {
+		skillID = strings.TrimSpace(skill.Instruction.SkillID)
+	}
+	if skillID == "" {
+		return ""
+	}
+	version := strings.TrimSpace(skill.Card.Version)
+	if version == "" {
+		return skillID
+	}
+	return skillID + "\x00" + version
+}
+
 func handleAgentSkills(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, parts []string) {
 	if len(parts) == 1 && parts[0] == "governance" {
 		handleAgentSubresourceGovernance(w, r, appCore, caller, agentID, agentSubresourceSkill, r.URL.Query().Get("skill_id"))
@@ -93,11 +108,7 @@ func handleAgentSkills(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 					return
 				} else if len(active) > 0 {
 					agent, _, found, err := agentSubresourceDefinition(r.Context(), appCore, caller.TenantID, agentID, "", "")
-					if err != nil {
-						writeRuntimeError(w, err)
-						return
-					}
-					if !found {
+					if err != nil || !found {
 						skills := make([]contracts.SkillDefinition, 0, len(active))
 						for _, projection := range active {
 							skills = append(skills, projection.Definition)
@@ -105,7 +116,28 @@ func handleAgentSkills(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 						writeJSON(w, map[string]any{"skills": skills}, http.StatusOK)
 						return
 					}
-					writeJSON(w, map[string]any{"skills": agent.SkillDefinitions}, http.StatusOK)
+					skills := make([]contracts.SkillDefinition, 0, len(agent.SkillDefinitions)+len(active))
+					indexByKey := map[string]int{}
+					for _, skill := range agent.SkillDefinitions {
+						key := skillDefinitionListKey(skill)
+						if key != "" {
+							indexByKey[key] = len(skills)
+						}
+						skills = append(skills, skill)
+					}
+					for _, projection := range active {
+						skill := projection.Definition
+						key := skillDefinitionListKey(skill)
+						if index, ok := indexByKey[key]; ok && key != "" {
+							skills[index] = skill
+							continue
+						}
+						if key != "" {
+							indexByKey[key] = len(skills)
+						}
+						skills = append(skills, skill)
+					}
+					writeJSON(w, map[string]any{"skills": skills}, http.StatusOK)
 					return
 				}
 			}

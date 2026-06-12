@@ -66,10 +66,19 @@ type ToolManifest struct {
 type ToolGroup struct {
 	TenantID    contracts.TenantID `json:"tenant_id,omitempty"`
 	GroupID     string             `json:"group_id"`
+	ProviderID  string             `json:"provider_id,omitempty"`
 	Name        string             `json:"name"`
 	Description string             `json:"description,omitempty"`
 	Status      string             `json:"status"`
 	Version     string             `json:"version"`
+	ToolIDs     []string           `json:"tool_ids,omitempty"`
+	Metadata    map[string]any     `json:"metadata,omitempty"`
+}
+
+type ProviderCatalogSyncResult struct {
+	Provider ToolProvider   `json:"provider"`
+	Group    ToolGroup      `json:"group"`
+	Tools    []ToolManifest `json:"tools"`
 }
 
 type ExecutorSpec struct {
@@ -260,22 +269,32 @@ func (s *Service) UpsertManifest(ctx context.Context, manifest ToolManifest, act
 }
 
 func (s *Service) SyncProviderCatalog(ctx context.Context, tenantID contracts.TenantID, providerID string, actorID string) ([]ToolManifest, error) {
-	provider, ok := s.provider(tenantID, providerID)
-	if !ok {
-		return nil, contracts.NewRuntimeError(contracts.CodeToolNotFound, "tool provider not found", map[string]any{"provider_id": providerID})
-	}
-	if provider.Status != StatusEnabled {
-		return nil, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "tool provider is not enabled", map[string]any{"provider_id": providerID})
-	}
-	if provider.HealthStatus == HealthUnhealthy {
-		return nil, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "tool provider is unhealthy", map[string]any{"provider_id": providerID, "health_status": provider.HealthStatus})
-	}
-	catalog, err := s.fetchCatalog(ctx, provider)
+	result, err := s.SyncProviderCatalogWithGroup(ctx, tenantID, providerID, actorID)
 	if err != nil {
 		return nil, err
 	}
+	return result.Tools, nil
+}
+
+func (s *Service) SyncProviderCatalogWithGroup(ctx context.Context, tenantID contracts.TenantID, providerID string, actorID string) (ProviderCatalogSyncResult, error) {
+	provider, ok := s.provider(tenantID, providerID)
+	if !ok {
+		return ProviderCatalogSyncResult{}, contracts.NewRuntimeError(contracts.CodeToolNotFound, "tool provider not found", map[string]any{"provider_id": providerID})
+	}
+	if provider.Status != StatusEnabled {
+		return ProviderCatalogSyncResult{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "tool provider is not enabled", map[string]any{"provider_id": providerID})
+	}
+	if provider.HealthStatus == HealthUnhealthy {
+		return ProviderCatalogSyncResult{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "tool provider is unhealthy", map[string]any{"provider_id": providerID, "health_status": provider.HealthStatus})
+	}
+	catalog, err := s.fetchCatalog(ctx, provider)
+	if err != nil {
+		return ProviderCatalogSyncResult{}, err
+	}
+	groupID := providerDefaultGroupID(provider.ProviderID)
 	out := make([]ToolManifest, 0, len(catalog.Tools))
 	for _, item := range catalog.Tools {
+		item.GroupID = groupID
 		manifest := ToolManifest{
 			TenantID:     tenantID,
 			ToolID:       item.ToolID,
@@ -297,12 +316,16 @@ func (s *Service) SyncProviderCatalog(ctx context.Context, tenantID contracts.Te
 		}
 		installed, err := s.UpsertManifest(ctx, manifest, actorID)
 		if err != nil {
-			return nil, err
+			return ProviderCatalogSyncResult{}, err
 		}
 		out = append(out, installed)
 	}
+	group, err := s.UpsertGroup(ctx, providerDefaultGroup(tenantID, provider, out), actorID)
+	if err != nil {
+		return ProviderCatalogSyncResult{}, err
+	}
 	s.auditEvent(ctx, tenantID, actorID, "tool.provider.sync", providerID, "allowed", fmt.Sprintf("tools=%d", len(out)))
-	return out, nil
+	return ProviderCatalogSyncResult{Provider: provider, Group: group, Tools: out}, nil
 }
 
 func (s *Service) CheckProviderHealth(ctx context.Context, tenantID contracts.TenantID, providerID string, actorID string) (ToolProvider, error) {
@@ -668,8 +691,13 @@ func normalizeProvider(provider ToolProvider) ToolProvider {
 
 func normalizeGroup(group ToolGroup) ToolGroup {
 	group.GroupID = strings.TrimSpace(group.GroupID)
+	group.ProviderID = strings.TrimSpace(group.ProviderID)
 	group.Name = strings.TrimSpace(group.Name)
 	group.Description = strings.TrimSpace(group.Description)
+	group.ToolIDs = uniqueNonEmptyStrings(group.ToolIDs)
+	if group.Metadata == nil {
+		group.Metadata = map[string]any{}
+	}
 	if group.Name == "" {
 		group.Name = group.GroupID
 	}
@@ -714,6 +742,56 @@ func normalizeManifest(manifest ToolManifest) ToolManifest {
 		}
 	}
 	return manifest
+}
+
+func providerDefaultGroupID(providerID string) string {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return "provider-default"
+	}
+	return providerID + "-default"
+}
+
+func providerDefaultGroup(tenantID contracts.TenantID, provider ToolProvider, tools []ToolManifest) ToolGroup {
+	toolIDs := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		toolIDs = append(toolIDs, tool.ToolID)
+	}
+	name := strings.TrimSpace(provider.Name)
+	if name == "" {
+		name = provider.ProviderID
+	}
+	return ToolGroup{
+		TenantID:    tenantID,
+		GroupID:     providerDefaultGroupID(provider.ProviderID),
+		ProviderID:  provider.ProviderID,
+		Name:        name,
+		Description: firstCatalogString(provider.Description, name+" synced tool package"),
+		Status:      StatusEnabled,
+		Version:     provider.Version,
+		ToolIDs:     uniqueNonEmptyStrings(toolIDs),
+		Metadata: map[string]any{
+			"source":      "tool_provider_sync",
+			"provider_id": provider.ProviderID,
+		},
+	}
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func validateProvider(provider ToolProvider) error {

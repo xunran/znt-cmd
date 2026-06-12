@@ -1159,17 +1159,28 @@ ON CONFLICT (tenant_id, provider_id) DO UPDATE SET
 }
 
 func (s *ToolCatalogStore) UpsertGroup(ctx context.Context, group toolcatalog.ToolGroup) error {
+	toolIDs, err := jsonValue(group.ToolIDs)
+	if err != nil {
+		return err
+	}
+	metadata, err := jsonValue(group.Metadata)
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC()
-	_, err := s.db.ExecContext(ctx, `
-INSERT INTO tool_groups (tenant_id, group_id, name, description, status, version, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO tool_groups (tenant_id, group_id, provider_id, name, description, status, version, tool_ids_json, metadata_json, created_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 ON CONFLICT (tenant_id, group_id) DO UPDATE SET
+  provider_id=EXCLUDED.provider_id,
   name=EXCLUDED.name,
   description=EXCLUDED.description,
   status=EXCLUDED.status,
   version=EXCLUDED.version,
+  tool_ids_json=EXCLUDED.tool_ids_json,
+  metadata_json=EXCLUDED.metadata_json,
   updated_at=EXCLUDED.updated_at`,
-		group.TenantID, group.GroupID, group.Name, nullString(group.Description), group.Status, group.Version, now, now,
+		group.TenantID, group.GroupID, nullString(group.ProviderID), group.Name, nullString(group.Description), group.Status, group.Version, toolIDs, metadata, now, now,
 	)
 	return err
 }
@@ -1282,20 +1293,37 @@ ORDER BY tenant_id, provider_id`)
 }
 
 func (s *ToolCatalogStore) ListGroups(ctx context.Context) ([]toolcatalog.ToolGroup, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT tenant_id, group_id, name, description, status, version
+	legacy := false
+	selectSQL := `
+SELECT tenant_id, group_id, provider_id, name, description, status, version, tool_ids_json, metadata_json
 FROM tool_groups
-ORDER BY tenant_id, group_id`)
+ORDER BY tenant_id, group_id`
+	rows, err := s.db.QueryContext(ctx, selectSQL)
 	if err != nil {
 		if isSchemaNotReadyError(err) {
 			return nil, nil
 		}
-		return nil, err
+		rows, err = s.db.QueryContext(ctx, `
+SELECT tenant_id, group_id, name, description, status, version
+FROM tool_groups
+ORDER BY tenant_id, group_id`)
+		if err != nil {
+			if isSchemaNotReadyError(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		legacy = true
 	}
 	defer rows.Close()
 	out := make([]toolcatalog.ToolGroup, 0)
 	for rows.Next() {
-		group, err := scanToolGroup(rows)
+		var group toolcatalog.ToolGroup
+		if legacy {
+			group, err = scanLegacyToolGroup(rows)
+		} else {
+			group, err = scanToolGroup(rows)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1354,12 +1382,37 @@ func scanToolGroup(row interface {
 	Scan(dest ...any) error
 }) (toolcatalog.ToolGroup, error) {
 	var group toolcatalog.ToolGroup
+	var tenantID, providerID, description sql.NullString
+	var toolIDsJSON, metadataJSON []byte
+	if err := row.Scan(&tenantID, &group.GroupID, &providerID, &group.Name, &description, &group.Status, &group.Version, &toolIDsJSON, &metadataJSON); err != nil {
+		return toolcatalog.ToolGroup{}, mapSQLError(err)
+	}
+	group.TenantID = contracts.TenantID(tenantID.String)
+	group.ProviderID = providerID.String
+	group.Description = description.String
+	if err := scanJSON(toolIDsJSON, &group.ToolIDs); err != nil {
+		return toolcatalog.ToolGroup{}, err
+	}
+	if err := scanJSON(metadataJSON, &group.Metadata); err != nil {
+		return toolcatalog.ToolGroup{}, err
+	}
+	if group.Metadata == nil {
+		group.Metadata = map[string]any{}
+	}
+	return group, nil
+}
+
+func scanLegacyToolGroup(row interface {
+	Scan(dest ...any) error
+}) (toolcatalog.ToolGroup, error) {
+	var group toolcatalog.ToolGroup
 	var tenantID, description sql.NullString
 	if err := row.Scan(&tenantID, &group.GroupID, &group.Name, &description, &group.Status, &group.Version); err != nil {
 		return toolcatalog.ToolGroup{}, mapSQLError(err)
 	}
 	group.TenantID = contracts.TenantID(tenantID.String)
 	group.Description = description.String
+	group.Metadata = map[string]any{}
 	return group, nil
 }
 
@@ -4470,6 +4523,68 @@ ON CONFLICT (tenant_id, agent_id, version) DO UPDATE SET
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *PackageStore) Load(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion) (contracts.AgentDefinition, error) {
+	if version == "" {
+		resolved, err := s.resolveRunnableAgentVersion(ctx, tenantID, agentID)
+		if err != nil {
+			return contracts.AgentDefinition{}, err
+		}
+		version = resolved
+	}
+	var data []byte
+	err := s.db.QueryRowContext(ctx, `
+SELECT definition_json FROM agent_definitions
+WHERE tenant_id=$1 AND agent_id=$2 AND version=$3`, tenantID, agentID, version).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) && tenantID != "" {
+		err = s.db.QueryRowContext(ctx, `
+SELECT definition_json FROM agent_definitions
+WHERE tenant_id='' AND agent_id=$1 AND version=$2`, agentID, version).Scan(&data)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return contracts.AgentDefinition{}, contracts.NewRuntimeError(contracts.CodeAgentVersionNotFound, fmt.Sprintf("agent %s version %s not found", agentID, version), nil)
+	}
+	if err != nil {
+		return contracts.AgentDefinition{}, err
+	}
+	var definition contracts.AgentDefinition
+	if err := scanJSON(data, &definition); err != nil {
+		return contracts.AgentDefinition{}, err
+	}
+	return definition, nil
+}
+
+func (s *PackageStore) resolveRunnableAgentVersion(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID) (contracts.AgentVersion, error) {
+	var active sql.NullString
+	var fallback sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+SELECT active_version, default_version FROM agent_assets
+WHERE tenant_id=$1 AND agent_id=$2 AND deleted_at IS NULL`, tenantID, agentID).Scan(&active, &fallback)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	for _, candidate := range []sql.NullString{active, fallback} {
+		if candidate.Valid && strings.TrimSpace(candidate.String) != "" {
+			return contracts.AgentVersion(candidate.String), nil
+		}
+	}
+	var version string
+	err = s.db.QueryRowContext(ctx, `
+SELECT version FROM agent_package_versions
+WHERE tenant_id=$1 AND agent_id=$2 AND status IN ($3, $4)
+ORDER BY
+  CASE WHEN status=$3 THEN 0 ELSE 1 END,
+  COALESCE(published_at, created_at) DESC,
+  created_at DESC
+LIMIT 1`, tenantID, agentID, contracts.ReleaseStable, contracts.ReleaseCanary).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", contracts.NewRuntimeError(contracts.CodeAgentVersionNotFound, fmt.Sprintf("agent %s version %s not found", agentID, ""), nil)
+	}
+	if err != nil {
+		return "", err
+	}
+	return contracts.AgentVersion(version), nil
 }
 
 func (s *PackageStore) UpdateReleaseStatus(ctx context.Context, packageVersionID contracts.PackageVersionID, status contracts.ReleaseStatus) error {

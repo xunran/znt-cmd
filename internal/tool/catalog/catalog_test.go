@@ -282,6 +282,16 @@ func TestProviderSyncInstallsToolHostCatalog(t *testing.T) {
 	if len(manifests) != 1 || manifests[0].ToolID != "crm.search" {
 		t.Fatalf("unexpected manifests %#v", manifests)
 	}
+	if manifests[0].GroupID != "crm-default" {
+		t.Fatalf("expected synced tool in default provider group, got %q", manifests[0].GroupID)
+	}
+	group, ok := service.GetGroup("tenant_1", "crm-default")
+	if !ok {
+		t.Fatal("expected provider sync to create default tool group")
+	}
+	if group.ProviderID != "crm" || len(group.ToolIDs) != 1 || group.ToolIDs[0] != "crm.search" {
+		t.Fatalf("unexpected default group %#v", group)
+	}
 	if manifests[0].ExecutionProfile == "local" || manifests[0].ExecutionProfile == "" {
 		t.Fatalf("expected remote execution profile, got %q", manifests[0].ExecutionProfile)
 	}

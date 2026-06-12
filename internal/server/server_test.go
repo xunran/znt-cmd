@@ -2846,6 +2846,59 @@ func TestResourceAPIsExposeToolCatalogAndRuntimeHooks(t *testing.T) {
 	}
 }
 
+func TestToolProviderSyncCreatesDefaultToolGroupResource(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	toolHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/tools/catalog":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tools": []map[string]any{{
+				"tool_id":      "lookup",
+				"operation":    "lookup",
+				"name":         "CRM lookup",
+				"description":  "Lookup CRM records.",
+				"input_schema": map[string]any{"type": "object"},
+				"risk_level":   "low",
+				"visibility":   "protected",
+				"version":      "v1",
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer toolHost.Close()
+
+	provider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
+		"provider_id":   "crm-provider",
+		"provider_type": "static_tool_host",
+		"name":          "CRM Provider",
+		"endpoint":      toolHost.URL,
+	})
+	if provider.Code != http.StatusCreated {
+		t.Fatalf("tool provider create failed %d body %s", provider.Code, provider.Body.String())
+	}
+	health := doJSON(handler, "POST", "/v1/tool-providers/crm-provider/health", nil)
+	if health.Code != http.StatusOK {
+		t.Fatalf("tool provider health failed %d body %s", health.Code, health.Body.String())
+	}
+	syncResp := doJSON(handler, "POST", "/v1/tool-providers/crm-provider/sync", nil)
+	if syncResp.Code != http.StatusOK ||
+		!bytes.Contains(syncResp.Body.Bytes(), []byte(`"group_id":"crm-provider-default"`)) ||
+		!bytes.Contains(syncResp.Body.Bytes(), []byte(`"provider_id":"crm-provider"`)) ||
+		!bytes.Contains(syncResp.Body.Bytes(), []byte(`"tool_ids":["crm-provider.lookup"]`)) {
+		t.Fatalf("tool provider sync did not expose default group %d body %s", syncResp.Code, syncResp.Body.String())
+	}
+	groups := doJSON(handler, "GET", "/v1/tool-groups", nil)
+	if groups.Code != http.StatusOK || !bytes.Contains(groups.Body.Bytes(), []byte(`"group_id":"crm-provider-default"`)) {
+		t.Fatalf("tool groups list missing provider default group %d body %s", groups.Code, groups.Body.String())
+	}
+}
+
 func TestToolProviderGovernanceMatrixIncludesCatalogAndTraceEvidence(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {

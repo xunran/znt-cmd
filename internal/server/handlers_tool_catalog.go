@@ -51,12 +51,12 @@ func handleToolProviderResource(w http.ResponseWriter, r *http.Request, appCore 
 			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported provider sync method", nil), http.StatusMethodNotAllowed)
 			return
 		}
-		tools, err := appCore.ToolCatalog.SyncProviderCatalog(r.Context(), caller.TenantID, providerID, caller.CallerID)
+		result, err := appCore.ToolCatalog.SyncProviderCatalogWithGroup(r.Context(), caller.TenantID, providerID, caller.CallerID)
 		if err != nil {
 			writeRuntimeError(w, err)
 			return
 		}
-		writeJSON(w, map[string]any{"tools": tools}, http.StatusOK)
+		writeJSON(w, map[string]any{"tools": result.Tools, "group": result.Group, "provider": result.Provider}, http.StatusOK)
 		return
 	}
 	if suffix == "health" {
@@ -303,10 +303,13 @@ func parseToolGroupPayload(payload map[string]any) toolcatalog.ToolGroup {
 	}
 	return toolcatalog.ToolGroup{
 		GroupID:     payloadString(source, "group_id"),
+		ProviderID:  payloadString(source, "provider_id"),
 		Name:        payloadString(source, "name"),
 		Description: payloadString(source, "description"),
 		Status:      payloadString(source, "status"),
 		Version:     payloadString(source, "version"),
+		ToolIDs:     stringSlice(source["tool_ids"]),
+		Metadata:    parseMetadata(source["metadata"]),
 	}
 }
 
@@ -340,11 +343,11 @@ func toolProviderSync(r *http.Request, appCore *core.Core, envelope contracts.Ag
 	if providerID == "" {
 		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "tool.provider.sync requires provider_id", nil)
 	}
-	tools, err := appCore.ToolCatalog.SyncProviderCatalog(r.Context(), caller.TenantID, providerID, caller.CallerID)
+	result, err := appCore.ToolCatalog.SyncProviderCatalogWithGroup(r.Context(), caller.TenantID, providerID, caller.CallerID)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"tools": tools}, nil
+	return map[string]any{"tools": result.Tools, "group": result.Group, "provider": result.Provider}, nil
 }
 
 func toolGroupUpsert(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
@@ -354,17 +357,23 @@ func toolGroupUpsert(r *http.Request, appCore *core.Core, envelope contracts.Age
 	group := toolcatalog.ToolGroup{
 		TenantID:    caller.TenantID,
 		GroupID:     payloadString(envelope.Payload, "group_id"),
+		ProviderID:  payloadString(envelope.Payload, "provider_id"),
 		Name:        payloadString(envelope.Payload, "name"),
 		Description: payloadString(envelope.Payload, "description"),
 		Status:      payloadString(envelope.Payload, "status"),
 		Version:     payloadString(envelope.Payload, "version"),
+		ToolIDs:     stringSlice(envelope.Payload["tool_ids"]),
+		Metadata:    parseMetadata(envelope.Payload["metadata"]),
 	}
 	if raw, ok := envelope.Payload["group"].(map[string]any); ok {
 		group.GroupID = payloadString(raw, "group_id")
+		group.ProviderID = payloadString(raw, "provider_id")
 		group.Name = payloadString(raw, "name")
 		group.Description = payloadString(raw, "description")
 		group.Status = payloadString(raw, "status")
 		group.Version = payloadString(raw, "version")
+		group.ToolIDs = stringSlice(raw["tool_ids"])
+		group.Metadata = parseMetadata(raw["metadata"])
 	}
 	group.TenantID = caller.TenantID
 	return appCore.ToolCatalog.UpsertGroup(r.Context(), group, caller.CallerID)

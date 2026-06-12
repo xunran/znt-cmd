@@ -125,7 +125,8 @@ func New(cfg config.Config) (*Core, error) {
 		}
 		pg = postgres.NewRepositories(db)
 	}
-	agents := loader.NewStaticLoader(loader.TestAgentDefinition())
+	staticAgents := loader.NewStaticLoader(loader.TestAgentDefinition())
+	var agents loader.Loader = staticAgents
 	var runs runrepo.Repository = runrepo.NewInMemoryRepository()
 	taskStore := taskrepo.NewInMemoryStore()
 	var taskRepo taskrepo.TaskRepository = taskStore
@@ -183,6 +184,7 @@ func New(cfg config.Config) (*Core, error) {
 		tonePolicyStore = pg.TonePolicies
 		toolCatalogStore = pg.ToolCatalog
 		runtimeHookStore = pg.RuntimeHooks
+		agents = loader.ChainLoader{Loaders: []loader.Loader{pg.Packages, staticAgents}}
 		policies = pg.Policies
 		policyEngine = policyengine.New(policies, auditLogger)
 		policyManager = policyengine.NewPolicyManager(policies, auditLogger)
@@ -412,7 +414,7 @@ func New(cfg config.Config) (*Core, error) {
 		DB:                  dbFromRepositories(pg),
 		ReadinessDB:         readinessDB,
 		Agents:              agentLoader,
-		AgentRegistry:       agents,
+		AgentRegistry:       staticAgents,
 		Runs:                runs,
 		TaskRepo:            taskRepo,
 		TaskEvents:          taskEvents,
