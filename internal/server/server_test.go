@@ -1149,8 +1149,8 @@ func TestPackageReleaseCommandsAndEvalRun(t *testing.T) {
 		"context": map[string]any{"tenant_id": "tenant_1"},
 	}
 	runPublished := doJSON(handler, "POST", "/v1/commands", runPublishedBody)
-	if runPublished.Code != http.StatusBadRequest {
-		t.Fatalf("expected published version to be blocked before canary, got %d body %s", runPublished.Code, runPublished.Body.String())
+	if runPublished.Code != http.StatusOK {
+		t.Fatalf("expected published version to run, got %d body %s", runPublished.Code, runPublished.Body.String())
 	}
 	canaryBody := map[string]any{
 		"command": "agent.package.canary",
@@ -1643,7 +1643,7 @@ func TestPromptPreviewCommandSupportsDraftID(t *testing.T) {
 	}
 }
 
-func TestPackageCanaryRoutesDefaultTrafficAndRecordsHit(t *testing.T) {
+func TestPackageCanaryDoesNotOverrideDefaultRunVersion(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
@@ -1682,6 +1682,9 @@ func TestPackageCanaryRoutesDefaultTrafficAndRecordsHit(t *testing.T) {
 	if canary.Code != http.StatusOK || !bytes.Contains(canary.Body.Bytes(), []byte(`"canary_percent":100`)) {
 		t.Fatalf("canary failed %d body %s", canary.Code, canary.Body.String())
 	}
+	if err := appCore.AgentRegistry.SetDefaultForTenant("tenant_1", "test-agent", "v1"); err != nil {
+		t.Fatal(err)
+	}
 	resp := doJSON(handler, "POST", "/v1/commands", map[string]any{
 		"trace_id": "trace_canary_route_1",
 		"command":  "agent.run",
@@ -1702,28 +1705,26 @@ func TestPackageCanaryRoutesDefaultTrafficAndRecordsHit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.AgentVersion != "v9" {
-		t.Fatalf("expected canary route to v9, got %#v", run)
+	if run.AgentVersion != "v1" {
+		t.Fatalf("expected default run to stay on v1, got %#v", run)
 	}
 	events, err := appCore.Trace.ListByTrace(context.Background(), "trace_canary_route_1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
 	foundRoute := false
 	for _, event := range events {
 		if event.Type == contracts.TraceCanaryRouted {
-			found = true
+			t.Fatalf("expected canary not to override default routing, got event %#v", event)
 		}
-		if event.Type == contracts.TraceAgentRouteResolved && stringFromMap(event.Payload, "route_reason") == "canary_percent" {
+		if event.Type == contracts.TraceAgentRouteResolved &&
+			stringFromMap(event.Payload, "route_reason") == "registry_default" &&
+			stringFromMap(event.Payload, "resolved_version") == "v1" {
 			foundRoute = true
 		}
 	}
-	if !found {
-		t.Fatalf("expected canary routed trace event, got %#v", events)
-	}
 	if !foundRoute {
-		t.Fatalf("expected canary route resolved trace event, got %#v", events)
+		t.Fatalf("expected registry default route resolved trace event, got %#v", events)
 	}
 }
 
@@ -2234,6 +2235,36 @@ func TestReleaseForAgentVersionSelectsLatestRelease(t *testing.T) {
 
 func agentPackageSourceForTest() agentpackage.AgentPackageSource {
 	return agentpackage.AgentPackageSource{Prompt: "new prompt"}
+}
+
+func publishPublishedAgentVersionForTest(t *testing.T, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, prompt string) contracts.AgentPackageVersion {
+	t.Helper()
+	source := agentpackage.AgentPackageSource{
+		Prompt: prompt,
+		ToolBindings: contracts.AgentToolsConfig{
+			AllowedToolIDs: []string{"echo"},
+			ExposedToolIDs: []string{"echo"},
+		},
+	}
+	draft, err := appCore.Packages.CreateDraft(context.Background(), tenantID, agentID, version, source, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.Packages.ValidateDraftForTenant(context.Background(), tenantID, draft.DraftID, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	release, err := appCore.Packages.PublishDraftForTenant(context.Background(), tenantID, draft.DraftID, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := agentpackage.Compile(draft.AgentID, draft.Version, draft.Source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled.TenantID = tenantID
+	compiled.PackageVersionID = release.PackageVersionID
+	appCore.AgentRegistry.Put(compiled)
+	return release
 }
 
 func publishStableAgentVersionForTest(t *testing.T, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, prompt string) contracts.AgentPackageVersion {
@@ -4655,7 +4686,7 @@ func TestAgentDraftLifecycleResourceAPIs(t *testing.T) {
 	}
 }
 
-func TestAgentVersionResourceAPIActivatesStableVersion(t *testing.T) {
+func TestAgentVersionResourceAPIActivatesPublishedVersion(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
@@ -4679,18 +4710,8 @@ func TestAgentVersionResourceAPIActivatesStableVersion(t *testing.T) {
 	compiled.TenantID = "tenant_1"
 	compiled.PackageVersionID = release.PackageVersionID
 	appCore.AgentRegistry.Put(compiled)
-	rejected := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v2/activate", nil)
-	if rejected.Code != http.StatusBadRequest || !bytes.Contains(rejected.Body.Bytes(), []byte("must be stable")) {
-		t.Fatalf("expected non-stable activation to fail, got %d body %s", rejected.Code, rejected.Body.String())
-	}
-	if _, err := appCore.Packages.MarkEvalResult(context.Background(), release.PackageVersionID, true, "eval", "passed"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := appCore.Packages.MarkStable(context.Background(), release.PackageVersionID, "tester"); err != nil {
-		t.Fatal(err)
-	}
 	list := doJSON(handler, "GET", "/v1/agents/test-agent/versions", nil)
-	if list.Code != http.StatusOK || !bytes.Contains(list.Body.Bytes(), []byte(`"v2"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"stable"`)) {
+	if list.Code != http.StatusOK || !bytes.Contains(list.Body.Bytes(), []byte(`"v2"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"published"`)) || !bytes.Contains(list.Body.Bytes(), []byte(`"runnable":true`)) {
 		t.Fatalf("agent version list failed %d body %s", list.Code, list.Body.String())
 	}
 	activate := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v2/activate", nil)
@@ -4706,14 +4727,14 @@ func TestAgentVersionResourceAPIActivatesStableVersion(t *testing.T) {
 	}
 }
 
-func TestAgentVersionResourceAPIRestoresStableVersion(t *testing.T) {
+func TestAgentVersionResourceAPIRestoresPublishedVersion(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	handler := NewHandlerWithCore(appCore, logging.New("error"))
-	publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v2", "restore v2 prompt")
-	publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v3", "restore v3 prompt")
+	publishPublishedAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v2", "restore v2 prompt")
+	publishPublishedAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v3", "restore v3 prompt")
 
 	activate := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v3/activate", nil)
 	if activate.Code != http.StatusOK || !bytes.Contains(activate.Body.Bytes(), []byte(`"active_version":"v3"`)) {
@@ -4774,19 +4795,10 @@ func TestAgentVersionResourceAPIRestoresStableVersion(t *testing.T) {
 		t.Fatalf("expected restore trace event for generated trace_id, got %#v", generatedEvents)
 	}
 
-	draft, err := appCore.Packages.CreateDraft(context.Background(), "tenant_1", "test-agent", "v4", agentpackage.AgentPackageSource{Prompt: "not stable"}, "tester")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := appCore.Packages.ValidateDraftForTenant(context.Background(), "tenant_1", draft.DraftID, "tester"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := appCore.Packages.PublishDraftForTenant(context.Background(), "tenant_1", draft.DraftID, "tester"); err != nil {
-		t.Fatal(err)
-	}
-	rejected := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v4/restore", nil)
-	if rejected.Code != http.StatusBadRequest || !bytes.Contains(rejected.Body.Bytes(), []byte("must be stable")) {
-		t.Fatalf("expected non-stable restore to fail, got %d body %s", rejected.Code, rejected.Body.String())
+	publishPublishedAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v4", "published restore prompt")
+	restorePublished := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v4/restore", nil)
+	if restorePublished.Code != http.StatusOK || !bytes.Contains(restorePublished.Body.Bytes(), []byte(`"active_version":"v4"`)) {
+		t.Fatalf("expected published restore to succeed, got %d body %s", restorePublished.Code, restorePublished.Body.String())
 	}
 	missing := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v_missing/restore", nil)
 	if missing.Code != http.StatusNotFound {
@@ -4876,7 +4888,7 @@ func TestAgentPackageRollbackActiveWithoutFallbackFails(t *testing.T) {
 	}
 }
 
-func TestPromptProfileVersionResourceAPIsActivateStableVersion(t *testing.T) {
+func TestPromptProfileVersionResourceAPIsActivatePublishedVersion(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
@@ -4910,16 +4922,6 @@ func TestPromptProfileVersionResourceAPIsActivateStableVersion(t *testing.T) {
 	versions := doJSON(handler, "GET", "/v1/agents/test-agent/prompt-profile/versions", nil)
 	if versions.Code != http.StatusOK || !bytes.Contains(versions.Body.Bytes(), []byte("prompt profile resource prompt")) || !bytes.Contains(versions.Body.Bytes(), []byte(`"v4"`)) {
 		t.Fatalf("prompt profile versions failed %d body %s", versions.Code, versions.Body.String())
-	}
-	rejected := doJSON(handler, "POST", "/v1/agents/test-agent/prompt-profile/activate", map[string]any{"agent_version": "v4"})
-	if rejected.Code != http.StatusBadRequest || !bytes.Contains(rejected.Body.Bytes(), []byte("must be stable")) {
-		t.Fatalf("expected non-stable prompt profile activation to fail, got %d body %s", rejected.Code, rejected.Body.String())
-	}
-	if _, err := appCore.Packages.MarkEvalResult(context.Background(), release.PackageVersionID, true, "eval", "passed"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := appCore.Packages.MarkStable(context.Background(), release.PackageVersionID, "tester"); err != nil {
-		t.Fatal(err)
 	}
 	activate := doJSON(handler, "POST", "/v1/agents/test-agent/prompt-profile/activate", map[string]any{"version": "v4"})
 	if activate.Code != http.StatusOK || !bytes.Contains(activate.Body.Bytes(), []byte(`"active_version":"v4"`)) || !bytes.Contains(activate.Body.Bytes(), []byte("prompt profile resource developer")) {
@@ -5183,7 +5185,7 @@ func TestExportedToolStandaloneCRUDOverlaysRuntimeLoaderAndManifest(t *testing.T
 	}
 }
 
-func TestToolBindingVersionResourceAPIsActivateStableVersion(t *testing.T) {
+func TestToolBindingVersionResourceAPIsActivatePublishedVersion(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
@@ -5219,16 +5221,6 @@ func TestToolBindingVersionResourceAPIsActivateStableVersion(t *testing.T) {
 	if versions.Code != http.StatusOK || !bytes.Contains(versions.Body.Bytes(), []byte("crm.group")) || !bytes.Contains(versions.Body.Bytes(), []byte(`"v5"`)) {
 		t.Fatalf("tool binding versions failed %d body %s", versions.Code, versions.Body.String())
 	}
-	rejected := doJSON(handler, "POST", "/v1/agents/test-agent/tool-bindings/activate", map[string]any{"agent_version": "v5"})
-	if rejected.Code != http.StatusBadRequest || !bytes.Contains(rejected.Body.Bytes(), []byte("must be stable")) {
-		t.Fatalf("expected non-stable tool binding activation to fail, got %d body %s", rejected.Code, rejected.Body.String())
-	}
-	if _, err := appCore.Packages.MarkEvalResult(context.Background(), release.PackageVersionID, true, "eval", "passed"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := appCore.Packages.MarkStable(context.Background(), release.PackageVersionID, "tester"); err != nil {
-		t.Fatal(err)
-	}
 	activate := doJSON(handler, "POST", "/v1/agents/test-agent/tool-bindings/activate", map[string]any{"version": "v5"})
 	if activate.Code != http.StatusOK || !bytes.Contains(activate.Body.Bytes(), []byte(`"active_version":"v5"`)) || !bytes.Contains(activate.Body.Bytes(), []byte("danger.group")) {
 		t.Fatalf("tool binding activate failed %d body %s", activate.Code, activate.Body.String())
@@ -5242,7 +5234,7 @@ func TestToolBindingVersionResourceAPIsActivateStableVersion(t *testing.T) {
 	}
 }
 
-func TestSkillVersionResourceAPIsActivateStableVersion(t *testing.T) {
+func TestSkillVersionResourceAPIsActivatePublishedVersion(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
@@ -5284,16 +5276,6 @@ func TestSkillVersionResourceAPIsActivateStableVersion(t *testing.T) {
 	versions := doJSON(handler, "GET", "/v1/agents/test-agent/skills/skill.lifecycle/versions", nil)
 	if versions.Code != http.StatusOK || !bytes.Contains(versions.Body.Bytes(), []byte("Lifecycle Skill")) || !bytes.Contains(versions.Body.Bytes(), []byte(`"v6"`)) {
 		t.Fatalf("skill versions failed %d body %s", versions.Code, versions.Body.String())
-	}
-	rejected := doJSON(handler, "POST", "/v1/agents/test-agent/skills/skill.lifecycle/activate", map[string]any{"agent_version": "v6"})
-	if rejected.Code != http.StatusBadRequest || !bytes.Contains(rejected.Body.Bytes(), []byte("must be stable")) {
-		t.Fatalf("expected non-stable skill activation to fail, got %d body %s", rejected.Code, rejected.Body.String())
-	}
-	if _, err := appCore.Packages.MarkEvalResult(context.Background(), release.PackageVersionID, true, "eval", "passed"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := appCore.Packages.MarkStable(context.Background(), release.PackageVersionID, "tester"); err != nil {
-		t.Fatal(err)
 	}
 	if err := appCore.AgentRegistry.SetDefaultForTenant("tenant_1", "test-agent", "v1"); err != nil {
 		t.Fatal(err)
@@ -5406,7 +5388,7 @@ func TestKnowledgeAndCrossGroupResourceAPIs(t *testing.T) {
 	}
 }
 
-func TestCollaboratorVersionResourceAPIsActivateStableVersion(t *testing.T) {
+func TestCollaboratorVersionResourceAPIsActivatePublishedVersion(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
@@ -5449,16 +5431,6 @@ func TestCollaboratorVersionResourceAPIsActivateStableVersion(t *testing.T) {
 	if versions.Code != http.StatusOK || !bytes.Contains(versions.Body.Bytes(), []byte("Review Agent")) || !bytes.Contains(versions.Body.Bytes(), []byte(`"v7"`)) {
 		t.Fatalf("collaborator versions failed %d body %s", versions.Code, versions.Body.String())
 	}
-	rejected := doJSON(handler, "POST", "/v1/agents/test-agent/collaborators/review-agent/activate", map[string]any{"agent_version": "v7"})
-	if rejected.Code != http.StatusBadRequest || !bytes.Contains(rejected.Body.Bytes(), []byte("must be stable")) {
-		t.Fatalf("expected non-stable collaborator activation to fail, got %d body %s", rejected.Code, rejected.Body.String())
-	}
-	if _, err := appCore.Packages.MarkEvalResult(context.Background(), release.PackageVersionID, true, "eval", "passed"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := appCore.Packages.MarkStable(context.Background(), release.PackageVersionID, "tester"); err != nil {
-		t.Fatal(err)
-	}
 	if err := appCore.AgentRegistry.SetDefaultForTenant("tenant_1", "test-agent", "v1"); err != nil {
 		t.Fatal(err)
 	}
@@ -5482,7 +5454,7 @@ func TestCollaboratorVersionResourceAPIsActivateStableVersion(t *testing.T) {
 	}
 }
 
-func TestExportedToolVersionResourceAPIsActivateStableVersion(t *testing.T) {
+func TestExportedToolVersionResourceAPIsActivatePublishedVersion(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
@@ -5523,16 +5495,6 @@ func TestExportedToolVersionResourceAPIsActivateStableVersion(t *testing.T) {
 	versions := doJSON(handler, "GET", "/v1/agents/test-agent/exported-tools/customer.lookup/versions", nil)
 	if versions.Code != http.StatusOK || !bytes.Contains(versions.Body.Bytes(), []byte("Customer lookup")) || !bytes.Contains(versions.Body.Bytes(), []byte(`"v8"`)) {
 		t.Fatalf("exported tool versions failed %d body %s", versions.Code, versions.Body.String())
-	}
-	rejected := doJSON(handler, "POST", "/v1/agents/test-agent/exported-tools/customer.lookup/activate", map[string]any{"agent_version": "v8"})
-	if rejected.Code != http.StatusBadRequest || !bytes.Contains(rejected.Body.Bytes(), []byte("must be stable")) {
-		t.Fatalf("expected non-stable exported tool activation to fail, got %d body %s", rejected.Code, rejected.Body.String())
-	}
-	if _, err := appCore.Packages.MarkEvalResult(context.Background(), release.PackageVersionID, true, "eval", "passed"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := appCore.Packages.MarkStable(context.Background(), release.PackageVersionID, "tester"); err != nil {
-		t.Fatal(err)
 	}
 	if err := appCore.AgentRegistry.SetDefaultForTenant("tenant_1", "test-agent", "v1"); err != nil {
 		t.Fatal(err)

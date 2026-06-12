@@ -297,7 +297,7 @@ func handleAgentVersions(w http.ResponseWriter, r *http.Request, appCore *core.C
 				}
 			}
 		}
-		asset, release, runtimeErr, status, err := activateStableAgentVersion(r.Context(), appCore, caller, agentID, contracts.AgentVersion(parts[0]))
+		asset, release, runtimeErr, status, err := activateRunnableAgentVersion(r.Context(), appCore, caller, agentID, contracts.AgentVersion(parts[0]))
 		if err != nil {
 			writeRuntimeError(w, err)
 			return
@@ -323,8 +323,8 @@ func handleAgentVersions(w http.ResponseWriter, r *http.Request, appCore *core.C
 	}
 }
 
-func activateStableAgentVersion(ctx context.Context, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, version contracts.AgentVersion) (agentpackage.AgentAsset, contracts.AgentPackageVersion, *contracts.RuntimeError, int, error) {
-	release, runtimeErr, status := stableAgentVersionRelease(appCore, caller, agentID, version)
+func activateRunnableAgentVersion(ctx context.Context, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, version contracts.AgentVersion) (agentpackage.AgentAsset, contracts.AgentPackageVersion, *contracts.RuntimeError, int, error) {
+	release, runtimeErr, status := runnableAgentVersionRelease(appCore, caller, agentID, version)
 	if runtimeErr != nil {
 		return agentpackage.AgentAsset{}, contracts.AgentPackageVersion{}, runtimeErr, status, nil
 	}
@@ -392,13 +392,13 @@ func hashTraceSensitiveValue(value string) string {
 	return hashRouteAssignmentKey(strings.TrimSpace(value))
 }
 
-func stableAgentVersionRelease(appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, version contracts.AgentVersion) (contracts.AgentPackageVersion, *contracts.RuntimeError, int) {
+func runnableAgentVersionRelease(appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, version contracts.AgentVersion) (contracts.AgentPackageVersion, *contracts.RuntimeError, int) {
 	release, ok := releaseForAgentVersion(appCore.Packages.ListReleases(), caller.TenantID, agentID, version)
 	if !ok {
 		return contracts.AgentPackageVersion{}, contracts.NewRuntimeError(contracts.CodeAgentVersionNotFound, "agent package version not found", map[string]any{"agent_id": agentID, "version": version}), http.StatusNotFound
 	}
-	if release.Status != contracts.ReleaseStable {
-		return contracts.AgentPackageVersion{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent package version must be stable before activation", map[string]any{
+	if !isRunnableAgentReleaseStatus(release.Status) {
+		return contracts.AgentPackageVersion{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent package version must be published before activation", map[string]any{
 			"agent_id":           agentID,
 			"agent_version":      release.Version,
 			"package_version_id": release.PackageVersionID,
@@ -443,9 +443,8 @@ func sortedAgentReleases(releases []contracts.AgentPackageVersion, tenantID cont
 
 func agentVersionResourceView(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, release contracts.AgentPackageVersion) map[string]any {
 	view := map[string]any{
-		"version": release,
-		"runnable": release.Status == contracts.ReleaseCanary ||
-			release.Status == contracts.ReleaseStable,
+		"version":  release,
+		"runnable": isRunnableAgentReleaseStatus(release.Status),
 	}
 	if asset, ok, err := appCore.Packages.GetAgentAsset(ctx, tenantID, agentID); err == nil && ok {
 		view["active"] = asset.ActiveVersion == release.Version

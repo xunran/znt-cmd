@@ -48,27 +48,25 @@ func resolveRunnableAgentTarget(r *http.Request, appCore *core.Core, tenantID co
 	}
 	route.ResolvedVersion = defaultVersion
 	releases := appCore.Packages.ListReleases()
-	stable, stableOK := latestReleaseWithStatus(releases, tenantID, target.AgentID, contracts.ReleaseStable)
-	canary, canaryOK := latestReleaseWithStatus(releases, tenantID, target.AgentID, contracts.ReleaseCanary)
-	if route.ResolvedVersion == "" && stableOK {
-		route.ResolvedVersion = stable.Version
-		route.Release = stable
-		route.ReleaseStatus = stable.Status
-		route.RouteReason = "latest_stable_fallback"
-	} else if route.ResolvedVersion != "" {
+	if route.ResolvedVersion != "" {
 		route.Release, _ = releaseForAgentVersion(releases, tenantID, target.AgentID, route.ResolvedVersion)
 		route.ReleaseStatus = route.Release.Status
 	}
-	route.AssignmentKey = canaryAssignmentKey(caller, runtimeContext, traceID)
-	if canaryOK && shouldRouteCanary(canary, caller, runtimeContext, traceID, target.AgentID) {
-		route.ResolvedVersion = canary.Version
-		route.Release = canary
-		route.Canary = true
-		route.ReleaseStatus = canary.Status
-		route.RouteReason = "canary_percent"
+	if route.ResolvedVersion == "" {
+		if release, ok := latestRunnableRelease(releases, tenantID, target.AgentID); ok {
+			route.ResolvedVersion = release.Version
+			route.Release = release
+			route.ReleaseStatus = release.Status
+			route.RouteReason = "latest_runnable_fallback"
+		}
 	}
 	if route.ResolvedVersion == "" {
 		return route, nil
+	}
+	route.AssignmentKey = canaryAssignmentKey(caller, runtimeContext, traceID)
+	if route.Release.Status == contracts.ReleaseCanary {
+		route.Canary = true
+		route.ReleaseStatus = route.Release.Status
 	}
 	if err := ensureRunnableAgentVersion(appCore, tenantID, contracts.AgentTarget{AgentID: target.AgentID, Version: route.ResolvedVersion}); err != nil {
 		return route, err
@@ -108,15 +106,43 @@ func ensureRunnableAgentVersion(appCore *core.Core, tenantID contracts.TenantID,
 	if !ok {
 		return nil
 	}
-	if release.Status == contracts.ReleaseCanary || release.Status == contracts.ReleaseStable {
+	if isRunnableAgentReleaseStatus(release.Status) {
 		return nil
 	}
-	return contracts.NewRuntimeError(contracts.CodeAgentVersionNotFound, "agent package version is not runnable before canary or stable", map[string]any{
+	return contracts.NewRuntimeError(contracts.CodeAgentVersionNotFound, "agent package version is not runnable before publish", map[string]any{
 		"agent_id":           target.AgentID,
 		"agent_version":      version,
 		"package_version_id": release.PackageVersionID,
 		"release_status":     release.Status,
 	})
+}
+
+func isRunnableAgentReleaseStatus(status contracts.ReleaseStatus) bool {
+	switch status {
+	case contracts.ReleasePublished, contracts.ReleaseEvaluated, contracts.ReleaseCanary, contracts.ReleaseStable:
+		return true
+	default:
+		return false
+	}
+}
+
+func latestRunnableRelease(releases []contracts.AgentPackageVersion, tenantID contracts.TenantID, agentID contracts.AgentID) (contracts.AgentPackageVersion, bool) {
+	var selected contracts.AgentPackageVersion
+	var selectedAt time.Time
+	for _, release := range releases {
+		if release.TenantID != tenantID || release.AgentID != agentID || !isRunnableAgentReleaseStatus(release.Status) {
+			continue
+		}
+		at := release.CreatedAt
+		if release.PublishedAt != nil {
+			at = *release.PublishedAt
+		}
+		if selected.PackageVersionID == "" || at.After(selectedAt) {
+			selected = release
+			selectedAt = at
+		}
+	}
+	return selected, selected.PackageVersionID != ""
 }
 
 func latestReleaseWithStatus(releases []contracts.AgentPackageVersion, tenantID contracts.TenantID, agentID contracts.AgentID, status contracts.ReleaseStatus) (contracts.AgentPackageVersion, bool) {

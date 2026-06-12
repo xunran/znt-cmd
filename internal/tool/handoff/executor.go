@@ -272,7 +272,7 @@ func (e Executor) validateTargetRunnable(ctx context.Context, tenantID contracts
 	if !ok {
 		return nil
 	}
-	if release.Status == contracts.ReleaseCanary || release.Status == contracts.ReleaseStable {
+	if isRunnableAgentReleaseStatus(release.Status) {
 		return nil
 	}
 	return contracts.NewRuntimeError(contracts.CodeHandoffDenied, "target agent package version is not runnable for handoff", map[string]any{
@@ -281,6 +281,15 @@ func (e Executor) validateTargetRunnable(ctx context.Context, tenantID contracts
 		"package_version_id": release.PackageVersionID,
 		"release_status":     release.Status,
 	})
+}
+
+func isRunnableAgentReleaseStatus(status contracts.ReleaseStatus) bool {
+	switch status {
+	case contracts.ReleasePublished, contracts.ReleaseEvaluated, contracts.ReleaseCanary, contracts.ReleaseStable:
+		return true
+	default:
+		return false
+	}
 }
 
 func retrievedCollaborator(value any, target contracts.AgentID) bool {

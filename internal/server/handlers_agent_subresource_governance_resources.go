@@ -214,11 +214,11 @@ func markStandaloneGovernanceResource(row *agentSubresourceGovernanceResource) {
 	if row.Status == "" {
 		row.Status = contracts.ReleaseStable
 	}
-	row.Runnable = row.Status == contracts.ReleaseCanary || row.Status == contracts.ReleaseStable
+	row.Runnable = isRunnableAgentReleaseStatus(row.Status)
 }
 
 func annotateAgentSubresourceGovernanceResource(row *agentSubresourceGovernanceResource, activeVersion contracts.AgentVersion, defaultVersion contracts.AgentVersion) {
-	row.Runnable = row.Status == contracts.ReleaseCanary || row.Status == contracts.ReleaseStable
+	row.Runnable = isRunnableAgentReleaseStatus(row.Status)
 	if row.SourceKind != "release" {
 		return
 	}

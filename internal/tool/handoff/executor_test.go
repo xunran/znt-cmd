@@ -153,7 +153,7 @@ func TestExecuteRejectsNonRunnableTargetRelease(t *testing.T) {
 				TenantID:         "tenant_1",
 				AgentID:          "target-agent",
 				Version:          "v1",
-				Status:           contracts.ReleasePublished,
+				Status:           contracts.ReleaseDraft,
 			}, true, nil
 		},
 	}

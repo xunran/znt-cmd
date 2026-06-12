@@ -158,7 +158,7 @@ func capabilityGates(path string) []Gate {
 		{"runtime.policy_version_pinning", []string{"TestCoordinatorPinsPolicyVersionAcrossRunSteps", "policy_version_id"}},
 		{"agent_package.skill_draft", []string{"TestDraftPatchAgentsMDAndSkillLifecycle", "patch_agents_md"}},
 		{"management.approval_flow", []string{"TestPolicyStableRequiresConcreteApprovalRequest", "approval_required"}},
-		{"release.canary_hits", []string{"TestPackageCanaryRoutesDefaultTrafficAndRecordsHit", "canary.routed"}},
+		{"release.canary_hits", []string{"TestPackageCanaryDoesNotOverrideDefaultRunVersion", "canary.routed"}},
 		{"eval.result_evidence", []string{"TestRunnerToolAssertions", "eval.case.completed", "TestRunnerRecordsFailedCaseTrace", "eval.case.failed", "TestEvalSuiteRunRecordsSummaryTrace", "eval.summary.created"}},
 		{"execution.credential_data_boundary", []string{"TestLocalDomainRejectsCredentialScopeAndDataBoundary", "credential_scope"}},
 		{"model.streaming", []string{"TestStubModelClientStream", "model.delta", "decision.completed"}},

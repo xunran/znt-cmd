@@ -182,7 +182,7 @@ func handleAgentExportedTools(w http.ResponseWriter, r *http.Request, appCore *c
 			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "exported tool activate requires agent_version", nil), http.StatusBadRequest)
 			return
 		}
-		release, runtimeErr, status := stableAgentVersionRelease(appCore, caller, agentID, version)
+		release, runtimeErr, status := runnableAgentVersionRelease(appCore, caller, agentID, version)
 		if runtimeErr != nil {
 			writeError(w, runtimeErr, status)
 			return
@@ -196,7 +196,7 @@ func handleAgentExportedTools(w http.ResponseWriter, r *http.Request, appCore *c
 			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "exported tool not found in target agent version", map[string]any{"tool_id": parts[0], "agent_version": release.Version}), http.StatusNotFound)
 			return
 		}
-		asset, release, runtimeErr, status, err := activateStableAgentVersion(r.Context(), appCore, caller, agentID, release.Version)
+		asset, release, runtimeErr, status, err := activateRunnableAgentVersion(r.Context(), appCore, caller, agentID, release.Version)
 		if err != nil {
 			writeRuntimeError(w, err)
 			return

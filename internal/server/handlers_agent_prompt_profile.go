@@ -71,7 +71,7 @@ func handleAgentPromptProfile(w http.ResponseWriter, r *http.Request, appCore *c
 			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "prompt-profile activate requires agent_version", nil), http.StatusBadRequest)
 			return
 		}
-		asset, release, runtimeErr, status, err := activateStableAgentVersion(r.Context(), appCore, caller, agentID, version)
+		asset, release, runtimeErr, status, err := activateRunnableAgentVersion(r.Context(), appCore, caller, agentID, version)
 		if err != nil {
 			writeRuntimeError(w, err)
 			return
