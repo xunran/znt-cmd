@@ -250,7 +250,7 @@ POST /v1/agents/{agent_id}/versions/{version}/restore
    - to_version
    - package_version_id
    - actor
-   - reason
+   - reason_present / reason_hash（trace 不写 reason 原文；reason 原文只进入 audit）
 
 不建议允许 restore 到 `rolled_back`。如果确实要恢复 rolled_back 版本，应先显式重新标记 stable，这属于高风险治理动作。
 
@@ -340,6 +340,17 @@ POST /v1/agents/{agent_id}/versions/{version}/restore
 ```json
 {
   "reason": "restore previous stable after online regression"
+}
+```
+
+响应：
+```json
+{
+  "agent": {},
+  "version": {},
+  "meta": {
+    "trace_id": "trace_xxx"
+  }
 }
 ```
 
@@ -509,7 +520,7 @@ GET /v1/traces/{trace_id}/diagnostics
 内容：
 
 - 支持 `/versions/{version}/restore`。
-- 复用 `activateStableAgentVersion`，额外写 audit/trace reason。
+- 复用 `activateStableAgentVersion`，额外写 audit reason；trace 只写 reason_present / reason_hash。
 
 测试：
 
@@ -654,3 +665,22 @@ AgentPackage release + AgentAsset active/default + Runtime route trace
 ```
 
 这样既能满足简单 A/B 和历史回退，又不会把当前项目拖进过度设计。
+
+## 12. 当前实施状态
+
+已开始落地并补齐首批服务端行为：
+
+- T1：默认路由优先读取 `agent_assets.active_version/default_version`，`latest stable` 只作为 fallback。
+- T2：canary 分桶改为稳定 assignment key，优先 `user_id`、`caller_id`，再 fallback 到 conversation/external task/request/trace。
+- T3：stable/canary 都写 `agent.route.resolved`；canary 命中继续保留 `canary.routed`。
+- T4：新增 `POST /v1/agents/{agent_id}/versions/{version}/restore`，仅允许 stable，写 `agent.version.restored` audit/trace，并返回 `meta.trace_id`。
+- T5：Postgres 启动时恢复 `agent_definitions` 到 `AgentRegistry`，并按 `agent_assets` 恢复 tenant default。
+- T6：rollback 当前 active/default 版本时同步 `agent_assets` 和 registry；rollback 非 active 版本不切默认；无其他 stable fallback 时返回明确错误。
+
+已补服务端测试覆盖：
+
+- 激活旧 stable 后默认 run 不被 latest stable 抢回。
+- 同一 assignment key 不因 trace_id 变化跳组。
+- restore stable 旧版本成功，restore non-stable/missing 失败。
+- rollback active 版本回到其他 stable，rollback non-active 不改变默认版本。
+- 启动恢复 persisted definitions 和 active/default。

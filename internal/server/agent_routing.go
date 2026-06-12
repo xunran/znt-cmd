@@ -23,7 +23,7 @@ type agentRoute struct {
 	AssignmentKey    string
 }
 
-func resolveRunnableAgentTarget(r *http.Request, appCore *core.Core, tenantID contracts.TenantID, target contracts.AgentTarget, traceID contracts.TraceID, caller auth.CallerIdentity) (agentRoute, error) {
+func resolveRunnableAgentTarget(r *http.Request, appCore *core.Core, tenantID contracts.TenantID, target contracts.AgentTarget, runtimeContext contracts.RuntimeContext, traceID contracts.TraceID, caller auth.CallerIdentity) (agentRoute, error) {
 	route := agentRoute{RequestedVersion: target.Version, ResolvedVersion: target.Version}
 	if target.Version != "" {
 		if err := ensureRunnableAgentVersion(appCore, tenantID, target); err != nil {
@@ -35,24 +35,32 @@ func resolveRunnableAgentTarget(r *http.Request, appCore *core.Core, tenantID co
 		return route, nil
 	}
 	defaultVersion := contracts.AgentVersion("")
-	if appCore.AgentRegistry != nil {
+	if version, ok, err := activeAgentVersion(r.Context(), appCore, tenantID, target.AgentID); err != nil {
+		return route, err
+	} else if ok {
+		defaultVersion = version
+		route.RouteReason = "active_default"
+	} else if appCore.AgentRegistry != nil {
 		defaultVersion = appCore.AgentRegistry.DefaultVersionForTenant(tenantID, target.AgentID)
+		if defaultVersion != "" {
+			route.RouteReason = "registry_default"
+		}
 	}
 	route.ResolvedVersion = defaultVersion
-	if route.ResolvedVersion != "" {
-		route.RouteReason = "registry_default"
-	}
 	releases := appCore.Packages.ListReleases()
 	stable, stableOK := latestReleaseWithStatus(releases, tenantID, target.AgentID, contracts.ReleaseStable)
 	canary, canaryOK := latestReleaseWithStatus(releases, tenantID, target.AgentID, contracts.ReleaseCanary)
-	if stableOK {
+	if route.ResolvedVersion == "" && stableOK {
 		route.ResolvedVersion = stable.Version
 		route.Release = stable
 		route.ReleaseStatus = stable.Status
 		route.RouteReason = "latest_stable_fallback"
+	} else if route.ResolvedVersion != "" {
+		route.Release, _ = releaseForAgentVersion(releases, tenantID, target.AgentID, route.ResolvedVersion)
+		route.ReleaseStatus = route.Release.Status
 	}
-	route.AssignmentKey = canaryAssignmentKey(caller, traceID)
-	if canaryOK && shouldRouteCanary(canary, caller, traceID, target.AgentID) {
+	route.AssignmentKey = canaryAssignmentKey(caller, runtimeContext, traceID)
+	if canaryOK && shouldRouteCanary(canary, caller, runtimeContext, traceID, target.AgentID) {
 		route.ResolvedVersion = canary.Version
 		route.Release = canary
 		route.Canary = true
@@ -66,6 +74,23 @@ func resolveRunnableAgentTarget(r *http.Request, appCore *core.Core, tenantID co
 		return route, err
 	}
 	return route, nil
+}
+
+func activeAgentVersion(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID) (contracts.AgentVersion, bool, error) {
+	if appCore.Packages == nil {
+		return "", false, nil
+	}
+	asset, ok, err := appCore.Packages.GetAgentAsset(ctx, tenantID, agentID)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	if asset.ActiveVersion != "" {
+		return asset.ActiveVersion, true, nil
+	}
+	if asset.DefaultVersion != "" {
+		return asset.DefaultVersion, true, nil
+	}
+	return "", false, nil
 }
 
 func ensureRunnableAgentVersion(appCore *core.Core, tenantID contracts.TenantID, target contracts.AgentTarget) error {
@@ -113,7 +138,7 @@ func latestReleaseWithStatus(releases []contracts.AgentPackageVersion, tenantID 
 	return selected, selected.PackageVersionID != ""
 }
 
-func shouldRouteCanary(release contracts.AgentPackageVersion, caller auth.CallerIdentity, traceID contracts.TraceID, agentID contracts.AgentID) bool {
+func shouldRouteCanary(release contracts.AgentPackageVersion, caller auth.CallerIdentity, runtimeContext contracts.RuntimeContext, traceID contracts.TraceID, agentID contracts.AgentID) bool {
 	percent := release.CanaryPercent
 	if percent <= 0 {
 		return false
@@ -121,13 +146,33 @@ func shouldRouteCanary(release contracts.AgentPackageVersion, caller auth.Caller
 	if percent >= 100 {
 		return true
 	}
-	key := string(release.TenantID) + "|" + string(agentID) + "|" + string(release.PackageVersionID) + "|" + caller.CallerID + "|" + string(traceID)
+	key := string(release.TenantID) + "|" + string(agentID) + "|" + string(release.PackageVersionID) + "|" + canaryAssignmentKey(caller, runtimeContext, traceID)
 	return stablePercent(key) < percent
 }
 
-func canaryAssignmentKey(caller auth.CallerIdentity, traceID contracts.TraceID) string {
+func canaryAssignmentKey(caller auth.CallerIdentity, runtimeContext contracts.RuntimeContext, traceID contracts.TraceID) string {
+	if runtimeContext.UserID != "" {
+		return string(runtimeContext.UserID)
+	}
 	if caller.CallerID != "" {
 		return caller.CallerID
+	}
+	if runtimeContext.Conversation != nil {
+		if runtimeContext.Conversation.ThreadID != "" {
+			return runtimeContext.Conversation.ThreadID
+		}
+		if runtimeContext.Conversation.ConversationID != "" {
+			return runtimeContext.Conversation.ConversationID
+		}
+		if runtimeContext.Conversation.CurrentMessage != nil && runtimeContext.Conversation.CurrentMessage.ThreadID != "" {
+			return runtimeContext.Conversation.CurrentMessage.ThreadID
+		}
+	}
+	if runtimeContext.ExternalTask != nil {
+		return runtimeContext.ExternalTask.Provider + ":" + string(runtimeContext.ExternalTask.ExternalTaskID)
+	}
+	if runtimeContext.RequestID != "" {
+		return runtimeContext.RequestID
 	}
 	return string(traceID)
 }

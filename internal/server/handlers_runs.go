@@ -170,7 +170,12 @@ func handleRunResource(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported run method", nil), http.StatusMethodNotAllowed)
 			return
 		}
-		writeJSON(w, map[string]any{"run": run, "meta": runResponseMeta(caller, run.TraceID)}, http.StatusOK)
+		detail, err := buildRunDetail(r, appCore, caller, run)
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		writeJSON(w, detail, http.StatusOK)
 	case "timeline":
 		if r.Method != http.MethodGet {
 			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported run timeline method", nil), http.StatusMethodNotAllowed)
@@ -227,12 +232,38 @@ func handleRunList(w http.ResponseWriter, r *http.Request, appCore *core.Core, c
 	if offset == 0 {
 		offset = queryInt(query.Get("cursor"), 0, 0)
 	}
+	from, err := queryTime(query.Get("from"))
+	if err != nil {
+		writeInvalidRunTimeFilter(w, "from")
+		return
+	}
+	if from.IsZero() {
+		from, err = queryTime(query.Get("started_from"))
+		if err != nil {
+			writeInvalidRunTimeFilter(w, "started_from")
+			return
+		}
+	}
+	to, err := queryTime(query.Get("to"))
+	if err != nil {
+		writeInvalidRunTimeFilter(w, "to")
+		return
+	}
+	if to.IsZero() {
+		to, err = queryTime(query.Get("started_to"))
+		if err != nil {
+			writeInvalidRunTimeFilter(w, "started_to")
+			return
+		}
+	}
 	filter := runrepo.ListFilter{
 		TenantID: caller.TenantID,
 		AgentID:  contracts.AgentID(strings.TrimSpace(query.Get("agent_id"))),
 		Status:   contracts.RunStatus(strings.TrimSpace(query.Get("status"))),
 		TraceID:  contracts.TraceID(strings.TrimSpace(query.Get("trace_id"))),
 		TaskID:   contracts.TaskID(strings.TrimSpace(query.Get("task_id"))),
+		From:     from,
+		To:       to,
 		Limit:    limit,
 		Offset:   offset,
 	}
@@ -251,10 +282,118 @@ func handleRunList(w http.ResponseWriter, r *http.Request, appCore *core.Core, c
 	meta["limit"] = limit
 	meta["offset"] = offset
 	meta["count"] = len(runs)
+	if !filter.From.IsZero() {
+		meta["from"] = filter.From
+	}
+	if !filter.To.IsZero() {
+		meta["to"] = filter.To
+	}
 	if len(runs) == limit {
 		meta["next_cursor"] = strconv.Itoa(offset + limit)
 	}
 	writeJSON(w, map[string]any{"runs": runs, "meta": meta}, http.StatusOK)
+}
+
+func buildRunDetail(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) (map[string]any, error) {
+	traceEvents, err := traceEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return nil, err
+	}
+	toolCalls, toolResults, err := toolsForRun(r, appCore, run)
+	if err != nil {
+		return nil, err
+	}
+	auditEvents, err := auditEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return nil, err
+	}
+	hookEvents, err := hookEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"run":                  run,
+		"trace_summary":        traceSummary(traceEvents),
+		"tool_summary":         toolSummary(toolCalls, toolResults),
+		"runtime_hook_summary": runtimeHookSummary(hookEvents),
+		"audit_summary":        auditSummary(auditEvents),
+		"meta":                 runResponseMeta(caller, run.TraceID),
+	}, nil
+}
+
+func traceSummary(events []contracts.TraceEvent) map[string]any {
+	types := map[string]int{}
+	var firstAt *time.Time
+	var lastAt *time.Time
+	for _, event := range events {
+		types[event.Type]++
+		at := event.CreatedAt
+		if firstAt == nil || at.Before(*firstAt) {
+			firstAt = &at
+		}
+		if lastAt == nil || at.After(*lastAt) {
+			lastAt = &at
+		}
+	}
+	return map[string]any{
+		"events_total": len(events),
+		"types":        types,
+		"first_at":     firstAt,
+		"last_at":      lastAt,
+	}
+}
+
+func toolSummary(calls []contracts.ToolCall, results []contracts.ToolResult) map[string]any {
+	toolIDs := make([]string, 0, len(calls))
+	failures := 0
+	statuses := map[string]int{}
+	for _, call := range calls {
+		toolIDs = append(toolIDs, call.ToolID)
+	}
+	for _, result := range results {
+		statuses[string(result.Status)]++
+		if result.Status == contracts.ToolResultFailed || result.Status == contracts.ToolResultDenied {
+			failures++
+		}
+	}
+	return map[string]any{
+		"calls_total":    len(calls),
+		"results_total":  len(results),
+		"failures_total": failures,
+		"tool_ids":       uniqueStrings(toolIDs),
+		"statuses":       statuses,
+	}
+}
+
+func runtimeHookSummary(events []runtimehook.HookEvent) map[string]any {
+	statuses := map[string]int{}
+	phases := map[string]int{}
+	hookIDs := make([]string, 0, len(events))
+	for _, event := range events {
+		statuses[event.Status]++
+		phases[string(event.Phase)]++
+		hookIDs = append(hookIDs, event.HookID)
+	}
+	return map[string]any{
+		"events_total": len(events),
+		"statuses":     statuses,
+		"phases":       phases,
+		"hook_ids":     uniqueStrings(hookIDs),
+	}
+}
+
+func auditSummary(events []contracts.AuditEvent) map[string]any {
+	actions := map[string]int{}
+	decisions := map[string]int{}
+	for _, event := range events {
+		actions[event.Action]++
+		decisions[event.Decision]++
+	}
+	return map[string]any{
+		"events_total": len(events),
+		"actions":      actions,
+		"decisions":    decisions,
+	}
 }
 
 func runForCaller(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, runID contracts.AgentRunID) (contracts.AgentRun, bool) {
@@ -870,6 +1009,27 @@ func queryInt(raw string, fallback int, max int) int {
 		return max
 	}
 	return value
+}
+
+func queryTime(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"} {
+		parsed, err := time.Parse(layout, raw)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid time filter %q", raw)
+}
+
+func writeInvalidRunTimeFilter(w http.ResponseWriter, parameter string) {
+	writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid run time filter", map[string]any{
+		"parameter":        parameter,
+		"accepted_formats": []string{time.RFC3339Nano, time.RFC3339, "2006-01-02"},
+	}), http.StatusBadRequest)
 }
 
 func promptHashes(events []contracts.TraceEvent) []string {

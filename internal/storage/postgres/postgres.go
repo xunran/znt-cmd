@@ -809,6 +809,12 @@ func (r *RunRepository) List(ctx context.Context, filter runrepo.ListFilter) ([]
 	if filter.TaskID != "" {
 		add("task_id=$%d", filter.TaskID)
 	}
+	if !filter.From.IsZero() {
+		add("started_at >= $%d", filter.From.UTC())
+	}
+	if !filter.To.IsZero() {
+		add("started_at <= $%d", filter.To.UTC())
+	}
 	query := runSelectSQL()
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -3753,7 +3759,14 @@ func (s *PackageStore) GetAgentAsset(ctx context.Context, tenantID contracts.Ten
 }
 
 func (s *PackageStore) ListAgentAssets(ctx context.Context, tenantID contracts.TenantID) ([]agentpackage.AgentAsset, error) {
-	rows, err := s.db.QueryContext(ctx, agentAssetSelectSQL()+" WHERE tenant_id=$1 ORDER BY created_at ASC", tenantID)
+	query := agentAssetSelectSQL()
+	args := []any{}
+	if tenantID != "" {
+		args = append(args, tenantID)
+		query += " WHERE tenant_id=$1"
+	}
+	query += " ORDER BY created_at ASC"
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -3765,6 +3778,30 @@ func (s *PackageStore) ListAgentAssets(ctx context.Context, tenantID contracts.T
 			return nil, err
 		}
 		out = append(out, asset)
+	}
+	return out, rows.Err()
+}
+
+func (s *PackageStore) ListAgentDefinitions(ctx context.Context) ([]contracts.AgentDefinition, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT definition_json
+FROM agent_definitions
+ORDER BY created_at ASC, tenant_id ASC, agent_id ASC, version ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]contracts.AgentDefinition, 0)
+	for rows.Next() {
+		var definitionJSON []byte
+		if err := rows.Scan(&definitionJSON); err != nil {
+			return nil, err
+		}
+		definition := contracts.AgentDefinition{}
+		if err := scanJSON(definitionJSON, &definition); err != nil {
+			return nil, err
+		}
+		out = append(out, definition)
 	}
 	return out, rows.Err()
 }

@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	agentpackage "znt/internal/agentdef/package"
 	"znt/internal/app/auth"
 	"znt/internal/app/core"
 	"znt/internal/contracts"
+	"znt/pkg/idgen"
 )
 
 func handleAgentSubresource(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, parts []string) {
@@ -268,10 +270,32 @@ func handleAgentVersions(w http.ResponseWriter, r *http.Request, appCore *core.C
 			return
 		}
 		writeJSON(w, map[string]any{"version": agentVersionResourceView(r.Context(), appCore, caller.TenantID, agentID, release)}, http.StatusOK)
-	case len(parts) == 2 && parts[1] == "activate":
+	case len(parts) == 2 && (parts[1] == "activate" || parts[1] == "restore"):
 		if r.Method != http.MethodPost {
-			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported agent version activate method", nil), http.StatusMethodNotAllowed)
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported agent version "+parts[1]+" method", nil), http.StatusMethodNotAllowed)
 			return
+		}
+		reason := ""
+		if parts[1] == "restore" && r.Body != nil && r.ContentLength != 0 {
+			if payload, ok := decodeMapPayload(w, r, "invalid agent version restore json"); ok {
+				reason = payloadString(payload, "reason")
+			} else {
+				return
+			}
+		}
+		fromVersion := contracts.AgentVersion("")
+		if parts[1] == "restore" {
+			asset, ok, err := appCore.Packages.GetAgentAsset(r.Context(), caller.TenantID, agentID)
+			if err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			if ok {
+				fromVersion = asset.ActiveVersion
+				if fromVersion == "" {
+					fromVersion = asset.DefaultVersion
+				}
+			}
 		}
 		asset, release, runtimeErr, status, err := activateStableAgentVersion(r.Context(), appCore, caller, agentID, contracts.AgentVersion(parts[0]))
 		if err != nil {
@@ -282,10 +306,18 @@ func handleAgentVersions(w http.ResponseWriter, r *http.Request, appCore *core.C
 			writeError(w, runtimeErr, status)
 			return
 		}
-		writeJSON(w, map[string]any{
+		traceID := contracts.TraceID("")
+		if parts[1] == "restore" {
+			traceID = recordAgentVersionRestored(r, appCore, caller, agentID, fromVersion, release, reason)
+		}
+		response := map[string]any{
 			"agent":   agentResourceView(appCore, caller.TenantID, asset),
 			"version": agentVersionResourceView(r.Context(), appCore, caller.TenantID, agentID, release),
-		}, http.StatusOK)
+		}
+		if traceID != "" {
+			response["meta"] = map[string]any{"trace_id": traceID}
+		}
+		writeJSON(w, response, http.StatusOK)
 	default:
 		writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unknown agent versions resource path", map[string]any{"path": strings.Join(parts, "/")}), http.StatusNotFound)
 	}
@@ -306,6 +338,58 @@ func activateStableAgentVersion(ctx context.Context, appCore *core.Core, caller 
 		}
 	}
 	return asset, release, nil, 0, nil
+}
+
+func recordAgentVersionRestored(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, fromVersion contracts.AgentVersion, release contracts.AgentPackageVersion, reason string) contracts.TraceID {
+	now := time.Now().UTC()
+	if appCore.Audit != nil {
+		_ = appCore.Audit.Log(r.Context(), contracts.AuditEvent{
+			TenantID:     caller.TenantID,
+			ActorID:      caller.CallerID,
+			ActorType:    caller.CallerType,
+			Action:       contracts.AuditAgentVersionRestored,
+			ResourceType: "agent_package_version",
+			ResourceID:   string(release.PackageVersionID),
+			Decision:     "allowed",
+			Reason:       reason,
+			CreatedAt:    now,
+		})
+	}
+	if appCore.Trace != nil {
+		traceID := contracts.TraceID(r.URL.Query().Get("trace_id"))
+		if traceID == "" {
+			traceID = contracts.TraceID(idgen.New("trace"))
+		}
+		_ = appCore.Trace.Record(r.Context(), contracts.TraceEvent{
+			TraceID:   traceID,
+			TenantID:  caller.TenantID,
+			SpanID:    contracts.SpanID(idgen.New("span")),
+			Type:      contracts.TraceAgentVersionRestored,
+			Payload:   restoreTracePayload(agentID, fromVersion, release, caller.CallerID, reason),
+			CreatedAt: now,
+		})
+		return traceID
+	}
+	return ""
+}
+
+func restoreTracePayload(agentID contracts.AgentID, fromVersion contracts.AgentVersion, release contracts.AgentPackageVersion, actorID string, reason string) map[string]any {
+	payload := map[string]any{
+		"agent_id":           agentID,
+		"from_version":       fromVersion,
+		"to_version":         release.Version,
+		"package_version_id": release.PackageVersionID,
+		"actor_id_hash":      hashTraceSensitiveValue(actorID),
+		"reason_present":     strings.TrimSpace(reason) != "",
+	}
+	if reasonHash := hashTraceSensitiveValue(reason); reasonHash != "" {
+		payload["reason_hash"] = reasonHash
+	}
+	return payload
+}
+
+func hashTraceSensitiveValue(value string) string {
+	return hashRouteAssignmentKey(strings.TrimSpace(value))
 }
 
 func stableAgentVersionRelease(appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, version contracts.AgentVersion) (contracts.AgentPackageVersion, *contracts.RuntimeError, int) {

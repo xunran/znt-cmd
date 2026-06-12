@@ -197,6 +197,9 @@ func New(cfg config.Config) (*Core, error) {
 		evalStore = eval.NewStoreWithRepository(pg.Evals)
 	}
 	packageService := agentpackage.NewServiceWithStore(auditLogger, packageStore)
+	if err := restorePersistedAgentDefinitions(context.Background(), agents, packageStore); err != nil {
+		return nil, err
+	}
 	agentLoader := loader.NewPromptProfileOverlayLoader(agents, packageService)
 	identityService := identity.NewInMemoryServiceWithStore(identityStore)
 	groupPermissions := grouppermission.NewInMemoryServiceWithStore(permissionStore, auditLogger, traceRecorder)
@@ -466,6 +469,46 @@ func New(cfg config.Config) (*Core, error) {
 		ArrayBridge:         arrayBridge,
 		Packages:            packageService,
 	}, nil
+}
+
+func restorePersistedAgentDefinitions(ctx context.Context, registry *loader.StaticLoader, store any) error {
+	if registry == nil || store == nil {
+		return nil
+	}
+	restoreStore, ok := store.(agentpackage.DefinitionRestoreStore)
+	if !ok {
+		return nil
+	}
+	definitions, err := restoreStore.ListAgentDefinitions(ctx)
+	if err != nil {
+		return err
+	}
+	for _, definition := range definitions {
+		if definition.AgentID == "" || definition.Version == "" {
+			continue
+		}
+		registry.Put(definition)
+	}
+	assets, err := restoreStore.ListAgentAssets(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, asset := range assets {
+		version := asset.ActiveVersion
+		if version == "" {
+			version = asset.DefaultVersion
+		}
+		if version == "" {
+			continue
+		}
+		if _, err := registry.Load(ctx, asset.TenantID, asset.AgentID, version); err != nil {
+			continue
+		}
+		if err := registry.SetDefaultForTenant(asset.TenantID, asset.AgentID, version); err != nil {
+			continue
+		}
+	}
+	return nil
 }
 
 func dbFromRepositories(pg *postgres.Repositories) *sql.DB {

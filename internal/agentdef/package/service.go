@@ -220,6 +220,11 @@ type Store interface {
 	ListCanaryHits(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID) ([]contracts.CanaryHit, error)
 }
 
+type DefinitionRestoreStore interface {
+	ListAgentDefinitions(ctx context.Context) ([]contracts.AgentDefinition, error)
+	ListAgentAssets(ctx context.Context, tenantID contracts.TenantID) ([]AgentAsset, error)
+}
+
 type ProjectionStore interface {
 	GetPromptProfileProjection(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, draftID string) (PromptProfileProjection, bool, error)
 	GetToolBindingProjection(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, draftID string) (ToolBindingProjection, bool, error)
@@ -335,9 +340,10 @@ func (s *Service) ListAgentAssets(ctx context.Context, tenantID contracts.Tenant
 	defer s.mu.RUnlock()
 	out := make([]AgentAsset, 0)
 	for _, asset := range s.assets {
-		if asset.TenantID == tenantID {
-			out = append(out, asset)
+		if tenantID != "" && asset.TenantID != tenantID {
+			continue
 		}
+		out = append(out, asset)
 	}
 	return out, nil
 }

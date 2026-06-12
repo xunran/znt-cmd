@@ -16,6 +16,8 @@ type ListFilter struct {
 	Status   contracts.RunStatus
 	TraceID  contracts.TraceID
 	TaskID   contracts.TaskID
+	From     time.Time
+	To       time.Time
 	Limit    int
 	Offset   int
 }
@@ -86,6 +88,12 @@ func (r *InMemoryRepository) List(_ context.Context, filter ListFilter) ([]contr
 			continue
 		}
 		if filter.TaskID != "" && run.TaskID != filter.TaskID {
+			continue
+		}
+		if !filter.From.IsZero() && run.StartedAt.Before(filter.From) {
+			continue
+		}
+		if !filter.To.IsZero() && run.StartedAt.After(filter.To) {
 			continue
 		}
 		out = append(out, run)

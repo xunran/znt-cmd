@@ -17,6 +17,7 @@ import (
 
 	"znt/internal/agentdef/loader"
 	agentpackage "znt/internal/agentdef/package"
+	"znt/internal/app/auth"
 	"znt/internal/app/config"
 	"znt/internal/app/core"
 	"znt/internal/app/logging"
@@ -72,8 +73,27 @@ func TestCommandAgentRunAndQueries(t *testing.T) {
 		t.Fatalf("unexpected runs status %d body %s", runsResp.Code, runsResp.Body.String())
 	}
 	runResp := doJSON(handler, "GET", "/v1/runs/"+string(result.RunID), nil)
-	if runResp.Code != http.StatusOK || !bytes.Contains(runResp.Body.Bytes(), []byte(`"trace_id":"trace_api_1"`)) {
+	if runResp.Code != http.StatusOK ||
+		!bytes.Contains(runResp.Body.Bytes(), []byte(`"trace_id":"trace_api_1"`)) ||
+		!bytes.Contains(runResp.Body.Bytes(), []byte(`"trace_summary"`)) ||
+		!bytes.Contains(runResp.Body.Bytes(), []byte(`"tool_summary"`)) {
 		t.Fatalf("unexpected run status %d body %s", runResp.Code, runResp.Body.String())
+	}
+	crossTenantRunResp := doJSONWithHeaders(handler, "GET", "/v1/runs/"+string(result.RunID), nil, map[string]string{"X-Tenant-ID": "tenant_other"})
+	if crossTenantRunResp.Code != http.StatusForbidden {
+		t.Fatalf("expected cross-tenant run lookup to be forbidden, got %d body %s", crossTenantRunResp.Code, crossTenantRunResp.Body.String())
+	}
+	runsFromResp := doJSON(handler, "GET", "/v1/runs?agent_id=test-agent&from=2000-01-01", nil)
+	if runsFromResp.Code != http.StatusOK || !bytes.Contains(runsFromResp.Body.Bytes(), []byte(string(result.RunID))) {
+		t.Fatalf("unexpected runs from status %d body %s", runsFromResp.Code, runsFromResp.Body.String())
+	}
+	runsToResp := doJSON(handler, "GET", "/v1/runs?agent_id=test-agent&to=2000-01-01", nil)
+	if runsToResp.Code != http.StatusOK || bytes.Contains(runsToResp.Body.Bytes(), []byte(string(result.RunID))) {
+		t.Fatalf("unexpected runs to status %d body %s", runsToResp.Code, runsToResp.Body.String())
+	}
+	invalidRunsFromResp := doJSON(handler, "GET", "/v1/runs?from=not-a-date", nil)
+	if invalidRunsFromResp.Code != http.StatusBadRequest || !bytes.Contains(invalidRunsFromResp.Body.Bytes(), []byte("invalid run time filter")) {
+		t.Fatalf("expected invalid run time filter to fail, got %d body %s", invalidRunsFromResp.Code, invalidRunsFromResp.Body.String())
 	}
 	runTimelineResp := doJSON(handler, "GET", "/v1/runs/"+string(result.RunID)+"/timeline", nil)
 	if runTimelineResp.Code != http.StatusOK || !bytes.Contains(runTimelineResp.Body.Bytes(), []byte(contracts.TracePromptBundleBuilt)) {
@@ -1204,6 +1224,7 @@ func TestPackageReleaseCommandsAndEvalRun(t *testing.T) {
 		t.Fatalf("stable failed %d body %s", stable.Code, stable.Body.String())
 	}
 	assertDefaultRunVersion(t, handler, appCore, "v2")
+	publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v1", "rollback fallback prompt")
 	rollbackWithoutReason := map[string]any{
 		"command": "agent.package.rollback",
 		"payload": map[string]any{"package_version_id": release.PackageVersionID},
@@ -1689,14 +1710,103 @@ func TestPackageCanaryRoutesDefaultTrafficAndRecordsHit(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
+	foundRoute := false
 	for _, event := range events {
 		if event.Type == contracts.TraceCanaryRouted {
 			found = true
-			break
+		}
+		if event.Type == contracts.TraceAgentRouteResolved && stringFromMap(event.Payload, "route_reason") == "canary_percent" {
+			foundRoute = true
 		}
 	}
 	if !found {
 		t.Fatalf("expected canary routed trace event, got %#v", events)
+	}
+	if !foundRoute {
+		t.Fatalf("expected canary route resolved trace event, got %#v", events)
+	}
+}
+
+func TestCanaryRoutingUsesStableAssignmentKey(t *testing.T) {
+	release := contracts.AgentPackageVersion{
+		TenantID:         "tenant_1",
+		AgentID:          "test-agent",
+		PackageVersionID: "pkg_canary",
+		CanaryPercent:    50,
+	}
+	caller := auth.CallerIdentity{TenantID: "tenant_1", CallerID: "caller_1"}
+	runtimeContext := contracts.RuntimeContext{TenantID: "tenant_1", UserID: "user_1"}
+	first := shouldRouteCanary(release, caller, runtimeContext, "trace_a", "test-agent")
+	second := shouldRouteCanary(release, caller, runtimeContext, "trace_b", "test-agent")
+	if first != second {
+		t.Fatal("same user_id must not move canary buckets when trace_id changes")
+	}
+	if key := canaryAssignmentKey(caller, runtimeContext, "trace_a"); key != "user_1" {
+		t.Fatalf("expected user_id assignment key, got %q", key)
+	}
+	if key := canaryAssignmentKey(auth.CallerIdentity{CallerID: "caller_2"}, contracts.RuntimeContext{Conversation: &contracts.RuntimeConversation{ThreadID: "thread_1"}}, "trace_a"); key != "caller_2" {
+		t.Fatalf("expected caller assignment key before conversation, got %q", key)
+	}
+	if key := canaryAssignmentKey(auth.CallerIdentity{}, contracts.RuntimeContext{Conversation: &contracts.RuntimeConversation{ThreadID: "thread_1"}}, "trace_a"); key != "thread_1" {
+		t.Fatalf("expected conversation assignment key, got %q", key)
+	}
+	if key := canaryAssignmentKey(auth.CallerIdentity{}, contracts.RuntimeContext{}, "trace_a"); key != "trace_a" {
+		t.Fatalf("expected trace fallback assignment key, got %q", key)
+	}
+}
+
+func TestAgentRunDefaultRouteRespectsActiveOldStableVersion(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v2", "active old stable prompt")
+	publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v3", "latest stable prompt")
+	if _, err := appCore.Packages.EnsureAgentAssetVersionForTenant(context.Background(), "tenant_1", "test-agent", "v2", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := appCore.AgentRegistry.SetDefaultForTenant("tenant_1", "test-agent", "v2"); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := doJSON(handler, "POST", "/v1/commands", map[string]any{
+		"trace_id": "trace_active_default_1",
+		"command":  "agent.run",
+		"target":   map[string]any{"agent_id": "test-agent"},
+		"payload":  map[string]any{"input": "hello"},
+		"context":  map[string]any{"tenant_id": "tenant_1"},
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("agent.run failed %d body %s", resp.Code, resp.Body.String())
+	}
+	var result struct {
+		RunID contracts.AgentRunID `json:"run_id"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	run, err := appCore.Runs.Get(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.AgentVersion != "v2" {
+		t.Fatalf("expected active old stable v2, got %#v", run)
+	}
+	events, err := appCore.Trace.ListByTrace(context.Background(), "trace_active_default_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == contracts.TraceAgentRouteResolved &&
+			stringFromMap(event.Payload, "route_reason") == "active_default" &&
+			stringFromMap(event.Payload, "resolved_version") == "v2" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected active_default route trace, got %#v", events)
 	}
 }
 
@@ -2124,6 +2234,43 @@ func TestReleaseForAgentVersionSelectsLatestRelease(t *testing.T) {
 
 func agentPackageSourceForTest() agentpackage.AgentPackageSource {
 	return agentpackage.AgentPackageSource{Prompt: "new prompt"}
+}
+
+func publishStableAgentVersionForTest(t *testing.T, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, prompt string) contracts.AgentPackageVersion {
+	t.Helper()
+	source := agentpackage.AgentPackageSource{
+		Prompt: prompt,
+		ToolBindings: contracts.AgentToolsConfig{
+			AllowedToolIDs: []string{"echo"},
+			ExposedToolIDs: []string{"echo"},
+		},
+	}
+	draft, err := appCore.Packages.CreateDraft(context.Background(), tenantID, agentID, version, source, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.Packages.ValidateDraftForTenant(context.Background(), tenantID, draft.DraftID, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	release, err := appCore.Packages.PublishDraftForTenant(context.Background(), tenantID, draft.DraftID, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := agentpackage.Compile(draft.AgentID, draft.Version, draft.Source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled.TenantID = tenantID
+	compiled.PackageVersionID = release.PackageVersionID
+	appCore.AgentRegistry.Put(compiled)
+	if _, err := appCore.Packages.MarkEvalResult(context.Background(), release.PackageVersionID, true, "eval", "passed"); err != nil {
+		t.Fatal(err)
+	}
+	stable, err := appCore.Packages.MarkStable(context.Background(), release.PackageVersionID, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stable
 }
 
 func assertDefaultRunVersion(t *testing.T, handler http.Handler, appCore *core.Core, want contracts.AgentVersion) {
@@ -4556,6 +4703,176 @@ func TestAgentVersionResourceAPIActivatesStableVersion(t *testing.T) {
 	prompt := doJSON(handler, "GET", "/v1/agents/test-agent/prompt-profile", nil)
 	if prompt.Code != http.StatusOK || !bytes.Contains(prompt.Body.Bytes(), []byte("version api prompt")) {
 		t.Fatalf("expected activated prompt profile by default, got %d body %s", prompt.Code, prompt.Body.String())
+	}
+}
+
+func TestAgentVersionResourceAPIRestoresStableVersion(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v2", "restore v2 prompt")
+	publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v3", "restore v3 prompt")
+
+	activate := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v3/activate", nil)
+	if activate.Code != http.StatusOK || !bytes.Contains(activate.Body.Bytes(), []byte(`"active_version":"v3"`)) {
+		t.Fatalf("agent version activate failed %d body %s", activate.Code, activate.Body.String())
+	}
+	restore := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v2/restore?trace_id=trace_restore_1", map[string]any{"reason": "regression"})
+	if restore.Code != http.StatusOK || !bytes.Contains(restore.Body.Bytes(), []byte(`"active_version":"v2"`)) {
+		t.Fatalf("agent version restore failed %d body %s", restore.Code, restore.Body.String())
+	}
+	if !bytes.Contains(restore.Body.Bytes(), []byte(`"trace_id":"trace_restore_1"`)) {
+		t.Fatalf("expected restore response to include trace_id, got body %s", restore.Body.String())
+	}
+	if got := appCore.AgentRegistry.DefaultVersionForTenant("tenant_1", "test-agent"); got != "v2" {
+		t.Fatalf("expected registry default v2 after restore, got %s", got)
+	}
+	assertDefaultRunVersion(t, handler, appCore, "v2")
+	events, err := appCore.Trace.ListByTrace(context.Background(), "trace_restore_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == contracts.TraceAgentVersionRestored &&
+			stringFromMap(event.Payload, "from_version") == "v3" &&
+			stringFromMap(event.Payload, "to_version") == "v2" {
+			if _, ok := event.Payload["reason"]; ok {
+				t.Fatalf("restore trace payload must not expose raw reason: %#v", event.Payload)
+			}
+			if event.Payload["reason_present"] != true || stringFromMap(event.Payload, "reason_hash") == "" {
+				t.Fatalf("expected restore trace reason presence and hash, got %#v", event.Payload)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected restore trace event, got %#v", events)
+	}
+	restoreGeneratedTrace := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v3/restore", map[string]any{"reason": "restore generated trace"})
+	if restoreGeneratedTrace.Code != http.StatusOK {
+		t.Fatalf("agent version restore with generated trace failed %d body %s", restoreGeneratedTrace.Code, restoreGeneratedTrace.Body.String())
+	}
+	var restoreGeneratedBody struct {
+		Meta struct {
+			TraceID contracts.TraceID `json:"trace_id"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(restoreGeneratedTrace.Body.Bytes(), &restoreGeneratedBody); err != nil {
+		t.Fatal(err)
+	}
+	if restoreGeneratedBody.Meta.TraceID == "" {
+		t.Fatalf("expected generated restore trace_id in response, got body %s", restoreGeneratedTrace.Body.String())
+	}
+	generatedEvents, err := appCore.Trace.ListByTrace(context.Background(), restoreGeneratedBody.Meta.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasTraceEvent(generatedEvents, contracts.TraceAgentVersionRestored) {
+		t.Fatalf("expected restore trace event for generated trace_id, got %#v", generatedEvents)
+	}
+
+	draft, err := appCore.Packages.CreateDraft(context.Background(), "tenant_1", "test-agent", "v4", agentpackage.AgentPackageSource{Prompt: "not stable"}, "tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.Packages.ValidateDraftForTenant(context.Background(), "tenant_1", draft.DraftID, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.Packages.PublishDraftForTenant(context.Background(), "tenant_1", draft.DraftID, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	rejected := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v4/restore", nil)
+	if rejected.Code != http.StatusBadRequest || !bytes.Contains(rejected.Body.Bytes(), []byte("must be stable")) {
+		t.Fatalf("expected non-stable restore to fail, got %d body %s", rejected.Code, rejected.Body.String())
+	}
+	missing := doJSON(handler, "POST", "/v1/agents/test-agent/versions/v_missing/restore", nil)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("expected missing restore to fail, got %d body %s", missing.Code, missing.Body.String())
+	}
+}
+
+func TestAgentPackageRollbackSyncsActiveAssetAndKeepsNonActiveDefault(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	v2 := publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v2", "rollback v2 prompt")
+	v3 := publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v3", "rollback v3 prompt")
+	if _, err := appCore.Packages.EnsureAgentAssetVersionForTenant(context.Background(), "tenant_1", "test-agent", "v3", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := appCore.AgentRegistry.SetDefaultForTenant("tenant_1", "test-agent", "v3"); err != nil {
+		t.Fatal(err)
+	}
+
+	rollbackActive := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.rollback",
+		"payload": map[string]any{"package_version_id": v3.PackageVersionID, "reason": "bad v3"},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if rollbackActive.Code != http.StatusOK {
+		t.Fatalf("active rollback failed %d body %s", rollbackActive.Code, rollbackActive.Body.String())
+	}
+	asset, ok, err := appCore.Packages.GetAgentAsset(context.Background(), "tenant_1", "test-agent")
+	if err != nil || !ok {
+		t.Fatalf("expected agent asset after rollback, ok=%v err=%v", ok, err)
+	}
+	if asset.ActiveVersion != "v2" || asset.DefaultVersion != "v2" {
+		t.Fatalf("expected rollback fallback v2 in asset, got %#v", asset)
+	}
+	if got := appCore.AgentRegistry.DefaultVersionForTenant("tenant_1", "test-agent"); got != "v2" {
+		t.Fatalf("expected registry fallback v2, got %s", got)
+	}
+
+	v4 := publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v4", "rollback v4 prompt")
+	if _, err := appCore.Packages.EnsureAgentAssetVersionForTenant(context.Background(), "tenant_1", "test-agent", "v4", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := appCore.AgentRegistry.SetDefaultForTenant("tenant_1", "test-agent", "v4"); err != nil {
+		t.Fatal(err)
+	}
+	rollbackInactive := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.rollback",
+		"payload": map[string]any{"package_version_id": v2.PackageVersionID, "reason": "old v2 cleanup"},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if rollbackInactive.Code != http.StatusOK {
+		t.Fatalf("inactive rollback failed %d body %s", rollbackInactive.Code, rollbackInactive.Body.String())
+	}
+	asset, ok, err = appCore.Packages.GetAgentAsset(context.Background(), "tenant_1", "test-agent")
+	if err != nil || !ok {
+		t.Fatalf("expected agent asset after inactive rollback, ok=%v err=%v", ok, err)
+	}
+	if asset.ActiveVersion != "v4" || asset.DefaultVersion != "v4" {
+		t.Fatalf("expected non-active rollback to keep v4 default, got %#v release %#v", asset, v4)
+	}
+	assertDefaultRunVersion(t, handler, appCore, "v4")
+}
+
+func TestAgentPackageRollbackActiveWithoutFallbackFails(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	v2 := publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v2", "single stable prompt")
+	if _, err := appCore.Packages.EnsureAgentAssetVersionForTenant(context.Background(), "tenant_1", "test-agent", "v2", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if err := appCore.AgentRegistry.SetDefaultForTenant("tenant_1", "test-agent", "v2"); err != nil {
+		t.Fatal(err)
+	}
+	resp := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.rollback",
+		"payload": map[string]any{"package_version_id": v2.PackageVersionID, "reason": "no fallback"},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if resp.Code != http.StatusBadRequest || !bytes.Contains(resp.Body.Bytes(), []byte("requires another stable version")) {
+		t.Fatalf("expected active rollback without fallback to fail, got %d body %s", resp.Code, resp.Body.String())
 	}
 }
 

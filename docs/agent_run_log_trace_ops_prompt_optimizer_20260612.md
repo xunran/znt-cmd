@@ -46,7 +46,7 @@
 ### 3.1 Run 列表
 
 ```text
-GET /v1/runs?agent_id=&status=&trace_id=&task_id=&limit=&offset=
+GET /v1/runs?agent_id=&status=&trace_id=&task_id=&from=&to=&limit=&offset=
 ```
 
 返回：

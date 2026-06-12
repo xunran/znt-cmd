@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"znt/internal/agentdef/loader"
+	agentpackage "znt/internal/agentdef/package"
 	"znt/internal/app/config"
 	contextconversation "znt/internal/context/conversation"
 	"znt/internal/contracts"
@@ -87,6 +89,75 @@ func TestCoreInitializesGroupExtensionServicesAndTools(t *testing.T) {
 	}
 }
 
+func TestRestorePersistedAgentDefinitionsRestoresTenantDefaults(t *testing.T) {
+	ctx := context.Background()
+	registry := loader.NewStaticLoader()
+	store := restorePackageStore{
+		definitions: []contracts.AgentDefinition{
+			{
+				TenantID:         "tenant_1",
+				AgentID:          "test-agent",
+				Version:          "v2",
+				PackageVersionID: "pkg_v2",
+				Name:             "Restored Agent",
+				IdentityPrompt:   "restored v2",
+			},
+		},
+		assets: []agentpackage.AgentAsset{
+			{
+				TenantID:       "tenant_1",
+				AgentID:        "test-agent",
+				Status:         agentpackage.AgentAssetActive,
+				ActiveVersion:  "v2",
+				DefaultVersion: "v2",
+			},
+		},
+	}
+	if err := restorePersistedAgentDefinitions(ctx, registry, store); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := registry.Load(ctx, "tenant_1", "test-agent", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Version != "v2" || loaded.PackageVersionID != "pkg_v2" {
+		t.Fatalf("expected restored default v2, got %#v", loaded)
+	}
+	if got := registry.DefaultVersionForTenant("tenant_1", "test-agent"); got != "v2" {
+		t.Fatalf("expected tenant default v2, got %s", got)
+	}
+}
+
+func TestRestorePersistedAgentDefinitionsSkipsMissingAssetDefault(t *testing.T) {
+	ctx := context.Background()
+	registry := loader.NewStaticLoader()
+	store := restorePackageStore{
+		definitions: []contracts.AgentDefinition{
+			{
+				TenantID:       "tenant_1",
+				AgentID:        "test-agent",
+				Version:        "v1",
+				IdentityPrompt: "restored v1",
+			},
+		},
+		assets: []agentpackage.AgentAsset{
+			{
+				TenantID:       "tenant_1",
+				AgentID:        "test-agent",
+				Status:         agentpackage.AgentAssetActive,
+				ActiveVersion:  "v_missing",
+				DefaultVersion: "v_missing",
+			},
+		},
+	}
+	if err := restorePersistedAgentDefinitions(ctx, registry, store); err != nil {
+		t.Fatal(err)
+	}
+	if got := registry.DefaultVersionForTenant("tenant_1", "test-agent"); got != "v1" {
+		t.Fatalf("expected missing asset default to be skipped, got %s", got)
+	}
+}
+
 func TestCoreCrossGroupToolRequiresExplicitPermission(t *testing.T) {
 	ctx := context.Background()
 	core, err := New(config.Config{})
@@ -163,6 +234,26 @@ func TestCoreCrossGroupToolRequiresExplicitPermission(t *testing.T) {
 	if !ok || len(results) != 1 {
 		t.Fatalf("expected one cross-group result, got %#v", out)
 	}
+}
+
+type restorePackageStore struct {
+	definitions []contracts.AgentDefinition
+	assets      []agentpackage.AgentAsset
+}
+
+func (s restorePackageStore) ListAgentDefinitions(context.Context) ([]contracts.AgentDefinition, error) {
+	return s.definitions, nil
+}
+
+func (s restorePackageStore) ListAgentAssets(_ context.Context, tenantID contracts.TenantID) ([]agentpackage.AgentAsset, error) {
+	out := make([]agentpackage.AgentAsset, 0, len(s.assets))
+	for _, asset := range s.assets {
+		if tenantID != "" && asset.TenantID != tenantID {
+			continue
+		}
+		out = append(out, asset)
+	}
+	return out, nil
 }
 
 func knowledgeCreateInput(groupID contracts.GroupID) knowledge.CreateKnowledgeBaseInput {

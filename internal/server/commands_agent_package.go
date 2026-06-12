@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -480,12 +481,43 @@ func packageReleaseAction(r *http.Request, appCore *core.Core, envelope contract
 		return release, nil
 	case "rollback":
 		reason, _ := envelope.Payload["reason"].(string)
-		release, err := appCore.Packages.Rollback(r.Context(), contracts.PackageVersionID(packageVersionID), caller.CallerID, reason)
+		wasActive, err := isActiveAgentVersion(r.Context(), appCore, caller.TenantID, current.AgentID, current.Version)
 		if err != nil {
 			return nil, err
 		}
-		fallback := fallbackStableVersion(appCore.Packages.ListReleases(), current.TenantID, release.AgentID, release.Version)
-		if err := appCore.AgentRegistry.SetDefaultForTenant(caller.TenantID, release.AgentID, fallback); err != nil {
+		fallback := contracts.AgentVersion("")
+		if wasActive {
+			var ok bool
+			fallback, ok = fallbackStableVersion(appCore.Packages.ListReleases(), current.TenantID, current.AgentID, current.Version)
+			if !ok {
+				return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "rollback active agent package requires another stable version", map[string]any{
+					"agent_id":              current.AgentID,
+					"rolled_back_version":   current.Version,
+					"package_version_id":    current.PackageVersionID,
+					"required_release_type": contracts.ReleaseStable,
+				})
+			}
+			if err := ensureAgentVersionCanBeDefault(r.Context(), appCore, caller.TenantID, current.AgentID, fallback); err != nil {
+				return nil, err
+			}
+			if _, err := appCore.Packages.EnsureAgentAssetVersionForTenant(r.Context(), caller.TenantID, current.AgentID, fallback, caller.CallerID); err != nil {
+				return nil, err
+			}
+			if appCore.AgentRegistry != nil {
+				if err := appCore.AgentRegistry.SetDefaultForTenant(caller.TenantID, current.AgentID, fallback); err != nil {
+					_, _ = appCore.Packages.EnsureAgentAssetVersionForTenant(r.Context(), caller.TenantID, current.AgentID, current.Version, caller.CallerID)
+					return nil, err
+				}
+			}
+		}
+		release, err := appCore.Packages.Rollback(r.Context(), contracts.PackageVersionID(packageVersionID), caller.CallerID, reason)
+		if err != nil {
+			if wasActive {
+				_, _ = appCore.Packages.EnsureAgentAssetVersionForTenant(r.Context(), caller.TenantID, current.AgentID, current.Version, caller.CallerID)
+				if appCore.AgentRegistry != nil {
+					_ = appCore.AgentRegistry.SetDefaultForTenant(caller.TenantID, current.AgentID, current.Version)
+				}
+			}
 			return nil, err
 		}
 		return release, nil
@@ -494,8 +526,32 @@ func packageReleaseAction(r *http.Request, appCore *core.Core, envelope contract
 	}
 }
 
-func fallbackStableVersion(releases []contracts.AgentPackageVersion, tenantID contracts.TenantID, agentID contracts.AgentID, rolledBack contracts.AgentVersion) contracts.AgentVersion {
-	fallback := contracts.AgentVersion("v1")
+func isActiveAgentVersion(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion) (bool, error) {
+	if appCore.Packages != nil {
+		asset, ok, err := appCore.Packages.GetAgentAsset(ctx, tenantID, agentID)
+		if err != nil {
+			return false, err
+		}
+		if ok && (asset.ActiveVersion == version || asset.DefaultVersion == version) {
+			return true, nil
+		}
+	}
+	if appCore.AgentRegistry != nil && appCore.AgentRegistry.DefaultVersionForTenant(tenantID, agentID) == version {
+		return true, nil
+	}
+	return false, nil
+}
+
+func ensureAgentVersionCanBeDefault(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion) error {
+	if appCore.AgentRegistry == nil {
+		return nil
+	}
+	_, err := appCore.AgentRegistry.Load(ctx, tenantID, agentID, version)
+	return err
+}
+
+func fallbackStableVersion(releases []contracts.AgentPackageVersion, tenantID contracts.TenantID, agentID contracts.AgentID, rolledBack contracts.AgentVersion) (contracts.AgentVersion, bool) {
+	fallback := contracts.AgentVersion("")
 	var fallbackAt time.Time
 	for _, release := range releases {
 		if release.TenantID != tenantID || release.AgentID != agentID || release.Version == rolledBack || release.Status != contracts.ReleaseStable {
@@ -510,5 +566,5 @@ func fallbackStableVersion(releases []contracts.AgentPackageVersion, tenantID co
 			fallbackAt = at
 		}
 	}
-	return fallback
+	return fallback, fallback != ""
 }

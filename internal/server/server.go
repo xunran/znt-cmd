@@ -34,7 +34,7 @@ func dispatchCommand(r *http.Request, appCore *core.Core, metrics *metricsState,
 				metrics.observeAgentRun(time.Since(runStarted), failed)
 			}
 		}
-		route, err := resolveRunnableAgentTarget(r, appCore, caller.TenantID, envelope.Target, envelope.TraceID, caller)
+		route, err := resolveRunnableAgentTarget(r, appCore, caller.TenantID, envelope.Target, envelope.Context, envelope.TraceID, caller)
 		if err != nil {
 			releaseAdmission()
 			observeRun(true)

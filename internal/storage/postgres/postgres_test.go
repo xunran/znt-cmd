@@ -45,6 +45,7 @@ func TestRepositoryTypesImplementRuntimeInterfaces(t *testing.T) {
 	var _ taskhandoff.Repository = (*HandoffRepository)(nil)
 	var _ processgovernance.Store = (*GovernanceProcessStore)(nil)
 	var _ agentpackage.Store = (*PackageStore)(nil)
+	var _ agentpackage.DefinitionRestoreStore = (*PackageStore)(nil)
 	var _ agentpackage.ProjectionStore = (*PackageStore)(nil)
 	var _ agentpackage.PromptProfileStore = (*PackageStore)(nil)
 	var _ agentpackage.SkillDefinitionStore = (*PackageStore)(nil)
