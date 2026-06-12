@@ -91,6 +91,9 @@ func handleToolProviderResource(w http.ResponseWriter, r *http.Request, appCore 
 			return
 		}
 		provider := parseToolProviderPayload(payload)
+		if current, ok := appCore.ToolCatalog.GetProvider(caller.TenantID, providerID); ok {
+			provider = mergeToolProviderPayload(current, payload)
+		}
 		provider.TenantID = caller.TenantID
 		provider.ProviderID = providerID
 		updated, err := appCore.ToolCatalog.UpsertProvider(r.Context(), provider, caller.CallerID)
@@ -276,10 +279,7 @@ func handleToolManifestResource(w http.ResponseWriter, r *http.Request, appCore 
 }
 
 func parseToolProviderPayload(payload map[string]any) toolcatalog.ToolProvider {
-	source := payload
-	if raw, ok := payload["provider"].(map[string]any); ok {
-		source = raw
-	}
+	source := toolProviderPayloadSource(payload)
 	return toolcatalog.ToolProvider{
 		ProviderID:      payloadString(source, "provider_id"),
 		ProviderType:    payloadString(source, "provider_type"),
@@ -290,10 +290,60 @@ func parseToolProviderPayload(payload map[string]any) toolcatalog.ToolProvider {
 		HealthStatus:    payloadString(source, "health_status"),
 		LastHealthError: payloadString(source, "last_health_error"),
 		AuthRef:         payloadString(source, "auth_ref"),
+		SecretRef:       payloadString(source, "secret_ref"),
 		TimeoutMS:       intValue(source["timeout_ms"], 0),
 		RetryMax:        intValue(source["retry_max"], 0),
 		Version:         payloadString(source, "version"),
 	}
+}
+
+func toolProviderPayloadSource(payload map[string]any) map[string]any {
+	if raw, ok := payload["provider"].(map[string]any); ok {
+		return raw
+	}
+	return payload
+}
+
+func mergeToolProviderPayload(current toolcatalog.ToolProvider, payload map[string]any) toolcatalog.ToolProvider {
+	source := toolProviderPayloadSource(payload)
+	provider := current
+	if _, ok := source["provider_type"]; ok {
+		provider.ProviderType = payloadString(source, "provider_type")
+	}
+	if _, ok := source["name"]; ok {
+		provider.Name = payloadString(source, "name")
+	}
+	if _, ok := source["description"]; ok {
+		provider.Description = payloadString(source, "description")
+	}
+	if _, ok := source["endpoint"]; ok {
+		provider.Endpoint = payloadString(source, "endpoint")
+	}
+	if _, ok := source["status"]; ok {
+		provider.Status = payloadString(source, "status")
+	}
+	if _, ok := source["health_status"]; ok {
+		provider.HealthStatus = payloadString(source, "health_status")
+	}
+	if _, ok := source["last_health_error"]; ok {
+		provider.LastHealthError = payloadString(source, "last_health_error")
+	}
+	if _, ok := source["auth_ref"]; ok {
+		provider.AuthRef = payloadString(source, "auth_ref")
+	}
+	if _, ok := source["secret_ref"]; ok {
+		provider.SecretRef = payloadString(source, "secret_ref")
+	}
+	if _, ok := source["timeout_ms"]; ok {
+		provider.TimeoutMS = intValue(source["timeout_ms"], 0)
+	}
+	if _, ok := source["retry_max"]; ok {
+		provider.RetryMax = intValue(source["retry_max"], 0)
+	}
+	if _, ok := source["version"]; ok {
+		provider.Version = payloadString(source, "version")
+	}
+	return provider
 }
 
 func parseToolGroupPayload(payload map[string]any) toolcatalog.ToolGroup {
@@ -328,6 +378,7 @@ func toolProviderUpsert(r *http.Request, appCore *core.Core, envelope contracts.
 		HealthStatus:    payloadString(envelope.Payload, "health_status"),
 		LastHealthError: payloadString(envelope.Payload, "last_health_error"),
 		AuthRef:         payloadString(envelope.Payload, "auth_ref"),
+		SecretRef:       payloadString(envelope.Payload, "secret_ref"),
 		TimeoutMS:       intValue(envelope.Payload["timeout_ms"], 0),
 		RetryMax:        intValue(envelope.Payload["retry_max"], 0),
 		Version:         payloadString(envelope.Payload, "version"),

@@ -2899,6 +2899,46 @@ func TestToolProviderSyncCreatesDefaultToolGroupResource(t *testing.T) {
 	}
 }
 
+func TestToolProviderPatchMergesSecretRefWithoutResettingProvider(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	toolHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	}))
+	defer toolHost.Close()
+
+	provider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
+		"provider_id":   "crm-provider",
+		"provider_type": "static_tool_host",
+		"name":          "CRM Provider",
+		"endpoint":      toolHost.URL,
+		"auth_ref":      "auth_ref://toolhost/crm",
+	})
+	if provider.Code != http.StatusCreated {
+		t.Fatalf("tool provider create failed %d body %s", provider.Code, provider.Body.String())
+	}
+	health := doJSON(handler, "POST", "/v1/tool-providers/crm-provider/health", nil)
+	if health.Code != http.StatusOK {
+		t.Fatalf("tool provider health failed %d body %s", health.Code, health.Body.String())
+	}
+	patch := doJSON(handler, "PATCH", "/v1/tool-providers/crm-provider", map[string]any{
+		"secret_ref": "secret://toolhost/crm/signing",
+	})
+	if patch.Code != http.StatusOK ||
+		!bytes.Contains(patch.Body.Bytes(), []byte(`"secret_ref":"secret://toolhost/crm/signing"`)) ||
+		!bytes.Contains(patch.Body.Bytes(), []byte(`"health_status":"healthy"`)) ||
+		!bytes.Contains(patch.Body.Bytes(), []byte(`"endpoint":"`+toolHost.URL+`"`)) {
+		t.Fatalf("tool provider patch should merge existing fields, got %d body %s", patch.Code, patch.Body.String())
+	}
+}
+
 func TestToolProviderGovernanceMatrixIncludesCatalogAndTraceEvidence(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {

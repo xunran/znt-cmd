@@ -1132,10 +1132,10 @@ func (s *ToolCatalogStore) UpsertProvider(ctx context.Context, provider toolcata
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO tool_providers (
   tenant_id, provider_id, provider_type, name, description, endpoint, status,
-  health_status, last_health_check_at, last_health_error, auth_ref, timeout_ms,
-  retry_max, version, created_at, updated_at
+  health_status, last_health_check_at, last_health_error, auth_ref, secret_ref,
+  timeout_ms, retry_max, version, created_at, updated_at
 )
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 ON CONFLICT (tenant_id, provider_id) DO UPDATE SET
   provider_type=EXCLUDED.provider_type,
   name=EXCLUDED.name,
@@ -1146,13 +1146,14 @@ ON CONFLICT (tenant_id, provider_id) DO UPDATE SET
   last_health_check_at=EXCLUDED.last_health_check_at,
   last_health_error=EXCLUDED.last_health_error,
   auth_ref=EXCLUDED.auth_ref,
+  secret_ref=EXCLUDED.secret_ref,
   timeout_ms=EXCLUDED.timeout_ms,
   retry_max=EXCLUDED.retry_max,
   version=EXCLUDED.version,
   updated_at=EXCLUDED.updated_at`,
 		provider.TenantID, provider.ProviderID, provider.ProviderType, provider.Name, nullString(provider.Description),
 		provider.Endpoint, provider.Status, provider.HealthStatus, nullTime(provider.LastHealthCheckAt),
-		nullString(provider.LastHealthError), nullString(provider.AuthRef), provider.TimeoutMS, provider.RetryMax,
+		nullString(provider.LastHealthError), nullString(provider.AuthRef), nullString(provider.SecretRef), provider.TimeoutMS, provider.RetryMax,
 		provider.Version, now, now,
 	)
 	return err
@@ -1271,7 +1272,7 @@ ON CONFLICT (tenant_id, tool_id) DO UPDATE SET
 func (s *ToolCatalogStore) ListProviders(ctx context.Context) ([]toolcatalog.ToolProvider, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT tenant_id, provider_id, provider_type, name, description, endpoint, status, health_status, last_health_check_at, last_health_error,
-       auth_ref, timeout_ms, retry_max, version
+       auth_ref, secret_ref, timeout_ms, retry_max, version
 FROM tool_providers
 ORDER BY tenant_id, provider_id`)
 	if err != nil {
@@ -1361,11 +1362,11 @@ func scanToolProvider(row interface {
 	Scan(dest ...any) error
 }) (toolcatalog.ToolProvider, error) {
 	var provider toolcatalog.ToolProvider
-	var tenantID, description, lastHealthError, authRef sql.NullString
+	var tenantID, description, lastHealthError, authRef, secretRef sql.NullString
 	var lastHealthCheckAt sql.NullTime
 	if err := row.Scan(
 		&tenantID, &provider.ProviderID, &provider.ProviderType, &provider.Name, &description, &provider.Endpoint,
-		&provider.Status, &provider.HealthStatus, &lastHealthCheckAt, &lastHealthError, &authRef, &provider.TimeoutMS,
+		&provider.Status, &provider.HealthStatus, &lastHealthCheckAt, &lastHealthError, &authRef, &secretRef, &provider.TimeoutMS,
 		&provider.RetryMax, &provider.Version,
 	); err != nil {
 		return toolcatalog.ToolProvider{}, mapSQLError(err)
@@ -1375,6 +1376,7 @@ func scanToolProvider(row interface {
 	provider.LastHealthCheckAt = timePtr(lastHealthCheckAt)
 	provider.LastHealthError = lastHealthError.String
 	provider.AuthRef = authRef.String
+	provider.SecretRef = secretRef.String
 	return provider, nil
 }
 

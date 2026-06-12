@@ -102,6 +102,7 @@ type ToolProvider struct {
 	LastHealthCheckAt *time.Time         `json:"last_health_check_at,omitempty"`
 	LastHealthError   string             `json:"last_health_error,omitempty"`
 	AuthRef           string             `json:"auth_ref,omitempty"`
+	SecretRef         string             `json:"secret_ref,omitempty"`
 	TimeoutMS         int                `json:"timeout_ms,omitempty"`
 	RetryMax          int                `json:"retry_max,omitempty"`
 	Version           string             `json:"version,omitempty"`
@@ -668,6 +669,7 @@ func normalizeProvider(provider ToolProvider) ToolProvider {
 	provider.ProviderType = strings.TrimSpace(provider.ProviderType)
 	provider.Endpoint = strings.TrimSpace(provider.Endpoint)
 	provider.AuthRef = strings.TrimSpace(provider.AuthRef)
+	provider.SecretRef = strings.TrimSpace(provider.SecretRef)
 	if provider.TimeoutMS < 0 {
 		provider.TimeoutMS = 0
 	}
@@ -1287,8 +1289,8 @@ func requestJSON(ctx context.Context, client *http.Client, method string, url st
 			req.Header.Set(key, value)
 		}
 		resp, err := client.Do(req)
-		cancel()
 		if err != nil {
+			cancel()
 			lastErr = err
 			if attempt < attempts {
 				continue
@@ -1296,6 +1298,7 @@ func requestJSON(ctx context.Context, client *http.Client, method string, url st
 			return err
 		}
 		retry, err := decodeJSONResponse(resp, target)
+		cancel()
 		if err == nil {
 			return nil
 		}
