@@ -491,14 +491,24 @@ try {
 
     $script:CurrentCCE2E = "CC-E2E-05"
     $providerID = "crm-mmr-host-$suffix"
+    $providerConnectionID = "$providerID-connection"
+    Invoke-MMRJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections" -Roles "optimizer" -TenantID $tenantID -Body @{
+        connection_id = $providerConnectionID
+        connection_type = "http_api"
+        name = "CRM MMR ToolHost connection"
+        base_url = $toolHostPrefix.TrimEnd("/")
+        auth_type = "api_key"
+        auth_ref = $authRef
+        timeout_ms = 3000
+        retry_max = 0
+        status = "enabled"
+        health_check_enabled = $true
+    } | Out-Null
     $provider = Invoke-MMRJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers" -Roles "optimizer" -TenantID $tenantID -Body @{
         provider_id = $providerID
         provider_type = "static_tool_host"
         name = "CRM MMR ToolHost"
-        endpoint = $toolHostPrefix.TrimEnd("/")
-        auth_ref = $authRef
-        timeout_ms = 3000
-        retry_max = 0
+        service_connection_id = $providerConnectionID
     }
     Assert-MMREqual $provider.StatusCode 201 "tool provider create status"
     Assert-MMREqual $provider.Body.provider.provider_id $providerID "provider id"
@@ -507,7 +517,7 @@ try {
     Assert-MMREqual $providerHealth.Body.provider.health_status "healthy" "provider health"
     Mark-CCE2E "CC-E2E-05" "Register real ToolHost provider" @{
         provider_id = $providerID
-        endpoint = $toolHostPrefix.TrimEnd("/")
+        connection_id = $providerConnectionID
         health_status = $providerHealth.Body.provider.health_status
     }
 
@@ -571,7 +581,7 @@ try {
         tool_id = "crm.remote.lookup"
         arguments = @{
             customer_id = "cust_123"
-            secret_ref = $authRef
+            credential_probe = $authRef
             probe = $rawSecretProbe
         }
     }
@@ -818,15 +828,24 @@ try {
 
     $script:CurrentCCE2E = "CC-E2E-16"
     $badProviderID = "crm-mmr-bad-host-$suffix"
+    $badProviderConnectionID = "$badProviderID-connection"
     $badToolID = "crm.remote.bad.lookup.$suffix"
     $deadPort = Get-FreeTcpPort
+    Invoke-MMRJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections" -Roles "optimizer" -TenantID $tenantID -Body @{
+        connection_id = $badProviderConnectionID
+        connection_type = "http_api"
+        name = "Bad CRM ToolHost connection"
+        base_url = "http://127.0.0.1:$deadPort"
+        timeout_ms = 250
+        retry_max = 0
+        status = "enabled"
+        health_check_enabled = $true
+    } | Out-Null
     Invoke-MMRJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers" -Roles "optimizer" -TenantID $tenantID -Body @{
         provider_id = $badProviderID
         provider_type = "static_tool_host"
         name = "Bad CRM ToolHost"
-        endpoint = "http://127.0.0.1:$deadPort"
-        timeout_ms = 250
-        retry_max = 0
+        service_connection_id = $badProviderConnectionID
     } | Out-Null
     Invoke-MMRJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-manifests" -Roles "optimizer" -TenantID $tenantID -Body @{
         tool_id = $badToolID
@@ -878,7 +897,7 @@ try {
 
     $script:CurrentCCE2E = "CC-E2E-18"
     $governanceJson = ConvertTo-MMRJsonText $providerGovernance.Body
-    Assert-MMRTrue ($governanceJson.Contains('"auth_ref_set":true')) "provider governance should expose auth_ref_set only"
+    Assert-MMRTrue ($governanceJson.Contains($providerConnectionID)) "provider governance should expose service_connection_id"
     Assert-MMRJsonDoesNotContain $runTrace.Body $authRef "auth_ref leaked into run trace"
     Assert-MMRJsonDoesNotContain $lookupTrace.Body $authRef "auth_ref leaked into tool trace"
     Assert-MMRJsonDoesNotContain $audit.Body $authRef "auth_ref leaked into audit"
@@ -887,7 +906,7 @@ try {
     Assert-MMRJsonDoesNotContain $lookupTrace.Body $rawSecretProbe "raw secret probe leaked into tool trace"
     Assert-MMRJsonDoesNotContain $audit.Body $rawSecretProbe "raw secret probe leaked into audit"
     Mark-CCE2E "CC-E2E-18" "Secret and auth_ref do not enter Trace/Audit plaintext" @{
-        provider_auth_ref_set = $true
+        service_connection_id = $providerConnectionID
         auth_ref_probe = "not_present"
         raw_secret_probe = "not_present"
     }

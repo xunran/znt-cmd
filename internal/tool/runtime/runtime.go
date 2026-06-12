@@ -39,7 +39,7 @@ func New(registry registry.Registry, policy toolpolicy.Evaluator, traceRecorder 
 		Registry: registry,
 		Policy:   policy,
 		Trace:    traceRecorder,
-		Domains:  domain.NewResolver(domain.LocalExecutionDomain{}, domain.HTTPDomain(), domain.AgentToolDomain(), domain.WorkerDomain(), domain.SandboxDomain(), domain.ManagedDomain()),
+		Domains:  domain.NewResolver(domain.LocalExecutionDomain{}, domain.HTTPDomain(), domain.AgentToolDomain(), domain.DatabaseDomain(), domain.WorkerDomain(), domain.SandboxDomain(), domain.ManagedDomain()),
 		Now:      func() time.Time { return time.Now().UTC() },
 	}
 }

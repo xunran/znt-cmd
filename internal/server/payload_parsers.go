@@ -141,6 +141,15 @@ func parseAgentExportsPayload(value any) contracts.AgentExports {
 	return contracts.AgentExports{Tools: tools}
 }
 
+func rejectResourceEnvelopePayload(payload map[string]any, fields ...string) error {
+	for _, field := range fields {
+		if _, ok := payload[field]; ok {
+			return contracts.NewRuntimeError(contracts.CodeToolArgumentInvalid, "resource envelope payload is not supported; submit fields at top level", map[string]any{"field": field})
+		}
+	}
+	return nil
+}
+
 func parseExportedToolPayload(payload map[string]any) contracts.AgentExportedTool {
 	return contracts.AgentExportedTool{
 		ToolID:       payloadString(payload, "tool_id"),

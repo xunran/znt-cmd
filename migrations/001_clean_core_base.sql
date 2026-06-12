@@ -467,14 +467,11 @@ CREATE TABLE tool_providers (
   provider_type TEXT NOT NULL,
   name TEXT NOT NULL,
   description TEXT,
-  endpoint TEXT NOT NULL,
+  service_connection_id TEXT,
   status TEXT NOT NULL,
   health_status TEXT NOT NULL DEFAULT 'unknown',
   last_health_check_at TIMESTAMPTZ,
   last_health_error TEXT,
-  auth_ref TEXT,
-  timeout_ms INTEGER NOT NULL DEFAULT 0,
-  retry_max INTEGER NOT NULL DEFAULT 0,
   version TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL,
@@ -483,6 +480,111 @@ CREATE TABLE tool_providers (
 
 CREATE INDEX idx_tool_providers_tenant_status ON tool_providers (tenant_id, status);
 CREATE INDEX idx_tool_providers_tenant_health ON tool_providers (tenant_id, health_status);
+CREATE INDEX idx_tool_providers_tenant_connection ON tool_providers (tenant_id, service_connection_id);
+
+CREATE TABLE tool_adapter_operations (
+  tenant_id TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  tool_id TEXT NOT NULL,
+  group_id TEXT,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL,
+  when_to_use_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  service_connection_id TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  headers_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  input_schema_json JSONB NOT NULL,
+  output_schema_json JSONB,
+  request_mapping_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  response_mapping_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  resource_id TEXT,
+  query_template TEXT,
+  parameter_schema_json JSONB,
+  max_rows INTEGER NOT NULL DEFAULT 0,
+  redact_columns_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  read_only BOOLEAN NOT NULL DEFAULT false,
+  risk_level TEXT NOT NULL,
+  visibility TEXT NOT NULL,
+  status TEXT NOT NULL,
+  version TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (tenant_id, provider_id, operation_id)
+);
+
+CREATE INDEX idx_tool_adapter_operations_tenant_provider ON tool_adapter_operations (tenant_id, provider_id, status);
+CREATE INDEX idx_tool_adapter_operations_connection ON tool_adapter_operations (tenant_id, service_connection_id);
+
+CREATE TABLE service_connections (
+  tenant_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  connection_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  environment TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  health_status TEXT NOT NULL DEFAULT 'unknown',
+  description TEXT,
+  base_url TEXT,
+  auth_type TEXT,
+  auth_ref TEXT,
+  network_scope TEXT,
+  timeout_ms INTEGER NOT NULL DEFAULT 0,
+  retry_max INTEGER NOT NULL DEFAULT 0,
+  health_check_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  last_health_at TIMESTAMPTZ,
+  last_health_error TEXT,
+  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  version TEXT NOT NULL DEFAULT 'v1',
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (tenant_id, connection_id)
+);
+
+CREATE INDEX idx_service_connections_tenant_type ON service_connections (tenant_id, connection_type);
+CREATE INDEX idx_service_connections_tenant_status ON service_connections (tenant_id, status);
+CREATE INDEX idx_service_connections_tenant_health ON service_connections (tenant_id, health_status);
+
+CREATE TABLE service_connection_resources (
+  tenant_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  schema_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  discovered_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (tenant_id, connection_id, resource_id)
+);
+
+CREATE INDEX idx_service_connection_resources_connection ON service_connection_resources (tenant_id, connection_id, resource_type);
+
+CREATE TABLE service_connection_health_events (
+  id BIGSERIAL PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  health_status TEXT NOT NULL,
+  error TEXT,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  checked_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_service_connection_health_events_connection ON service_connection_health_events (tenant_id, connection_id, checked_at DESC);
+
+CREATE TABLE service_connection_secret_rotations (
+  rotation_id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  auth_type TEXT,
+  previous_auth_ref_hash TEXT,
+  new_auth_ref_hash TEXT NOT NULL,
+  reason TEXT,
+  rotated_by TEXT,
+  rotated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_service_connection_secret_rotations_connection ON service_connection_secret_rotations (tenant_id, connection_id, rotated_at DESC);
 
 CREATE TABLE tool_groups (
   tenant_id TEXT NOT NULL,

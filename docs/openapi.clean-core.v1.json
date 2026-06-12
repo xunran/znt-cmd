@@ -1283,12 +1283,566 @@
         }
       }
     },
-    "/v1/tool-providers": {
+    "/v1/service-connections": {
       "get": {
-        "summary": "List tool providers",
+        "summary": "List service connections",
         "security": [
           {
             "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "connection_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "enabled",
+                "disabled"
+              ]
+            }
+          },
+          {
+            "name": "health_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "unknown",
+                "healthy",
+                "unhealthy"
+              ]
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "service connections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create or update a service connection",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceConnectionUpsertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "service connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/service-connections/templates": {
+      "get": {
+        "summary": "List service connection templates",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "service connection templates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionTemplatesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/service-connections/{connection_id}": {
+      "get": {
+        "summary": "Get a service connection",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "service connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "put": {
+        "summary": "Replace a service connection",
+        "description": "Full replacement. Body connection_id, when supplied, must match the path connection_id.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceConnectionUpsertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "service connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch a service connection",
+        "description": "Partial update that preserves omitted fields. Body connection_id, when supplied, must match the path connection_id. auth_type and auth_ref must be patched together.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceConnectionPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "service connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete a service connection",
+        "description": "Deletes the connection only when its impact is empty. Providers, adapter operations, and tool manifests that reference the connection must be removed or disabled first.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "deleted"
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/service-connections/{connection_id}/test": {
+      "post": {
+        "summary": "Test a service connection",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "service connection test result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionTestResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/service-connections/{connection_id}/enable": {
+      "post": {
+        "summary": "Enable a service connection",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "service connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/service-connections/{connection_id}/disable": {
+      "post": {
+        "summary": "Disable a service connection",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "service connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/service-connections/{connection_id}/resources": {
+      "get": {
+        "summary": "List service connection resources",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "service connection resources",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionResourcesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/service-connections/{connection_id}/health-events": {
+      "get": {
+        "summary": "List service connection health events",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "service connection health events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionHealthEventsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tool-providers": {
+      "get": {
+        "summary": "List tool providers",
+        "description": "Lists external tool sources by default. Set include_managed=true to include internal adapter providers such as managed_http_api_adapter and managed_database_adapter.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "static_tool_host",
+                "agent_plugin_service",
+                "mcp",
+                "http_api_adapter",
+                "database_adapter"
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "enabled",
+                "disabled"
+              ]
+            }
+          },
+          {
+            "name": "health_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "unknown",
+                "healthy",
+                "unhealthy"
+              ]
+            }
+          },
+          {
+            "name": "include_managed",
+            "in": "query",
+            "required": false,
+            "description": "Include internal managed adapter providers. Defaults to false for tool source pages.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1306,6 +1860,7 @@
       },
       "post": {
         "summary": "Create or update a tool provider",
+        "description": "Public tool provider creation is for external tool sources only. Managed adapter providers are internal; create HTTP API or database tools through AdapterOperation under managed_http_api_adapter or managed_database_adapter.",
         "security": [
           {
             "serviceToken": []
@@ -1316,7 +1871,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ToolProvider"
+                "$ref": "#/components/schemas/ToolProviderUpsertRequest"
               }
             }
           }
@@ -1406,9 +1961,12 @@
             "schema": {
               "type": "string",
               "enum": [
-                "http_direct",
                 "static_tool_host",
-                "agent_tool"
+                "agent_plugin_service",
+                "agent_tool",
+                "mcp",
+                "http_api_adapter",
+                "database_adapter"
               ]
             }
           }
@@ -1466,6 +2024,7 @@
       },
       "put": {
         "summary": "Replace a tool provider",
+        "description": "Full replacement. Body provider_id, when supplied, must match the path provider_id. Managed adapter providers are internal and cannot be replaced through this public provider endpoint.",
         "security": [
           {
             "serviceToken": []
@@ -1486,7 +2045,51 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ToolProvider"
+                "$ref": "#/components/schemas/ToolProviderUpsertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "tool provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolProviderResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch a tool provider",
+        "description": "Partial update that preserves omitted fields. Body provider_id, when supplied, must match the path provider_id. Managed adapter providers are internal and cannot be patched through this public provider endpoint.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolProviderPatchRequest"
               }
             }
           }
@@ -1705,6 +2308,7 @@
       },
       "put": {
         "summary": "Replace a tool group",
+        "description": "Full replacement. Body group_id, when supplied, must match the path group_id.",
         "security": [
           {
             "serviceToken": []
@@ -1726,6 +2330,47 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ToolGroup"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "tool group",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolGroupResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch a tool group",
+        "description": "Partial update that preserves omitted fields. Body group_id, when supplied, must match the path group_id.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolGroupPatchRequest"
               }
             }
           }
@@ -1780,6 +2425,99 @@
         "security": [
           {
             "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "executor_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "static_tool_host",
+                "agent_plugin_service",
+                "mcp",
+                "agent_tool",
+                "http_api_adapter",
+                "database_adapter"
+              ]
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "draft",
+                "enabled",
+                "disabled"
+              ]
+            }
+          },
+          {
+            "name": "risk_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ]
+            }
+          },
+          {
+            "name": "visibility",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "private",
+                "protected",
+                "exposed"
+              ]
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1862,6 +2600,7 @@
       },
       "put": {
         "summary": "Replace a tool manifest",
+        "description": "Full replacement. Body tool_id, when supplied, must match the path tool_id.",
         "security": [
           {
             "serviceToken": []
@@ -1883,6 +2622,47 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ToolManifest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "tool manifest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolManifestResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch a tool manifest",
+        "description": "Partial update that preserves omitted fields. Body tool_id, when supplied, must match the path tool_id.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "tool_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolManifestPatchRequest"
               }
             }
           }
@@ -5777,10 +6557,10 @@
               }
             }
           },
-          "404": {
+          "401": {
             "$ref": "#/components/responses/APIError"
           },
-          "401": {
+          "404": {
             "$ref": "#/components/responses/APIError"
           }
         }
@@ -5906,10 +6686,10 @@
               }
             }
           },
-          "404": {
+          "401": {
             "$ref": "#/components/responses/APIError"
           },
-          "401": {
+          "404": {
             "$ref": "#/components/responses/APIError"
           }
         }
@@ -6011,22 +6791,22 @@
           }
         },
         "responses": {
-          "201": {
-            "description": "cross-group share policy",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CrossGroupSharePolicyResponse"
-                }
-              }
-            }
-          },
           "200": {
             "description": "approval required",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ApprovalRequiredResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "cross-group share policy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrossGroupSharePolicyResponse"
                 }
               }
             }
@@ -6069,10 +6849,10 @@
               }
             }
           },
-          "404": {
+          "401": {
             "$ref": "#/components/responses/APIError"
           },
-          "401": {
+          "404": {
             "$ref": "#/components/responses/APIError"
           }
         }
@@ -6151,10 +6931,10 @@
               }
             }
           },
-          "404": {
+          "401": {
             "$ref": "#/components/responses/APIError"
           },
-          "401": {
+          "404": {
             "$ref": "#/components/responses/APIError"
           }
         }
@@ -6194,6 +6974,540 @@
           },
           "401": {
             "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/tool-providers/{provider_id}/operations": {
+      "get": {
+        "summary": "List adapter operations for a provider",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "adapter operations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdapterOperationListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create or update an adapter operation",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterOperation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "adapter operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdapterOperationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/tool-providers/{provider_id}/operations/{operation_id}": {
+      "get": {
+        "summary": "Get an adapter operation",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "adapter operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdapterOperationResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "put": {
+        "summary": "Replace an adapter operation",
+        "description": "Full replacement. Body provider_id and operation_id, when supplied, must match the path values.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterOperation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "adapter operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdapterOperationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch an adapter operation",
+        "description": "Partial update that preserves omitted fields. Body provider_id and operation_id, when supplied, must match the path values.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterOperationPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "adapter operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdapterOperationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/tool-providers/{provider_id}/operations/{operation_id}/publish": {
+      "post": {
+        "summary": "Publish an adapter operation as a ToolManifest",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "published tool manifest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolManifestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/tool-providers/{provider_id}/operations/{operation_id}/test": {
+      "post": {
+        "summary": "Test an adapter operation without publishing it",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "provider_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterOperationTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "adapter operation test result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdapterOperationTestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/service-connections/{connection_id}/impact": {
+      "get": {
+        "tags": [
+          "ServiceConnections"
+        ],
+        "operationId": "getServiceConnectionImpact",
+        "summary": "Get providers, adapter operations, and tools that depend on a service connection.",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Service connection dependency impact.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionImpactResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/service-connections/{connection_id}/usage": {
+      "get": {
+        "tags": [
+          "ServiceConnections"
+        ],
+        "operationId": "getServiceConnectionUsage",
+        "summary": "Get trace-backed usage evidence for a service connection.",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Used only when trace_id is omitted.",
+            "schema": {
+              "type": "integer",
+              "default": 500,
+              "maximum": 2000
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive RFC3339Nano lower bound for trace events.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Inclusive RFC3339Nano upper bound for trace events.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Service connection usage evidence.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionUsageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/service-connections/{connection_id}/secret-rotations": {
+      "get": {
+        "tags": [
+          "ServiceConnections"
+        ],
+        "operationId": "listServiceConnectionSecretRotations",
+        "summary": "List auth_ref rotation history for a service connection.",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Service connection secret rotation history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionSecretRotationsResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "ServiceConnections"
+        ],
+        "operationId": "rotateServiceConnectionSecret",
+        "summary": "Rotate the auth_ref used by a service connection.",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceConnectionSecretRotationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Service connection auth_ref rotated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceConnectionSecretRotationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tool-providers/{provider_id}/operations/from-resource": {
+      "post": {
+        "tags": [
+          "ToolProviders"
+        ],
+        "operationId": "createAdapterOperationFromResource",
+        "summary": "Create an adapter operation from a discovered service connection resource.",
+        "description": "Uses a service_connection_id and discovered ServiceConnectionResource to generate an AdapterOperation under a managed adapter provider. managed_http_api_adapter accepts http_operation resources; managed_database_adapter accepts discovered table/view resources.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProviderId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdapterOperationFromResourceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Adapter operation generated from a service connection resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdapterOperationResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -7583,7 +8897,8 @@
             "type": "string"
           },
           "resource_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Required for database_adapter operations. Enabled/test/publish/runtime paths require it to match a table or view discovered under the referenced service_connection_id."
           },
           "decision": {
             "type": "string"
@@ -8301,7 +9616,7 @@
         "type": "object",
         "required": [
           "provider_id",
-          "endpoint"
+          "provider_type"
         ],
         "properties": {
           "tenant_id": {
@@ -8314,16 +9629,16 @@
             "type": "string",
             "enum": [
               "static_tool_host",
-              "mcp"
+              "agent_plugin_service",
+              "mcp",
+              "http_api_adapter",
+              "database_adapter"
             ]
           },
           "name": {
             "type": "string"
           },
           "description": {
-            "type": "string"
-          },
-          "endpoint": {
             "type": "string"
           },
           "status": {
@@ -8350,16 +9665,87 @@
           "last_health_error": {
             "type": "string"
           },
-          "auth_ref": {
+          "version": {
             "type": "string"
           },
-          "timeout_ms": {
-            "type": "integer",
-            "format": "int32"
+          "service_connection_id": {
+            "type": "string",
+            "description": "Required for static_tool_host, agent_plugin_service, and mcp providers. Managed adapter providers must leave this empty and set service_connection_id on each AdapterOperation."
+          }
+        }
+      },
+      "ToolProviderUpsertRequest": {
+        "type": "object",
+        "required": [
+          "provider_id",
+          "provider_type"
+        ],
+        "properties": {
+          "provider_id": {
+            "type": "string"
           },
-          "retry_max": {
-            "type": "integer",
-            "format": "int32"
+          "provider_type": {
+            "type": "string",
+            "description": "Public provider upsert only accepts external tool sources. HTTP API and database adapters are managed internally and are selected by AdapterOperation provider_id.",
+            "enum": [
+              "static_tool_host",
+              "agent_plugin_service",
+              "mcp"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "service_connection_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolProviderPatchRequest": {
+        "type": "object",
+        "properties": {
+          "provider_id": {
+            "type": "string"
+          },
+          "provider_type": {
+            "type": "string",
+            "description": "Public provider upsert only accepts external tool sources. HTTP API and database adapters are managed internally and are selected by AdapterOperation provider_id.",
+            "enum": [
+              "static_tool_host",
+              "agent_plugin_service",
+              "mcp"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "service_connection_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ]
           },
           "version": {
             "type": "string"
@@ -8461,7 +9847,7 @@
           "static_tool_host_tools_total": {
             "type": "integer"
           },
-          "http_direct_tools_total": {
+          "agent_plugin_service_tools_total": {
             "type": "integer"
           },
           "agent_tool_tools_total": {
@@ -8496,6 +9882,15 @@
           },
           "trace_provider_latency_ms": {
             "type": "integer"
+          },
+          "mcp_tools_total": {
+            "type": "integer"
+          },
+          "http_api_adapter_tools_total": {
+            "type": "integer"
+          },
+          "database_adapter_tools_total": {
+            "type": "integer"
           }
         }
       },
@@ -8522,20 +9917,13 @@
           },
           "last_health_check_at": {
             "type": "string",
+            "description": "Read-only observation maintained by provider health checks.",
             "format": "date-time",
             "nullable": true
           },
           "last_health_error": {
-            "type": "string"
-          },
-          "auth_ref_set": {
-            "type": "boolean"
-          },
-          "timeout_ms": {
-            "type": "integer"
-          },
-          "retry_max": {
-            "type": "integer"
+            "type": "string",
+            "description": "Read-only observation maintained by provider health checks."
           },
           "version": {
             "type": "string"
@@ -8578,6 +9966,9 @@
           },
           "trace_evidence": {
             "$ref": "#/components/schemas/ToolProviderGovernanceTraceEvidence"
+          },
+          "service_connection_id": {
+            "type": "string"
           }
         }
       },
@@ -8612,10 +10003,21 @@
             "type": "string"
           },
           "risk_level": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
           },
           "visibility": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "private",
+              "protected",
+              "exposed"
+            ]
           },
           "runnable": {
             "type": "boolean"
@@ -8705,6 +10107,34 @@
           }
         }
       },
+      "ToolGroupPatchRequest": {
+        "type": "object",
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
       "ToolGroupResponse": {
         "type": "object",
         "properties": {
@@ -8732,11 +10162,14 @@
         "properties": {
           "type": {
             "type": "string",
+            "description": "static_tool_host, agent_plugin_service, mcp, and agent_tool can be submitted through public ToolManifest upsert. http_api_adapter and database_adapter are emitted by AdapterOperation publish/sync and rejected by public manual upsert.",
             "enum": [
-              "http_direct",
               "static_tool_host",
+              "agent_plugin_service",
               "agent_tool",
-              "mcp"
+              "mcp",
+              "http_api_adapter",
+              "database_adapter"
             ]
           },
           "provider_id": {
@@ -8744,18 +10177,6 @@
           },
           "operation": {
             "type": "string"
-          },
-          "url": {
-            "type": "string"
-          },
-          "method": {
-            "type": "string"
-          },
-          "headers": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
           }
         }
       },
@@ -8799,10 +10220,89 @@
             "additionalProperties": true
           },
           "risk_level": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
           },
           "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "protected",
+              "exposed"
+            ]
+          },
+          "execution_profile": {
             "type": "string"
+          },
+          "executor": {
+            "$ref": "#/components/schemas/ToolExecutorSpec"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolManifestPatchRequest": {
+        "type": "object",
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "when_to_use": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "input_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "protected",
+              "exposed"
+            ]
           },
           "execution_profile": {
             "type": "string"
@@ -12464,6 +13964,1146 @@
           },
           "approval_request": {
             "$ref": "#/components/schemas/ApprovalRequest"
+          }
+        }
+      },
+      "ServiceConnection": {
+        "type": "object",
+        "required": [
+          "connection_id",
+          "connection_type",
+          "name"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "connection_type": {
+            "type": "string",
+            "enum": [
+              "clean_core",
+              "http_api",
+              "database",
+              "webhook",
+              "oauth",
+              "cache",
+              "queue",
+              "storage"
+            ],
+            "description": "Connection asset type. cache, queue, and storage are model-only in the current CleanCore backend; connection test/resource discovery return not implemented instead of reporting fake health."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "auth_type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "api_key",
+              "bearer",
+              "basic",
+              "oauth2",
+              "signed_request",
+              "mtls"
+            ],
+            "description": "Authentication scheme for this connection. Defaults to none only when auth_ref is empty; any non-none value requires auth_ref."
+          },
+          "auth_ref": {
+            "type": "string",
+            "description": "Secret or credential reference for the selected auth_type. Required when auth_type is not none. Plain secret values must not be submitted."
+          },
+          "network_scope": {
+            "type": "string",
+            "description": "Connection-level network allowlist. Accepts a comma/whitespace separated host list or a JSON string array. When set on HTTP-style connections, it must include the base_url host. When omitted, generated HTTP tool execution profiles default to the base_url host."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "retry_max": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "health_check_enabled": {
+            "type": "boolean"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "For http_api connections, metadata.openapi_path may be an absolute path such as /openapi.json; service connection test will fetch it under base_url and refresh http_operation resources."
+          },
+          "last_health_at": {
+            "type": "string",
+            "description": "Read-only observation maintained by service connection tests.",
+            "format": "date-time",
+            "nullable": true
+          },
+          "last_health_error": {
+            "type": "string",
+            "description": "Read-only observation maintained by service connection tests."
+          },
+          "version": {
+            "type": "string"
+          },
+          "health_status": {
+            "type": "string",
+            "description": "Read-only observation maintained by service connection tests.",
+            "enum": [
+              "unknown",
+              "healthy",
+              "unhealthy"
+            ]
+          }
+        }
+      },
+      "ServiceConnectionUpsertRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "connection_type"
+        ],
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "connection_type": {
+            "type": "string",
+            "enum": [
+              "clean_core",
+              "http_api",
+              "database",
+              "webhook",
+              "oauth",
+              "cache",
+              "queue",
+              "storage"
+            ],
+            "description": "Connection asset type. cache, queue, and storage are model-only in the current CleanCore backend; connection test/resource discovery return not implemented instead of reporting fake health."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "auth_type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "api_key",
+              "bearer",
+              "basic",
+              "oauth2",
+              "signed_request",
+              "mtls"
+            ],
+            "description": "Authentication scheme for this connection. Defaults to none only when auth_ref is empty; any non-none value requires auth_ref."
+          },
+          "auth_ref": {
+            "type": "string",
+            "description": "Secret or credential reference for the selected auth_type. Required when auth_type is not none. Plain secret values must not be submitted."
+          },
+          "network_scope": {
+            "type": "string",
+            "description": "Connection-level network allowlist. Accepts a comma/whitespace separated host list or a JSON string array. When set on HTTP-style connections, it must include the base_url host. When omitted, generated HTTP tool execution profiles default to the base_url host."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "retry_max": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "health_check_enabled": {
+            "type": "boolean"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "For http_api connections, metadata.openapi_path may be an absolute path such as /openapi.json; service connection test will fetch it under base_url and refresh http_operation resources."
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ServiceConnectionPatchRequest": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "connection_type": {
+            "type": "string",
+            "enum": [
+              "clean_core",
+              "http_api",
+              "database",
+              "webhook",
+              "oauth",
+              "cache",
+              "queue",
+              "storage"
+            ],
+            "description": "Connection asset type. cache, queue, and storage are model-only in the current CleanCore backend; connection test/resource discovery return not implemented instead of reporting fake health."
+          },
+          "environment": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "base_url": {
+            "type": "string"
+          },
+          "auth_type": {
+            "type": "string",
+            "enum": [
+              "none",
+              "api_key",
+              "bearer",
+              "basic",
+              "oauth2",
+              "signed_request",
+              "mtls"
+            ],
+            "description": "Authentication scheme for this connection. Defaults to none only when auth_ref is empty; any non-none value requires auth_ref."
+          },
+          "auth_ref": {
+            "type": "string",
+            "description": "Secret or credential reference for the selected auth_type. Required when auth_type is not none. Plain secret values must not be submitted."
+          },
+          "network_scope": {
+            "type": "string",
+            "description": "Connection-level network allowlist. Accepts a comma/whitespace separated host list or a JSON string array. When set on HTTP-style connections, it must include the base_url host. When omitted, generated HTTP tool execution profiles default to the base_url host."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "retry_max": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "health_check_enabled": {
+            "type": "boolean"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "For http_api connections, metadata.openapi_path may be an absolute path such as /openapi.json; service connection test will fetch it under base_url and refresh http_operation resources."
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ServiceConnectionResource": {
+        "type": "object",
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "resource_type": {
+            "type": "string",
+            "description": "Discovered resource kind. Database discovery returns table/view; HTTP API OpenAPI discovery returns http_operation."
+          },
+          "name": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Resource discovery metadata such as source, openapi_path, method, path, operation_id, database schema, or driver."
+          },
+          "discovered_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ServiceConnectionHealthEvent": {
+        "type": "object",
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "health_status": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "healthy",
+              "unhealthy"
+            ]
+          },
+          "error": {
+            "type": "string"
+          },
+          "latency_ms": {
+            "type": "integer"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ServiceConnectionSecretRotationRequest": {
+        "type": "object",
+        "required": [
+          "auth_ref",
+          "auth_type"
+        ],
+        "properties": {
+          "auth_ref": {
+            "type": "string",
+            "description": "Secret or credential reference. Plain secret values must not be submitted."
+          },
+          "auth_type": {
+            "type": "string",
+            "enum": [
+              "api_key",
+              "bearer",
+              "basic",
+              "oauth2",
+              "signed_request",
+              "mtls"
+            ],
+            "description": "Authentication scheme being rotated. Must be explicit and must not be none."
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "ServiceConnectionSecretRotation": {
+        "type": "object",
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "rotation_id": {
+            "type": "string"
+          },
+          "auth_type": {
+            "type": "string",
+            "enum": [
+              "api_key",
+              "bearer",
+              "basic",
+              "oauth2",
+              "signed_request",
+              "mtls"
+            ],
+            "description": "Authentication scheme rotated for this credential reference."
+          },
+          "previous_auth_ref_hash": {
+            "type": "string"
+          },
+          "new_auth_ref_hash": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "rotated_by": {
+            "type": "string"
+          },
+          "rotated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ServiceConnectionResponse": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ServiceConnection"
+          }
+        }
+      },
+      "ServiceConnectionListResponse": {
+        "type": "object",
+        "properties": {
+          "connections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceConnection"
+            }
+          }
+        }
+      },
+      "ServiceConnectionResourcesResponse": {
+        "type": "object",
+        "properties": {
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceConnectionResource"
+            }
+          }
+        }
+      },
+      "ServiceConnectionHealthEventsResponse": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ServiceConnection"
+          },
+          "health_events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceConnectionHealthEvent"
+            }
+          }
+        }
+      },
+      "ServiceConnectionSecretRotationResponse": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ServiceConnection"
+          },
+          "rotation": {
+            "$ref": "#/components/schemas/ServiceConnectionSecretRotation"
+          }
+        }
+      },
+      "ServiceConnectionSecretRotationsResponse": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ServiceConnection"
+          },
+          "secret_rotations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceConnectionSecretRotation"
+            }
+          }
+        }
+      },
+      "ServiceConnectionTestResponse": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ServiceConnection"
+          },
+          "resources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceConnectionResource"
+            }
+          }
+        }
+      },
+      "ServiceConnectionTemplatesResponse": {
+        "type": "object",
+        "properties": {
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "AdapterOperation": {
+        "type": "object",
+        "required": [
+          "provider_id",
+          "operation_id",
+          "tool_id",
+          "name",
+          "description",
+          "service_connection_id",
+          "input_schema"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string",
+            "description": "Use managed_http_api_adapter for HTTP API tools and managed_database_adapter for database query tools."
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "when_to_use": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "service_connection_id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string",
+            "description": "HTTP API adapter only. Database adapter operations must not set HTTP request fields.",
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "HTTP API adapter only. Database adapter operations must not set HTTP request fields."
+          },
+          "headers": {
+            "type": "object",
+            "description": "HTTP API adapter only.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "input_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "request_mapping": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "HTTP API adapter only. Optional mapping; supported keys are body, query, path_params, and headers. body/query values are dot-path strings or nested object mappings; path_params/headers values are object maps of target names to dot-path strings."
+          },
+          "response_mapping": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "HTTP API adapter only. Optional response mapping; supported keys are body_path and output; output values are dot-path strings or nested object mappings over body/selected."
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "protected",
+              "exposed"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ]
+          },
+          "version": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string",
+            "description": "Database adapter only. Required for database_adapter operations. Enabled/test/publish/runtime paths require it to match a table or view discovered under the referenced service_connection_id."
+          },
+          "query_template": {
+            "type": "string",
+            "description": "Database adapter only. HTTP API adapter operations must not set database query fields."
+          },
+          "parameter_schema": {
+            "type": "object",
+            "description": "Database adapter only.",
+            "additionalProperties": true
+          },
+          "max_rows": {
+            "type": "integer",
+            "description": "Database adapter only."
+          },
+          "redact_columns": {
+            "type": "array",
+            "description": "Database adapter only. Result columns to redact before returning tool output. Values must match discovered columns for the selected resource_id.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "read_only": {
+            "type": "boolean",
+            "description": "Database adapter only. Must be true for database_adapter operations."
+          }
+        }
+      },
+      "AdapterOperationPatchRequest": {
+        "type": "object",
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string",
+            "description": "Use managed_http_api_adapter for HTTP API tools and managed_database_adapter for database query tools."
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "tool_id": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "when_to_use": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "service_connection_id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string",
+            "description": "HTTP API adapter only. Database adapter operations must not set HTTP request fields.",
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "HTTP API adapter only. Database adapter operations must not set HTTP request fields."
+          },
+          "headers": {
+            "type": "object",
+            "description": "HTTP API adapter only.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "input_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "request_mapping": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "HTTP API adapter only. Optional mapping; supported keys are body, query, path_params, and headers. body/query values are dot-path strings or nested object mappings; path_params/headers values are object maps of target names to dot-path strings."
+          },
+          "response_mapping": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "HTTP API adapter only. Optional response mapping; supported keys are body_path and output; output values are dot-path strings or nested object mappings over body/selected."
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "protected",
+              "exposed"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ]
+          },
+          "version": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string",
+            "description": "Database adapter only. Required for database_adapter operations. Enabled/test/publish/runtime paths require it to match a table or view discovered under the referenced service_connection_id."
+          },
+          "query_template": {
+            "type": "string",
+            "description": "Database adapter only. HTTP API adapter operations must not set database query fields."
+          },
+          "parameter_schema": {
+            "type": "object",
+            "description": "Database adapter only.",
+            "additionalProperties": true
+          },
+          "max_rows": {
+            "type": "integer",
+            "description": "Database adapter only."
+          },
+          "redact_columns": {
+            "type": "array",
+            "description": "Database adapter only. Result columns to redact before returning tool output. Values must match discovered columns for the selected resource_id.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "read_only": {
+            "type": "boolean",
+            "description": "Database adapter only. Must be true for database_adapter operations."
+          }
+        }
+      },
+      "AdapterOperationResponse": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "$ref": "#/components/schemas/AdapterOperation"
+          }
+        }
+      },
+      "AdapterOperationListResponse": {
+        "type": "object",
+        "properties": {
+          "operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdapterOperation"
+            }
+          }
+        }
+      },
+      "AdapterOperationTestRequest": {
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "AdapterOperationTestResponse": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "$ref": "#/components/schemas/AdapterOperation"
+          },
+          "output": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "ServiceConnectionImpact": {
+        "type": "object",
+        "properties": {
+          "connection_id": {
+            "type": "string"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolProvider"
+            }
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdapterOperation"
+            }
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolManifest"
+            }
+          },
+          "summary": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "ServiceConnectionImpactResponse": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ServiceConnection"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/ServiceConnectionImpact"
+          }
+        }
+      },
+      "ServiceConnectionTraceEvidence": {
+        "type": "object",
+        "properties": {
+          "events_total": {
+            "type": "integer"
+          },
+          "invocations_total": {
+            "type": "integer"
+          },
+          "completions_total": {
+            "type": "integer"
+          },
+          "failures_total": {
+            "type": "integer"
+          },
+          "health_checks_total": {
+            "type": "integer"
+          },
+          "health_failures_total": {
+            "type": "integer"
+          },
+          "latency_ms": {
+            "type": "integer"
+          },
+          "average_latency_ms": {
+            "type": "integer"
+          },
+          "last_event_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "health_statuses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ServiceConnectionUsageSummary": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ServiceConnectionTraceEvidence"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "providers_total": {
+                "type": "integer"
+              },
+              "operations_total": {
+                "type": "integer"
+              },
+              "tools_total": {
+                "type": "integer"
+              },
+              "trace_events_total": {
+                "type": "integer"
+              }
+            }
+          }
+        ]
+      },
+      "ServiceConnectionUsageProvider": {
+        "type": "object",
+        "properties": {
+          "provider_id": {
+            "type": "string"
+          },
+          "provider_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "health_status": {
+            "type": "string"
+          },
+          "service_connection_id": {
+            "type": "string"
+          },
+          "trace_evidence": {
+            "$ref": "#/components/schemas/ServiceConnectionTraceEvidence"
+          }
+        }
+      },
+      "ServiceConnectionUsageTool": {
+        "type": "object",
+        "properties": {
+          "tool_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "executor_type": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "trace_evidence": {
+            "$ref": "#/components/schemas/ServiceConnectionTraceEvidence"
+          }
+        }
+      },
+      "ServiceConnectionUsage": {
+        "type": "object",
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ServiceConnectionUsageSummary"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceConnectionUsageProvider"
+            }
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceConnectionUsageTool"
+            }
+          },
+          "recent_events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceEvent"
+            }
+          }
+        }
+      },
+      "ServiceConnectionUsageResponse": {
+        "type": "object",
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/ServiceConnection"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/ServiceConnectionUsage"
+          }
+        }
+      },
+      "AdapterOperationFromResourceRequest": {
+        "type": "object",
+        "required": [
+          "service_connection_id",
+          "resource_id"
+        ],
+        "properties": {
+          "service_connection_id": {
+            "type": "string",
+            "description": "Service connection that owns the discovered resource. Use HTTP API connections with managed_http_api_adapter, or database connections with managed_database_adapter."
+          },
+          "resource_id": {
+            "type": "string",
+            "description": "Discovered ServiceConnectionResource id, for example \"GET /customers/{customer_id}\" or \"public.customers\"."
+          },
+          "operation_id": {
+            "type": "string",
+            "description": "Optional override. Defaults to resource operation_id or a slug derived from the discovered resource."
+          },
+          "tool_id": {
+            "type": "string",
+            "description": "Optional override. Defaults to operation_id."
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "when_to_use": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "input_schema": {
+            "type": "object",
+            "description": "Optional override. By default derived from OpenAPI parameters and requestBody.",
+            "additionalProperties": true
+          },
+          "output_schema": {
+            "type": "object",
+            "description": "Optional override. HTTP resources derive from the first 2xx/default OpenAPI response schema; database resources derive a rows/row_count schema from discovered columns.",
+            "additionalProperties": true
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "protected",
+              "exposed"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "enabled",
+              "disabled"
+            ],
+            "description": "Defaults to draft so generated operations can be reviewed before publishing."
+          },
+          "version": {
+            "type": "string"
+          },
+          "query_template": {
+            "type": "string",
+            "description": "Database adapter only. Optional override for generated read-only SQL. Defaults to a safe select against the discovered table/view."
+          },
+          "parameter_schema": {
+            "type": "object",
+            "description": "Database adapter only. Optional override for query parameters. Defaults to an empty object schema.",
+            "additionalProperties": true
+          },
+          "max_rows": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Database adapter only. Optional maximum row count."
+          },
+          "redact_columns": {
+            "type": "array",
+            "description": "Database adapter only. Result columns to redact; values must exist in the discovered resource column schema.",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }

@@ -124,6 +124,7 @@ func SingleNodeProductionStatuses() []ProductionStatus {
 		{DomainID: "local", Enabled: true, Status: ProductionReadyStatus, Details: "in-process execution with policy and trace coverage"},
 		{DomainID: "http", Enabled: true, Status: ProductionReadyStatus, Details: "HTTP execution requires explicit network policy and registered executor"},
 		{DomainID: "agent_tool", Enabled: true, Status: ProductionReadyStatus, Details: "internal agent tool execution has server/runtime coverage"},
+		{DomainID: "database", Enabled: false, Status: DisabledStatus, Details: FutureDomainDisabledReason("database")},
 		{DomainID: "worker", Enabled: false, Status: DisabledStatus, Details: FutureDomainDisabledReason("worker")},
 		{DomainID: "sandbox", Enabled: false, Status: DisabledStatus, Details: FutureDomainDisabledReason("sandbox")},
 		{DomainID: "managed", Enabled: false, Status: DisabledStatus, Details: FutureDomainDisabledReason("managed")},
@@ -311,6 +312,10 @@ func HTTPDomain() ExecutionDomain {
 
 func AgentToolDomain() ExecutionDomain {
 	return AgentToolExecutionDomain{}
+}
+
+func DatabaseDomain() ExecutionDomain {
+	return DisabledExecutionDomain{DomainID: "database", Reason: FutureDomainDisabledReason("database")}
 }
 
 func SandboxDomain() ExecutionDomain {

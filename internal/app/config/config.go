@@ -80,13 +80,11 @@ type Config struct {
 	DisabledToolIDs            []string `json:"disabled_tool_ids,omitempty"`
 	DisableHandoff             bool     `json:"disable_handoff,omitempty"`
 	DisableExternalToolsInvoke bool     `json:"disable_external_tools_invoke,omitempty"`
-	DisableHTTPDirect          bool     `json:"disable_http_direct,omitempty"`
 
 	readinessSet                    bool
 	conversationRetrievalEnabledSet bool
 	disableHandoffSet               bool
 	disableExternalToolsInvokeSet   bool
-	disableHTTPDirectSet            bool
 }
 
 func (c *Config) UnmarshalJSON(data []byte) error {
@@ -104,7 +102,6 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	_, c.conversationRetrievalEnabledSet = raw["conversation_retrieval_enabled"]
 	_, c.disableHandoffSet = raw["disable_handoff"]
 	_, c.disableExternalToolsInvokeSet = raw["disable_external_tools_invoke"]
-	_, c.disableHTTPDirectSet = raw["disable_http_direct"]
 	return nil
 }
 
@@ -444,9 +441,6 @@ func merge(base Config, override Config) Config {
 	if override.disableExternalToolsInvokeSet {
 		base.DisableExternalToolsInvoke = override.DisableExternalToolsInvoke
 	}
-	if override.disableHTTPDirectSet {
-		base.DisableHTTPDirect = override.DisableHTTPDirect
-	}
 	if override.readinessSet {
 		base.Readiness = override.Readiness
 	}
@@ -575,12 +569,6 @@ func applyEnvMap(cfg Config, env map[string]string) Config {
 		if parsed, err := strconv.ParseBool(v); err == nil {
 			cfg.DisableExternalToolsInvoke = parsed
 			cfg.disableExternalToolsInvokeSet = true
-		}
-	}
-	if v := strings.TrimSpace(env["CLEAN_CORE_DISABLE_HTTP_DIRECT"]); v != "" {
-		if parsed, err := strconv.ParseBool(v); err == nil {
-			cfg.DisableHTTPDirect = parsed
-			cfg.disableHTTPDirectSet = true
 		}
 	}
 	return cfg
@@ -863,13 +851,6 @@ func parseSimpleYAML(data []byte) (Config, error) {
 			}
 			cfg.DisableExternalToolsInvoke = parsed
 			cfg.disableExternalToolsInvokeSet = true
-		case "disable_http_direct":
-			parsed, err := strconv.ParseBool(value)
-			if err != nil {
-				return Config{}, fmt.Errorf("parse yaml config line %d disable_http_direct: %w", i+1, err)
-			}
-			cfg.DisableHTTPDirect = parsed
-			cfg.disableHTTPDirectSet = true
 		default:
 			return Config{}, fmt.Errorf("parse yaml config line %d: unknown key %q", i+1, key)
 		}

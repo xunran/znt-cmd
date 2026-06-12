@@ -139,6 +139,57 @@ func TestInvokeRejectsDefaultDisabledFutureExecutionDomain(t *testing.T) {
 	}
 }
 
+func TestInvokeEnforcesHTTPNetworkAllowlist(t *testing.T) {
+	reg := registry.NewInMemoryRegistry()
+	if err := reg.Register(registry.Tool{
+		Definition: contracts.ToolDefinition{
+			ToolID:           "crm.lookup",
+			Name:             "crm.lookup",
+			InputSchema:      map[string]any{"type": "object"},
+			OutputSchema:     map[string]any{"type": "object"},
+			RiskLevel:        contracts.RiskLow,
+			Visibility:       contracts.ToolProtected,
+			ExecutionProfile: `{"domain_id":"http","network_policy":{"allow_network":true,"allowed_hosts":["api.example.com"]}}`,
+			Version:          "v1",
+		},
+		Executor: networkExecutorFunc{
+			host: "evil.example.net",
+			fn: func(context.Context, contracts.ToolCall) (map[string]any, []contracts.ArtifactRef, error) {
+				t.Fatal("executor should not run when network target is outside allowlist")
+				return nil, nil, nil
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := loader.TestAgentDefinition()
+	agent.Tools.AllowedToolIDs = []string{"crm.lookup"}
+	rt := New(reg, toolpolicy.New(audit.NewInMemoryLogger()), trace.NewInMemoryRecorder())
+	result, err := rt.Invoke(context.Background(), InvokeRequest{
+		TenantID:  "tenant_1",
+		TraceID:   "trace_http_network",
+		ActorID:   "agent_1",
+		ActorType: "agent",
+		Agent:     agent,
+		PolicySet: contracts.PolicySet{},
+		Call: contracts.ToolCall{
+			ToolCallID: "toolcall_http_network",
+			ToolID:     "crm.lookup",
+			Name:       "crm.lookup",
+			Arguments:  map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != contracts.ToolResultDenied && result.Status != contracts.ToolResultFailed {
+		t.Fatalf("expected denied or failed network result, got %#v", result)
+	}
+	if result.Error == nil || result.Error.Code != contracts.CodeToolPolicyDenied {
+		t.Fatalf("expected network policy denial, got %#v", result)
+	}
+}
+
 func TestInvokeValidatesArgumentsBeforePolicy(t *testing.T) {
 	reg := registry.NewInMemoryRegistry()
 	if err := registry.RegisterBuiltins(reg); err != nil {
@@ -237,6 +288,19 @@ type executorFunc func(context.Context, contracts.ToolCall) (map[string]any, []c
 
 func (f executorFunc) Execute(ctx context.Context, call contracts.ToolCall) (map[string]any, []contracts.ArtifactRef, error) {
 	return f(ctx, call)
+}
+
+type networkExecutorFunc struct {
+	host string
+	fn   func(context.Context, contracts.ToolCall) (map[string]any, []contracts.ArtifactRef, error)
+}
+
+func (f networkExecutorFunc) NetworkTargetHost() string {
+	return f.host
+}
+
+func (f networkExecutorFunc) Execute(ctx context.Context, call contracts.ToolCall) (map[string]any, []contracts.ArtifactRef, error) {
+	return f.fn(ctx, call)
 }
 
 type availabilityFunc func(context.Context, contracts.TenantID, contracts.ToolDefinition) error

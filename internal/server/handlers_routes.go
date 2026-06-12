@@ -232,6 +232,15 @@ func NewHandlerWithCore(appCore *core.Core, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("/v1/tool-providers/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		handleToolProviderResource(w, r, appCore, caller, strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/tool-providers/"), "/"))
 	}))
+	mux.HandleFunc("/v1/service-connections", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleServiceConnections(w, r, appCore, caller)
+	}))
+	mux.HandleFunc("/v1/service-connections/templates", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleServiceConnectionTemplates(w, r, appCore, caller)
+	}))
+	mux.HandleFunc("/v1/service-connections/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleServiceConnectionResource(w, r, appCore, caller, strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/service-connections/"), "/"))
+	}))
 	mux.HandleFunc("/v1/tool-groups", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		handleToolGroups(w, r, appCore, caller)
 	}))

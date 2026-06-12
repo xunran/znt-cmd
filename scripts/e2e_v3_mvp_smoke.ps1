@@ -186,12 +186,22 @@ try {
     }
     Assert-True ($group.Body.group.group_id -eq "v3.tools") "tool group create should return group id"
 
+    $connection = Invoke-V3Json -BaseUrl $baseUrl -Method Post -Path "/v1/service-connections" -Body @{
+        connection_id = "v3-local-tools-connection"
+        connection_type = "http_api"
+        name = "V3 Local Tools connection"
+        base_url = "http://127.0.0.1:1"
+        status = "draft"
+        health_check_enabled = $false
+    }
+    Assert-True ($connection.Body.connection.connection_id -eq "v3-local-tools-connection") "service connection create should return connection id"
+
     $toolProvider = Invoke-V3Json -BaseUrl $baseUrl -Method Post -Path "/v1/tool-providers" -Body @{
         provider_id = "v3-local-tools"
         provider_type = "static_tool_host"
         name = "V3 Local Tools"
-        endpoint = "http://127.0.0.1:1"
-        health_status = "healthy"
+        service_connection_id = "v3-local-tools-connection"
+        status = "draft"
     }
     Assert-True ($toolProvider.Body.provider.provider_id -eq "v3-local-tools") "tool provider create should return provider id"
 
@@ -210,7 +220,7 @@ try {
             provider_id = "v3-local-tools"
             operation = "echo"
         }
-        status = "enabled"
+        status = "draft"
     }
     Assert-True ($manifest.Body.tool.tool_id -eq "v3.echo") "tool manifest create should return tool id"
     $toolBinding = Invoke-V3Json -BaseUrl $baseUrl -Method Put -Path "/v1/agents/$agentID/tool-bindings" -Body @{

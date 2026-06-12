@@ -68,25 +68,23 @@ try {
     Start-Sleep -Milliseconds 300
     $summary.tool_host = $toolHostPrefix
 
-    $manifest = Invoke-CleanCoreCommand -BaseUrl $baseUrl -Command "tool.manifest.upsert" -Roles "optimizer" -Payload @{
-        tool_id = "http.customer.echo"
-        name = "HTTP customer echo"
-        description = "Echoes customer arguments through HTTP."
-        input_schema = @{ type = "object" }
-        output_schema = @{ type = "object" }
-        executor = @{
-            type = "http_direct"
-            url = $toolHostPrefix.TrimEnd("/") + "/tools/invoke"
-        }
-    }
-    Assert-Equal $manifest.tool_id "http.customer.echo" "http manifest tool_id"
-    Assert-True ($manifest.execution_profile -match '"domain_id":"http"') "http manifest execution profile"
+    $connectionBody = @{
+        connection_id = "crm-host-connection"
+        connection_type = "http_api"
+        name = "CRM Host connection"
+        status = "enabled"
+        base_url = $toolHostPrefix.TrimEnd("/")
+        health_check_enabled = $true
+    } | ConvertTo-Json -Depth 20
+    $connectionBytes = [System.Text.Encoding]::UTF8.GetBytes($connectionBody)
+    $connectionResponse = Invoke-RestMethod -Uri "$baseUrl/v1/service-connections" -Method Post -Headers (Get-E2EHeaders -Roles "optimizer" -TenantID "tenant_e2e") -Body $connectionBytes -TimeoutSec 60
+    Assert-Equal $connectionResponse.connection.connection_id "crm-host-connection" "service connection id"
 
     $provider = Invoke-CleanCoreCommand -BaseUrl $baseUrl -Command "tool.provider.upsert" -Roles "optimizer" -Payload @{
         provider_id = "crm-host"
         provider_type = "static_tool_host"
         name = "CRM Host"
-        endpoint = $toolHostPrefix.TrimEnd("/")
+        service_connection_id = "crm-host-connection"
     }
     Assert-Equal $provider.provider_id "crm-host" "provider id"
 
@@ -97,7 +95,6 @@ try {
 
     $toolList = Invoke-CleanCoreCommand -BaseUrl $baseUrl -Command "tool.manifest.list" -Roles "optimizer"
     $toolListJson = $toolList | ConvertTo-Json -Depth 40
-    Assert-True ($toolListJson -match "http.customer.echo") "tool manifest list should include http tool"
     Assert-True ($toolListJson -match "crm.remote.lookup") "tool manifest list should include synced tool"
 
     $agentSuffix = Get-Date -Format "yyyyMMddHHmmssfff"
@@ -108,7 +105,7 @@ try {
         agent_id = $providerAgentID
         version = "v1"
         prompt = "CRM provider prompt"
-        tool_bindings = @{ exposed_tool_ids = @("crm-agent.customer.summary", "http.customer.echo", "crm.remote.lookup") }
+        tool_bindings = @{ exposed_tool_ids = @("crm-agent.customer.summary", "crm.remote.lookup") }
     }
     $exportDraft = Invoke-CleanCoreCommand -BaseUrl $baseUrl -Command "agent.package.exported_tool.add" -Roles "optimizer" -Payload @{
         draft_id = $providerDraft.draft_id
@@ -129,7 +126,7 @@ try {
         agent_id = $callerAgentID
         version = "v1"
         prompt = "Caller prompt"
-        tool_bindings = @{ allowed_tool_ids = @("crm-agent.customer.summary", "http.customer.echo", "crm.remote.lookup") }
+        tool_bindings = @{ allowed_tool_ids = @("crm-agent.customer.summary", "crm.remote.lookup") }
     }
     Invoke-CleanCoreCommand -BaseUrl $baseUrl -Command "agent.package.collaborator.add" -Roles "optimizer" -Payload @{
         draft_id = $callerDraft.draft_id
@@ -156,15 +153,6 @@ try {
         arguments = @{ customer_id = "c_123" }
     }
     Assert-Equal $agentTool.status "succeeded" "agent exported tool invoke"
-
-    $httpTool = Invoke-CleanCoreCommand -BaseUrl $baseUrl -Command "tools.invoke" -Roles "runtime_caller" -TraceID ("trace_plugin_http_tool_" + $agentSuffix) -Target @{
-        agent_id = $providerAgentID
-        version = "v1"
-    } -Payload @{
-        tool_id = "http.customer.echo"
-        arguments = @{ customer_id = "c_123" }
-    }
-    Assert-Equal $httpTool.status "succeeded" "http dynamic tool invoke"
 
     $syncedTool = Invoke-CleanCoreCommand -BaseUrl $baseUrl -Command "tools.invoke" -Roles "runtime_caller" -TraceID ("trace_plugin_synced_tool_" + $agentSuffix) -Target @{
         agent_id = $providerAgentID
@@ -193,7 +181,6 @@ try {
     $summary.provider_agent_id = $providerAgentID
     $summary.caller_agent_id = $callerAgentID
     $summary.exported_tool_result = $agentTool.status
-    $summary.http_tool_result = $httpTool.status
     $summary.synced_tool_result = $syncedTool.status
     $summary.completed_at = (Get-Date).ToUniversalTime().ToString("o")
     Write-E2EJson -Path (Join-Path $ReportDir "plugin-runtime-report.json") -Value $summary

@@ -41,7 +41,7 @@ func TestBuildReadinessReport(t *testing.T) {
 			t.Fatalf("expected %s production ready in structured readiness output, got %#v", domainID, report.ExecutionDomains)
 		}
 	}
-	for _, domainID := range []string{"worker", "sandbox", "managed"} {
+	for _, domainID := range []string{"database", "worker", "sandbox", "managed"} {
 		if !strings.HasPrefix(statuses[domainID], "disabled:") {
 			t.Fatalf("expected %s disabled in structured readiness output, got %#v", domainID, report.ExecutionDomains)
 		}
@@ -50,7 +50,7 @@ func TestBuildReadinessReport(t *testing.T) {
 	for _, check := range report.Checks {
 		if check.Name == "execution.domains" {
 			foundExecutionDomains = true
-			if check.Status != CheckPass || !strings.Contains(check.Details, "production_ready=local,http,agent_tool") || !strings.Contains(check.Details, "disabled=worker,sandbox,managed") {
+			if check.Status != CheckPass || !strings.Contains(check.Details, "production_ready=local,http,agent_tool") || !strings.Contains(check.Details, "disabled=database,worker,sandbox,managed") {
 				t.Fatalf("unexpected execution domain check: %#v", check)
 			}
 		}

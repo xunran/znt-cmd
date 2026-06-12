@@ -377,16 +377,25 @@ try {
 
     $script:CurrentStep = "ASYNC-E2E-03"
     foreach ($provider in @(
-        @{ provider_id = "async-slow-host-$suffix"; name = "Async Slow ToolHost"; endpoint = $slowPrefix.TrimEnd("/") },
-        @{ provider_id = "async-fast-host-$suffix"; name = "Async Fast ToolHost"; endpoint = $fastPrefix.TrimEnd("/") }
+        @{ provider_id = "async-slow-host-$suffix"; name = "Async Slow ToolHost"; base_url = $slowPrefix.TrimEnd("/") },
+        @{ provider_id = "async-fast-host-$suffix"; name = "Async Fast ToolHost"; base_url = $fastPrefix.TrimEnd("/") }
     )) {
+        $connectionID = "$($provider.provider_id)-connection"
+        Invoke-AsyncJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections" -Roles "optimizer" -TenantID $tenantID -Body @{
+            connection_id = $connectionID
+            connection_type = "http_api"
+            name = "$($provider.name) connection"
+            base_url = $provider.base_url
+            timeout_ms = 5000
+            retry_max = 0
+            status = "enabled"
+            health_check_enabled = $true
+        } | Out-Null
         Invoke-AsyncJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers" -Roles "optimizer" -TenantID $tenantID -Body @{
             provider_id = $provider.provider_id
             provider_type = "static_tool_host"
             name = $provider.name
-            endpoint = $provider.endpoint
-            timeout_ms = 5000
-            retry_max = 0
+            service_connection_id = $connectionID
         } | Out-Null
         Invoke-AsyncJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$($provider.provider_id)/health?trace_id=trace_async_health_$suffix" -Roles "optimizer" -TenantID $tenantID | Out-Null
         Invoke-AsyncJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$($provider.provider_id)/sync" -Roles "optimizer" -TenantID $tenantID | Out-Null

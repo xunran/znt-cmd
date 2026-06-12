@@ -24,6 +24,7 @@ import (
 	"znt/internal/eval"
 	modelclient "znt/internal/model/client"
 	runtimehook "znt/internal/runtime/hook"
+	serviceconnection "znt/internal/serviceconnection"
 	toolcatalog "znt/internal/tool/catalog"
 )
 
@@ -2098,7 +2099,7 @@ func assertDefaultRunVersion(t *testing.T, handler http.Handler, appCore *core.C
 	}
 }
 
-func TestToolManifestUpsertRegistersHTTPTool(t *testing.T) {
+func TestToolManifestUpsertRegistersProviderTool(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
@@ -2114,18 +2115,47 @@ func TestToolManifestUpsertRegistersHTTPTool(t *testing.T) {
 	}))
 	defer remote.Close()
 	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	connection, err := appCore.ServiceConnections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+		TenantID:           "tenant_1",
+		ConnectionID:       "echo_connection",
+		Name:               "Echo connection",
+		ConnectionType:     serviceconnection.TypeHTTPAPI,
+		Status:             serviceconnection.StatusEnabled,
+		BaseURL:            remote.URL,
+		HealthCheckEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerResp := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"trace_id": "trace_tool_provider_1",
+		"target":   map[string]any{"agent_id": "test-agent", "version": "v1"},
+		"command":  "tool.provider.upsert",
+		"payload": map[string]any{
+			"provider_id":           "echo",
+			"provider_type":         "static_tool_host",
+			"name":                  "Echo provider",
+			"service_connection_id": connection.ConnectionID,
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if providerResp.Code != http.StatusOK {
+		t.Fatalf("unexpected provider status %d body %s", providerResp.Code, providerResp.Body.String())
+	}
 	body := map[string]any{
 		"trace_id": "trace_tool_catalog_1",
 		"target":   map[string]any{"agent_id": "test-agent", "version": "v1"},
 		"command":  "tool.manifest.upsert",
 		"payload": map[string]any{
-			"tool_id":      "http.echo",
-			"name":         "HTTP echo",
-			"description":  "Echo arguments through HTTP.",
-			"input_schema": map[string]any{"type": "object"},
+			"tool_id":       "http.echo",
+			"name":          "HTTP echo",
+			"description":   "Echo arguments through HTTP.",
+			"input_schema":  map[string]any{"type": "object"},
+			"output_schema": map[string]any{"type": "object"},
 			"executor": map[string]any{
-				"type": "http_direct",
-				"url":  remote.URL,
+				"type":        "static_tool_host",
+				"provider_id": "echo",
+				"operation":   "echo",
 			},
 		},
 		"context": map[string]any{"tenant_id": "tenant_1"},
@@ -2326,10 +2356,11 @@ func TestAgentResourceAPIDisableBlocksRunHandoffAndAgentTool(t *testing.T) {
 		"command":  "tool.manifest.upsert",
 		"target":   map[string]any{"agent_id": "test-agent", "version": "v1"},
 		"payload": map[string]any{
-			"tool_id":      "blocked.summary",
-			"name":         "Blocked summary",
-			"description":  "Summarize through blocked agent.",
-			"input_schema": map[string]any{"type": "object"},
+			"tool_id":       "blocked.summary",
+			"name":          "Blocked summary",
+			"description":   "Summarize through blocked agent.",
+			"input_schema":  map[string]any{"type": "object"},
+			"output_schema": map[string]any{"type": "object"},
 			"executor": map[string]any{
 				"type":        "agent_tool",
 				"provider_id": "blocked-agent",
@@ -2463,22 +2494,24 @@ func TestAgentToolInvokeRunsProviderAgent(t *testing.T) {
 	provider.TenantID = "tenant_1"
 	provider.AgentID = "provider-agent"
 	provider.Exports = contracts.AgentExports{Tools: []contracts.AgentExportedTool{{
-		ToolID:      "customer.lookup",
-		Operation:   "lookup",
-		Name:        "Customer lookup",
-		Description: "Look up customer context.",
-		InputSchema: map[string]any{"type": "object"},
-		Status:      "enabled",
+		ToolID:       "customer.lookup",
+		Operation:    "lookup",
+		Name:         "Customer lookup",
+		Description:  "Look up customer context.",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+		Status:       "enabled",
 	}}}
 	appCore.AgentRegistry.Put(provider)
 	if _, err := appCore.ToolCatalog.UpsertManifest(context.Background(), toolcatalog.ToolManifest{
-		TenantID:    "tenant_1",
-		ToolID:      "customer.lookup",
-		Name:        "Customer lookup",
-		Description: "Look up customer context.",
-		InputSchema: map[string]any{"type": "object"},
-		RiskLevel:   contracts.RiskLow,
-		Visibility:  contracts.ToolProtected,
+		TenantID:     "tenant_1",
+		ToolID:       "customer.lookup",
+		Name:         "Customer lookup",
+		Description:  "Look up customer context.",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+		RiskLevel:    contracts.RiskLow,
+		Visibility:   contracts.ToolProtected,
 		Executor: toolcatalog.ExecutorSpec{
 			Type:       toolcatalog.ExecutorTypeAgentTool,
 			ProviderID: "provider-agent",
@@ -2532,15 +2565,16 @@ func TestHighRiskAgentToolInvokeRequiresApproval(t *testing.T) {
 	provider.TenantID = "tenant_1"
 	provider.AgentID = "provider-agent"
 	provider.Exports = contracts.AgentExports{Tools: []contracts.AgentExportedTool{{
-		ToolID:      "customer.delete",
-		Operation:   "delete",
-		Name:        "Customer delete",
-		Description: "Delete customer data.",
-		InputSchema: map[string]any{"type": "object"},
-		RiskLevel:   contracts.RiskHigh,
-		Visibility:  contracts.ToolProtected,
-		Status:      "enabled",
-		Version:     "v1",
+		ToolID:       "customer.delete",
+		Operation:    "delete",
+		Name:         "Customer delete",
+		Description:  "Delete customer data.",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+		RiskLevel:    contracts.RiskHigh,
+		Visibility:   contracts.ToolProtected,
+		Status:       "enabled",
+		Version:      "v1",
 	}}}
 	appCore.AgentRegistry.Put(provider)
 	if err := syncAgentExportedTools(context.Background(), appCore, provider, "tester"); err != nil {
@@ -2615,11 +2649,22 @@ func TestResourceAPIsExposeToolCatalogAndRuntimeHooks(t *testing.T) {
 	}))
 	defer toolHost.Close()
 
+	connection := doJSON(handler, "POST", "/v1/service-connections", map[string]any{
+		"connection_id":        "crm-provider-connection",
+		"connection_type":      "http_api",
+		"name":                 "CRM Provider Connection",
+		"status":               "enabled",
+		"base_url":             toolHost.URL,
+		"health_check_enabled": true,
+	})
+	if connection.Code != http.StatusCreated || !bytes.Contains(connection.Body.Bytes(), []byte("crm-provider-connection")) {
+		t.Fatalf("service connection create failed %d body %s", connection.Code, connection.Body.String())
+	}
 	provider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
-		"provider_id":   "crm-provider",
-		"provider_type": "static_tool_host",
-		"name":          "CRM Provider",
-		"endpoint":      toolHost.URL,
+		"provider_id":           "crm-provider",
+		"provider_type":         "static_tool_host",
+		"name":                  "CRM Provider",
+		"service_connection_id": "crm-provider-connection",
 	})
 	if provider.Code != http.StatusCreated || !bytes.Contains(provider.Body.Bytes(), []byte("crm-provider")) {
 		t.Fatalf("tool provider create failed %d body %s", provider.Code, provider.Body.String())
@@ -2635,12 +2680,27 @@ func TestResourceAPIsExposeToolCatalogAndRuntimeHooks(t *testing.T) {
 	if group.Code != http.StatusCreated || !bytes.Contains(group.Body.Bytes(), []byte("crm")) {
 		t.Fatalf("tool group create failed %d body %s", group.Code, group.Body.String())
 	}
+	groupPatch := doJSON(handler, "PATCH", "/v1/tool-groups/crm", map[string]any{
+		"description": "Patched CRM group",
+	})
+	if groupPatch.Code != http.StatusOK || !bytes.Contains(groupPatch.Body.Bytes(), []byte(`"name":"CRM"`)) ||
+		!bytes.Contains(groupPatch.Body.Bytes(), []byte(`"description":"Patched CRM group"`)) {
+		t.Fatalf("tool group patch should preserve omitted fields, got %d body %s", groupPatch.Code, groupPatch.Body.String())
+	}
+	groupPatchMismatchedID := doJSON(handler, "PATCH", "/v1/tool-groups/crm", map[string]any{
+		"group_id":    "other",
+		"description": "Wrong group",
+	})
+	if groupPatchMismatchedID.Code != http.StatusBadRequest || !bytes.Contains(groupPatchMismatchedID.Body.Bytes(), []byte("group_id in body must match path")) {
+		t.Fatalf("tool group patch with mismatched id should be rejected, got %d body %s", groupPatchMismatchedID.Code, groupPatchMismatchedID.Body.String())
+	}
 	manifest := doJSON(handler, "POST", "/v1/tool-manifests", map[string]any{
-		"tool_id":      "crm.lookup",
-		"group_id":     "crm",
-		"name":         "CRM lookup",
-		"description":  "Lookup CRM records.",
-		"input_schema": map[string]any{"type": "object"},
+		"tool_id":       "crm.lookup",
+		"group_id":      "crm",
+		"name":          "CRM lookup",
+		"description":   "Lookup CRM records.",
+		"input_schema":  map[string]any{"type": "object"},
+		"output_schema": map[string]any{"type": "object"},
 		"executor": map[string]any{
 			"type":        "static_tool_host",
 			"provider_id": "crm-provider",
@@ -2649,6 +2709,21 @@ func TestResourceAPIsExposeToolCatalogAndRuntimeHooks(t *testing.T) {
 	})
 	if manifest.Code != http.StatusCreated || !bytes.Contains(manifest.Body.Bytes(), []byte("crm.lookup")) {
 		t.Fatalf("tool manifest create failed %d body %s", manifest.Code, manifest.Body.String())
+	}
+	manifestPatch := doJSON(handler, "PATCH", "/v1/tool-manifests/crm.lookup", map[string]any{
+		"description": "Patched CRM lookup.",
+	})
+	if manifestPatch.Code != http.StatusOK || !bytes.Contains(manifestPatch.Body.Bytes(), []byte(`"group_id":"crm"`)) ||
+		!bytes.Contains(manifestPatch.Body.Bytes(), []byte(`"provider_id":"crm-provider"`)) ||
+		!bytes.Contains(manifestPatch.Body.Bytes(), []byte(`"description":"Patched CRM lookup."`)) {
+		t.Fatalf("tool manifest patch should preserve omitted fields, got %d body %s", manifestPatch.Code, manifestPatch.Body.String())
+	}
+	manifestPatchMismatchedID := doJSON(handler, "PATCH", "/v1/tool-manifests/crm.lookup", map[string]any{
+		"tool_id":     "crm.other",
+		"description": "Wrong tool",
+	})
+	if manifestPatchMismatchedID.Code != http.StatusBadRequest || !bytes.Contains(manifestPatchMismatchedID.Body.Bytes(), []byte("tool_id in body must match path")) {
+		t.Fatalf("tool manifest patch with mismatched id should be rejected, got %d body %s", manifestPatchMismatchedID.Code, manifestPatchMismatchedID.Body.String())
 	}
 	if list := doJSON(handler, "GET", "/v1/tool-manifests", nil); list.Code != http.StatusOK || !bytes.Contains(list.Body.Bytes(), []byte("crm.lookup")) {
 		t.Fatalf("tool manifest list failed %d body %s", list.Code, list.Body.String())
@@ -2846,33 +2921,746 @@ func TestResourceAPIsExposeToolCatalogAndRuntimeHooks(t *testing.T) {
 	}
 }
 
+func TestServiceConnectionImpactIncludesProvidersOperationsAndTools(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+
+	legacyEnvelopeRESTCases := []struct {
+		name   string
+		method string
+		path   string
+		body   map[string]any
+		field  string
+	}{
+		{
+			name:   "service connection",
+			method: http.MethodPost,
+			path:   "/v1/service-connections",
+			body: map[string]any{
+				"connection": map[string]any{
+					"connection_id":   "wrapped-connection",
+					"connection_type": "http_api",
+					"name":            "Wrapped Connection",
+					"base_url":        "https://wrapped.example.test",
+				},
+			},
+			field: "connection",
+		},
+		{
+			name:   "tool provider",
+			method: http.MethodPost,
+			path:   "/v1/tool-providers",
+			body: map[string]any{
+				"provider": map[string]any{
+					"provider_id":   "wrapped-provider",
+					"provider_type": "static_tool_host",
+					"name":          "Wrapped Provider",
+				},
+			},
+			field: "provider",
+		},
+		{
+			name:   "tool group",
+			method: http.MethodPost,
+			path:   "/v1/tool-groups",
+			body: map[string]any{
+				"group": map[string]any{
+					"group_id": "wrapped-group",
+					"name":     "Wrapped Group",
+				},
+			},
+			field: "group",
+		},
+		{
+			name:   "tool manifest",
+			method: http.MethodPost,
+			path:   "/v1/tool-manifests",
+			body: map[string]any{
+				"tool": map[string]any{
+					"tool_id":       "wrapped.tool",
+					"name":          "Wrapped Tool",
+					"description":   "Wrapped manifest payload.",
+					"input_schema":  map[string]any{"type": "object"},
+					"output_schema": map[string]any{"type": "object"},
+					"executor": map[string]any{
+						"type":        "static_tool_host",
+						"provider_id": "wrapped-provider",
+						"operation":   "lookup",
+					},
+				},
+			},
+			field: "tool",
+		},
+		{
+			name:   "adapter operation",
+			method: http.MethodPost,
+			path:   "/v1/tool-providers/" + toolcatalog.ManagedHTTPAPIAdapterID + "/operations",
+			body: map[string]any{
+				"operation": map[string]any{
+					"operation_id":          "wrapped.operation",
+					"tool_id":               "wrapped.operation.tool",
+					"name":                  "Wrapped Operation",
+					"service_connection_id": "wrapped-connection",
+					"method":                "GET",
+					"path":                  "/wrapped",
+				},
+			},
+			field: "operation",
+		},
+	}
+	for _, tc := range legacyEnvelopeRESTCases {
+		t.Run("reject legacy REST envelope "+tc.name, func(t *testing.T) {
+			resp := doJSON(handler, tc.method, tc.path, tc.body)
+			if resp.Code != http.StatusBadRequest || !bytes.Contains(resp.Body.Bytes(), []byte("top level")) || !bytes.Contains(resp.Body.Bytes(), []byte(tc.field)) {
+				t.Fatalf("legacy %s envelope should be rejected, got %d body %s", tc.name, resp.Code, resp.Body.String())
+			}
+		})
+	}
+
+	legacyEnvelopeCommandCases := []struct {
+		name    string
+		command string
+		payload map[string]any
+		field   string
+	}{
+		{
+			name:    "tool provider",
+			command: "tool.provider.upsert",
+			payload: map[string]any{
+				"provider": map[string]any{
+					"provider_id":   "wrapped-command-provider",
+					"provider_type": "static_tool_host",
+					"name":          "Wrapped Command Provider",
+				},
+			},
+			field: "provider",
+		},
+		{
+			name:    "tool group",
+			command: "tool.group.upsert",
+			payload: map[string]any{
+				"group": map[string]any{
+					"group_id": "wrapped-command-group",
+					"name":     "Wrapped Command Group",
+				},
+			},
+			field: "group",
+		},
+		{
+			name:    "tool manifest",
+			command: "tool.manifest.upsert",
+			payload: map[string]any{
+				"manifest": map[string]any{
+					"tool_id":       "wrapped.command.tool",
+					"name":          "Wrapped Command Tool",
+					"description":   "Wrapped command manifest payload.",
+					"input_schema":  map[string]any{"type": "object"},
+					"output_schema": map[string]any{"type": "object"},
+					"executor": map[string]any{
+						"type":        "static_tool_host",
+						"provider_id": "wrapped-command-provider",
+						"operation":   "lookup",
+					},
+				},
+			},
+			field: "manifest",
+		},
+	}
+	for _, tc := range legacyEnvelopeCommandCases {
+		t.Run("reject legacy command envelope "+tc.name, func(t *testing.T) {
+			resp := doJSONWithHeaders(handler, http.MethodPost, "/v1/commands", map[string]any{
+				"command": tc.command,
+				"payload": tc.payload,
+				"context": map[string]any{"tenant_id": "tenant_1"},
+			}, map[string]string{"X-Roles": "optimizer"})
+			if resp.Code != http.StatusBadRequest || !bytes.Contains(resp.Body.Bytes(), []byte("top level")) || !bytes.Contains(resp.Body.Bytes(), []byte(tc.field)) {
+				t.Fatalf("legacy command %s envelope should be rejected, got %d body %s", tc.command, resp.Code, resp.Body.String())
+			}
+		})
+	}
+
+	invalidConnection := doJSON(handler, "POST", "/v1/service-connections", map[string]any{
+		"connection_id":   "mcp-is-provider",
+		"connection_type": "mcp",
+		"name":            "MCP is Provider",
+	})
+	if invalidConnection.Code != http.StatusBadRequest || !bytes.Contains(invalidConnection.Body.Bytes(), []byte("unsupported connection_type")) {
+		t.Fatalf("mcp connection type should be rejected, got %d body %s", invalidConnection.Code, invalidConnection.Body.String())
+	}
+	legacySecretConnection := doJSON(handler, "POST", "/v1/service-connections", map[string]any{
+		"connection_id":   "legacy-secret-api",
+		"connection_type": "http_api",
+		"name":            "Legacy Secret API",
+		"base_url":        "https://legacy-secret.example.test",
+		"secret_ref":      "secret://legacy",
+	})
+	if legacySecretConnection.Code != http.StatusBadRequest || !bytes.Contains(legacySecretConnection.Body.Bytes(), []byte("auth_ref")) || !bytes.Contains(legacySecretConnection.Body.Bytes(), []byte("secret_ref")) {
+		t.Fatalf("legacy service connection secret_ref should be rejected, got %d body %s", legacySecretConnection.Code, legacySecretConnection.Body.String())
+	}
+	clientHealthConnection := doJSON(handler, "POST", "/v1/service-connections", map[string]any{
+		"connection_id":   "client-health-api",
+		"connection_type": "http_api",
+		"name":            "Client Health API",
+		"base_url":        "https://client-health.example.test",
+		"health_status":   "healthy",
+	})
+	if clientHealthConnection.Code != http.StatusBadRequest || !bytes.Contains(clientHealthConnection.Body.Bytes(), []byte("managed by connection tests")) || !bytes.Contains(clientHealthConnection.Body.Bytes(), []byte("health_status")) {
+		t.Fatalf("service connection health state should be rejected in public payloads, got %d body %s", clientHealthConnection.Code, clientHealthConnection.Body.String())
+	}
+	missingAuthTypeConnection := doJSON(handler, "POST", "/v1/service-connections", map[string]any{
+		"connection_id":   "missing-auth-type-api",
+		"connection_type": "http_api",
+		"name":            "Missing Auth Type API",
+		"base_url":        "https://missing-auth-type.example.test",
+		"auth_ref":        "secret://tenant_1/missing-auth-type",
+	})
+	if missingAuthTypeConnection.Code != http.StatusBadRequest || !bytes.Contains(missingAuthTypeConnection.Body.Bytes(), []byte("auth_type is required")) {
+		t.Fatalf("service connection auth_ref without auth_type should be rejected, got %d body %s", missingAuthTypeConnection.Code, missingAuthTypeConnection.Body.String())
+	}
+	connection := doJSON(handler, "POST", "/v1/service-connections", map[string]any{
+		"connection_id":   "crm-api",
+		"connection_type": "http_api",
+		"name":            "CRM API",
+		"status":          "enabled",
+		"base_url":        "http://crm.local",
+		"auth_type":       "api_key",
+		"auth_ref":        "secret://tenant_1/crm-old",
+	})
+	if connection.Code != http.StatusCreated {
+		t.Fatalf("service connection create failed %d body %s", connection.Code, connection.Body.String())
+	}
+	patchConnection := doJSON(handler, "PATCH", "/v1/service-connections/crm-api", map[string]any{
+		"description": "Patched CRM API",
+		"timeout_ms":  2500,
+	})
+	if patchConnection.Code != http.StatusOK || !bytes.Contains(patchConnection.Body.Bytes(), []byte(`"auth_type":"api_key"`)) ||
+		!bytes.Contains(patchConnection.Body.Bytes(), []byte(`"auth_ref":"secret://tenant_1/crm-old"`)) ||
+		!bytes.Contains(patchConnection.Body.Bytes(), []byte(`"base_url":"http://crm.local"`)) ||
+		!bytes.Contains(patchConnection.Body.Bytes(), []byte(`"description":"Patched CRM API"`)) {
+		t.Fatalf("service connection patch should preserve omitted fields, got %d body %s", patchConnection.Code, patchConnection.Body.String())
+	}
+	patchAuthOnly := doJSON(handler, "PATCH", "/v1/service-connections/crm-api", map[string]any{
+		"auth_ref": "secret://tenant_1/patch-only",
+	})
+	if patchAuthOnly.Code != http.StatusBadRequest || !bytes.Contains(patchAuthOnly.Body.Bytes(), []byte("auth_type and auth_ref must be patched together")) {
+		t.Fatalf("service connection auth patch without auth_type should be rejected, got %d body %s", patchAuthOnly.Code, patchAuthOnly.Body.String())
+	}
+	patchMismatchedID := doJSON(handler, "PATCH", "/v1/service-connections/crm-api", map[string]any{
+		"connection_id": "other-api",
+		"description":   "Wrong resource",
+	})
+	if patchMismatchedID.Code != http.StatusBadRequest || !bytes.Contains(patchMismatchedID.Body.Bytes(), []byte("connection_id in body must match path")) {
+		t.Fatalf("service connection patch with mismatched id should be rejected, got %d body %s", patchMismatchedID.Code, patchMismatchedID.Body.String())
+	}
+	legacyRESTProvider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
+		"provider_id":   "legacy-rest",
+		"provider_type": "static_tool_host",
+		"name":          "Legacy REST provider",
+		"endpoint":      "http://legacy.local",
+	})
+	if legacyRESTProvider.Code != http.StatusBadRequest || !bytes.Contains(legacyRESTProvider.Body.Bytes(), []byte("service_connection_id")) || !bytes.Contains(legacyRESTProvider.Body.Bytes(), []byte("endpoint")) {
+		t.Fatalf("legacy provider endpoint should be rejected, got %d body %s", legacyRESTProvider.Code, legacyRESTProvider.Body.String())
+	}
+	legacyCommandProvider := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "tool.provider.upsert",
+		"payload": map[string]any{
+			"provider_id":   "legacy-command",
+			"provider_type": "static_tool_host",
+			"name":          "Legacy command provider",
+			"auth_ref":      "secret://legacy",
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if legacyCommandProvider.Code != http.StatusBadRequest || !bytes.Contains(legacyCommandProvider.Body.Bytes(), []byte("service_connection_id")) || !bytes.Contains(legacyCommandProvider.Body.Bytes(), []byte("auth_ref")) {
+		t.Fatalf("legacy provider auth_ref should be rejected, got %d body %s", legacyCommandProvider.Code, legacyCommandProvider.Body.String())
+	}
+	legacyTokenProvider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
+		"provider_id":   "legacy-token",
+		"provider_type": "static_tool_host",
+		"name":          "Legacy Token provider",
+		"token_ref":     "secret://legacy-token",
+	})
+	if legacyTokenProvider.Code != http.StatusBadRequest || !bytes.Contains(legacyTokenProvider.Body.Bytes(), []byte("service_connection_id")) || !bytes.Contains(legacyTokenProvider.Body.Bytes(), []byte("token_ref")) {
+		t.Fatalf("legacy provider token_ref should be rejected, got %d body %s", legacyTokenProvider.Code, legacyTokenProvider.Body.String())
+	}
+	healthStateProvider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
+		"provider_id":           "client-health-state",
+		"provider_type":         "static_tool_host",
+		"name":                  "Client Health State",
+		"service_connection_id": "crm-api",
+		"health_status":         "healthy",
+	})
+	if healthStateProvider.Code != http.StatusBadRequest || !bytes.Contains(healthStateProvider.Body.Bytes(), []byte("managed by health checks")) || !bytes.Contains(healthStateProvider.Body.Bytes(), []byte("health_status")) {
+		t.Fatalf("tool provider health state should be rejected in public payloads, got %d body %s", healthStateProvider.Code, healthStateProvider.Body.String())
+	}
+	staticProvider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
+		"provider_id":           "crm-static",
+		"provider_type":         "static_tool_host",
+		"name":                  "CRM Static",
+		"service_connection_id": "crm-api",
+	})
+	if staticProvider.Code != http.StatusCreated {
+		t.Fatalf("static provider create failed %d body %s", staticProvider.Code, staticProvider.Body.String())
+	}
+	agentPluginProvider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
+		"provider_id":           "crm-agent-plugin",
+		"provider_type":         "agent_plugin_service",
+		"name":                  "CRM AgentPlugin",
+		"service_connection_id": "crm-api",
+	})
+	if agentPluginProvider.Code != http.StatusCreated {
+		t.Fatalf("agent plugin provider create failed %d body %s", agentPluginProvider.Code, agentPluginProvider.Body.String())
+	}
+	agentPluginAliasProvider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
+		"provider_id":           "crm-agent-plugin-alias",
+		"provider_type":         "agent-plugin-service",
+		"name":                  "CRM AgentPlugin Alias",
+		"service_connection_id": "crm-api",
+	})
+	if agentPluginAliasProvider.Code != http.StatusBadRequest || !bytes.Contains(agentPluginAliasProvider.Body.Bytes(), []byte("unsupported provider_type")) {
+		t.Fatalf("agent plugin provider alias should be rejected, got %d body %s", agentPluginAliasProvider.Code, agentPluginAliasProvider.Body.String())
+	}
+	staticProviderPatch := doJSON(handler, "PATCH", "/v1/tool-providers/crm-static", map[string]any{
+		"description": "Patched CRM Static",
+	})
+	if staticProviderPatch.Code != http.StatusOK || !bytes.Contains(staticProviderPatch.Body.Bytes(), []byte(`"service_connection_id":"crm-api"`)) ||
+		!bytes.Contains(staticProviderPatch.Body.Bytes(), []byte(`"provider_type":"static_tool_host"`)) ||
+		!bytes.Contains(staticProviderPatch.Body.Bytes(), []byte(`"description":"Patched CRM Static"`)) {
+		t.Fatalf("tool provider patch should preserve omitted fields, got %d body %s", staticProviderPatch.Code, staticProviderPatch.Body.String())
+	}
+	staticProviderPatchMismatchedID := doJSON(handler, "PATCH", "/v1/tool-providers/crm-static", map[string]any{
+		"provider_id": "other-static",
+		"description": "Wrong provider",
+	})
+	if staticProviderPatchMismatchedID.Code != http.StatusBadRequest || !bytes.Contains(staticProviderPatchMismatchedID.Body.Bytes(), []byte("provider_id in body must match path")) {
+		t.Fatalf("tool provider patch with mismatched id should be rejected, got %d body %s", staticProviderPatchMismatchedID.Code, staticProviderPatchMismatchedID.Body.String())
+	}
+	adapterProvider := doJSON(handler, "POST", "/v1/tool-providers", map[string]any{
+		"provider_id":   toolcatalog.ManagedHTTPAPIAdapterID,
+		"provider_type": "http_api_adapter",
+		"name":          "CRM HTTP Adapter",
+	})
+	if adapterProvider.Code != http.StatusBadRequest || !bytes.Contains(adapterProvider.Body.Bytes(), []byte("managed adapter providers are internal")) {
+		t.Fatalf("managed adapter provider public create should be rejected, got %d body %s", adapterProvider.Code, adapterProvider.Body.String())
+	}
+	flatExecutorManifest := doJSON(handler, "POST", "/v1/tool-manifests", map[string]any{
+		"tool_id":       "crm.flat",
+		"name":          "CRM flat executor",
+		"description":   "Legacy flat executor fields.",
+		"input_schema":  map[string]any{"type": "object"},
+		"output_schema": map[string]any{"type": "object"},
+		"executor_type": "static_tool_host",
+		"provider_id":   "crm-static",
+		"operation":     "lookup",
+	})
+	if flatExecutorManifest.Code != http.StatusBadRequest || !bytes.Contains(flatExecutorManifest.Body.Bytes(), []byte("executor object")) || !bytes.Contains(flatExecutorManifest.Body.Bytes(), []byte("executor_type")) {
+		t.Fatalf("flat executor manifest should be rejected, got %d body %s", flatExecutorManifest.Code, flatExecutorManifest.Body.String())
+	}
+	flatExecutorCommand := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "tool.manifest.upsert",
+		"payload": map[string]any{
+			"tool_id":       "crm.command.flat",
+			"name":          "CRM command flat executor",
+			"description":   "Legacy flat executor command fields.",
+			"input_schema":  map[string]any{"type": "object"},
+			"output_schema": map[string]any{"type": "object"},
+			"executor_type": "static_tool_host",
+			"provider_id":   "crm-static",
+			"operation":     "lookup",
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if flatExecutorCommand.Code != http.StatusBadRequest || !bytes.Contains(flatExecutorCommand.Body.Bytes(), []byte("executor object")) || !bytes.Contains(flatExecutorCommand.Body.Bytes(), []byte("executor_type")) {
+		t.Fatalf("flat executor manifest command should be rejected, got %d body %s", flatExecutorCommand.Code, flatExecutorCommand.Body.String())
+	}
+	directExecutorManifest := doJSON(handler, "POST", "/v1/tool-manifests", map[string]any{
+		"tool_id":       "crm.direct",
+		"name":          "CRM direct executor",
+		"description":   "Legacy direct executor fields.",
+		"input_schema":  map[string]any{"type": "object"},
+		"output_schema": map[string]any{"type": "object"},
+		"executor": map[string]any{
+			"type":   "static_tool_host",
+			"url":    "https://crm.example.test/customers",
+			"method": "GET",
+		},
+	})
+	if directExecutorManifest.Code != http.StatusBadRequest || !bytes.Contains(directExecutorManifest.Body.Bytes(), []byte("field is not supported")) {
+		t.Fatalf("direct executor fields should be rejected, got %d body %s", directExecutorManifest.Code, directExecutorManifest.Body.String())
+	}
+	directExecutorCommand := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "tool.manifest.upsert",
+		"payload": map[string]any{
+			"tool_id":       "crm.command.direct",
+			"name":          "CRM command direct executor",
+			"description":   "Legacy direct executor command fields.",
+			"input_schema":  map[string]any{"type": "object"},
+			"output_schema": map[string]any{"type": "object"},
+			"executor": map[string]any{
+				"type":    "static_tool_host",
+				"headers": map[string]any{"X-Test": "1"},
+			},
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if directExecutorCommand.Code != http.StatusBadRequest || !bytes.Contains(directExecutorCommand.Body.Bytes(), []byte("field is not supported")) || !bytes.Contains(directExecutorCommand.Body.Bytes(), []byte("headers")) {
+		t.Fatalf("direct executor command fields should be rejected, got %d body %s", directExecutorCommand.Code, directExecutorCommand.Body.String())
+	}
+	manifest := doJSON(handler, "POST", "/v1/tool-manifests", map[string]any{
+		"tool_id":       "crm.lookup",
+		"name":          "CRM lookup",
+		"description":   "Lookup customer records.",
+		"input_schema":  map[string]any{"type": "object"},
+		"output_schema": map[string]any{"type": "object"},
+		"executor": map[string]any{
+			"type":        "static_tool_host",
+			"provider_id": "crm-static",
+			"operation":   "lookup",
+		},
+	})
+	if manifest.Code != http.StatusCreated {
+		t.Fatalf("tool manifest create failed %d body %s", manifest.Code, manifest.Body.String())
+	}
+	httpAdapterPath := "/v1/tool-providers/" + toolcatalog.ManagedHTTPAPIAdapterID + "/operations"
+	operationMismatchedProvider := doJSON(handler, "POST", httpAdapterPath, map[string]any{
+		"provider_id":           "other-adapter",
+		"operation_id":          "customers.mismatch",
+		"tool_id":               "crm.mismatch",
+		"name":                  "CRM mismatch",
+		"description":           "Search customer records through the wrong provider.",
+		"service_connection_id": "crm-api",
+		"method":                "GET",
+		"path":                  "/customers",
+		"input_schema":          map[string]any{"type": "object"},
+		"output_schema":         map[string]any{"type": "object"},
+		"status":                "enabled",
+	})
+	if operationMismatchedProvider.Code != http.StatusBadRequest || !bytes.Contains(operationMismatchedProvider.Body.Bytes(), []byte("provider_id in body must match path")) {
+		t.Fatalf("adapter operation create with mismatched provider_id should be rejected, got %d body %s", operationMismatchedProvider.Code, operationMismatchedProvider.Body.String())
+	}
+	operation := doJSON(handler, "POST", httpAdapterPath, map[string]any{
+		"operation_id":          "customers.search",
+		"tool_id":               "crm.search",
+		"name":                  "CRM search",
+		"description":           "Search customer records.",
+		"service_connection_id": "crm-api",
+		"method":                "GET",
+		"path":                  "/customers",
+		"input_schema":          map[string]any{"type": "object"},
+		"output_schema":         map[string]any{"type": "object"},
+		"status":                "enabled",
+	})
+	if operation.Code != http.StatusCreated {
+		t.Fatalf("adapter operation create failed %d body %s", operation.Code, operation.Body.String())
+	}
+	if err := appCore.ServiceConnections.ReplaceResources(context.Background(), "tenant_1", "crm-api", []serviceconnection.ServiceConnectionResource{{
+		ResourceID:   "GET /customers/{customer_id}/tickets",
+		ResourceType: "http_operation",
+		Name:         "List customer tickets",
+		Schema: map[string]any{
+			"method":       "GET",
+			"path":         "/customers/{customer_id}/tickets",
+			"operation_id": "customers.tickets.list",
+			"summary":      "List customer tickets",
+			"description":  "List support tickets for a customer.",
+			"parameters": []any{
+				map[string]any{"name": "customer_id", "in": "path", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "status", "in": "query", "schema": map[string]any{"type": "string"}},
+			},
+			"responses": map[string]any{"200": map[string]any{"description": "OK"}},
+		},
+		Metadata: map[string]any{
+			"method":       "GET",
+			"path":         "/customers/{customer_id}/tickets",
+			"operation_id": "customers.tickets.list",
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	generatedOperation := doJSON(handler, "POST", httpAdapterPath+"/from-resource", map[string]any{
+		"service_connection_id": "crm-api",
+		"resource_id":           "GET /customers/{customer_id}/tickets",
+		"status":                "draft",
+	})
+	if generatedOperation.Code != http.StatusCreated || !bytes.Contains(generatedOperation.Body.Bytes(), []byte(`"operation_id":"customers_tickets_list"`)) ||
+		!bytes.Contains(generatedOperation.Body.Bytes(), []byte(`"path_params"`)) ||
+		!bytes.Contains(generatedOperation.Body.Bytes(), []byte(`"customer_id":"customer_id"`)) {
+		t.Fatalf("adapter operation from resource failed %d body %s", generatedOperation.Code, generatedOperation.Body.String())
+	}
+	dbConnection := doJSON(handler, "POST", "/v1/service-connections", map[string]any{
+		"connection_id":   "warehouse-db",
+		"connection_type": "database",
+		"name":            "Warehouse DB",
+		"status":          "enabled",
+		"base_url":        "postgres://warehouse.example/db",
+		"metadata":        map[string]any{"driver": "postgres"},
+	})
+	if dbConnection.Code != http.StatusCreated {
+		t.Fatalf("database service connection create failed %d body %s", dbConnection.Code, dbConnection.Body.String())
+	}
+	if err := appCore.ServiceConnections.ReplaceResources(context.Background(), "tenant_1", "warehouse-db", []serviceconnection.ServiceConnectionResource{{
+		ResourceID:   "public.customers",
+		ResourceType: "table",
+		Name:         "public.customers",
+		Schema: map[string]any{
+			"type": "object",
+			"columns": []map[string]any{
+				{"name": "id", "json_schema": map[string]any{"type": "integer"}},
+				{"name": "email", "json_schema": map[string]any{"type": "string"}},
+			},
+		},
+		Metadata: map[string]any{"schema": "public", "table_name": "customers"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	dbGeneratedOperation := doJSON(handler, "POST", "/v1/tool-providers/"+toolcatalog.ManagedDatabaseAdapterID+"/operations/from-resource", map[string]any{
+		"service_connection_id": "warehouse-db",
+		"resource_id":           "public.customers",
+		"operation_id":          "customers.read",
+		"tool_id":               "customers.read",
+		"redact_columns":        []string{"email"},
+		"status":                "draft",
+	})
+	if dbGeneratedOperation.Code != http.StatusCreated || !bytes.Contains(dbGeneratedOperation.Body.Bytes(), []byte(`"operation_id":"customers.read"`)) ||
+		!bytes.Contains(dbGeneratedOperation.Body.Bytes(), []byte(`"query_template":"select * from \"public\".\"customers\" limit 100"`)) ||
+		!bytes.Contains(dbGeneratedOperation.Body.Bytes(), []byte(`"resource_id":"public.customers"`)) {
+		t.Fatalf("database adapter operation from resource failed %d body %s", dbGeneratedOperation.Code, dbGeneratedOperation.Body.String())
+	}
+	operationPatch := doJSON(handler, "PATCH", httpAdapterPath+"/customers.search", map[string]any{
+		"description": "Patched search customer records.",
+	})
+	if operationPatch.Code != http.StatusOK || !bytes.Contains(operationPatch.Body.Bytes(), []byte(`"service_connection_id":"crm-api"`)) ||
+		!bytes.Contains(operationPatch.Body.Bytes(), []byte(`"method":"GET"`)) ||
+		!bytes.Contains(operationPatch.Body.Bytes(), []byte(`"path":"/customers"`)) ||
+		!bytes.Contains(operationPatch.Body.Bytes(), []byte(`"description":"Patched search customer records."`)) {
+		t.Fatalf("adapter operation patch should preserve omitted fields, got %d body %s", operationPatch.Code, operationPatch.Body.String())
+	}
+	operationPatchMismatchedID := doJSON(handler, "PATCH", httpAdapterPath+"/customers.search", map[string]any{
+		"operation_id": "customers.other",
+		"description":  "Wrong operation",
+	})
+	if operationPatchMismatchedID.Code != http.StatusBadRequest || !bytes.Contains(operationPatchMismatchedID.Body.Bytes(), []byte("operation_id in body must match path")) {
+		t.Fatalf("adapter operation patch with mismatched id should be rejected, got %d body %s", operationPatchMismatchedID.Code, operationPatchMismatchedID.Body.String())
+	}
+	publish := doJSON(handler, "POST", httpAdapterPath+"/customers.search/publish", nil)
+	if publish.Code != http.StatusOK {
+		t.Fatalf("adapter operation publish failed %d body %s", publish.Code, publish.Body.String())
+	}
+	defaultProviderList := doJSON(handler, "GET", "/v1/tool-providers", nil)
+	if defaultProviderList.Code != http.StatusOK {
+		t.Fatalf("tool provider list failed %d body %s", defaultProviderList.Code, defaultProviderList.Body.String())
+	}
+	if !bytes.Contains(defaultProviderList.Body.Bytes(), []byte("crm-static")) || bytes.Contains(defaultProviderList.Body.Bytes(), []byte(toolcatalog.ManagedHTTPAPIAdapterID)) {
+		t.Fatalf("default provider list should show external sources only, got %s", defaultProviderList.Body.String())
+	}
+	managedProviderList := doJSON(handler, "GET", "/v1/tool-providers?include_managed=true", nil)
+	if managedProviderList.Code != http.StatusOK || !bytes.Contains(managedProviderList.Body.Bytes(), []byte(toolcatalog.ManagedHTTPAPIAdapterID)) {
+		t.Fatalf("managed provider list should include internal adapters, got %d body %s", managedProviderList.Code, managedProviderList.Body.String())
+	}
+	impact := doJSON(handler, "GET", "/v1/service-connections/crm-api/impact", nil)
+	if impact.Code != http.StatusOK {
+		t.Fatalf("service connection impact failed %d body %s", impact.Code, impact.Body.String())
+	}
+	if !bytes.Contains(impact.Body.Bytes(), []byte("crm-static")) || !bytes.Contains(impact.Body.Bytes(), []byte(toolcatalog.ManagedHTTPAPIAdapterID)) ||
+		!bytes.Contains(impact.Body.Bytes(), []byte("customers.search")) || !bytes.Contains(impact.Body.Bytes(), []byte("crm.lookup")) ||
+		!bytes.Contains(impact.Body.Bytes(), []byte("crm.search")) {
+		t.Fatalf("impact response missing dependencies: %s", impact.Body.String())
+	}
+	blockedDelete := doJSON(handler, "DELETE", "/v1/service-connections/crm-api", nil)
+	if blockedDelete.Code != http.StatusBadRequest || !bytes.Contains(blockedDelete.Body.Bytes(), []byte("dependent tool providers")) ||
+		!bytes.Contains(blockedDelete.Body.Bytes(), []byte(`"providers_total"`)) {
+		t.Fatalf("service connection delete with dependencies should be blocked, got %d body %s", blockedDelete.Code, blockedDelete.Body.String())
+	}
+
+	if err := appCore.ServiceConnections.AppendHealthEvent(context.Background(), serviceconnection.ServiceConnectionHealthEvent{
+		TenantID:     "tenant_1",
+		ConnectionID: "crm-api",
+		HealthStatus: serviceconnection.HealthHealthy,
+		LatencyMS:    12,
+		CheckedAt:    time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("append service connection health event: %v", err)
+	}
+	healthEvents := doJSON(handler, "GET", "/v1/service-connections/crm-api/health-events", nil)
+	if healthEvents.Code != http.StatusOK || !bytes.Contains(healthEvents.Body.Bytes(), []byte(`"health_events"`)) || !bytes.Contains(healthEvents.Body.Bytes(), []byte(`"health_status":"healthy"`)) {
+		t.Fatalf("service connection health events failed %d body %s", healthEvents.Code, healthEvents.Body.String())
+	}
+
+	traceID := contracts.TraceID("trace_service_connection_usage")
+	base := time.Now().UTC()
+	for _, event := range []contracts.TraceEvent{
+		{TraceID: traceID, TenantID: "tenant_1", Type: contracts.TraceToolProviderInvoked, Payload: map[string]any{"provider_id": "crm-static", "tool_id": "crm.lookup", "operation": "lookup"}, CreatedAt: base},
+		{TraceID: traceID, TenantID: "tenant_1", Type: contracts.TraceToolProviderCompleted, Payload: map[string]any{"provider_id": "crm-static", "tool_id": "crm.lookup", "operation": "lookup", "latency_ms": 11}, CreatedAt: base.Add(11 * time.Millisecond)},
+		{TraceID: traceID, TenantID: "tenant_1", Type: contracts.TraceToolProviderInvoked, Payload: map[string]any{"provider_id": toolcatalog.ManagedHTTPAPIAdapterID, "tool_id": "crm.search", "operation": "customers.search"}, CreatedAt: base.Add(20 * time.Millisecond)},
+		{TraceID: traceID, TenantID: "tenant_1", Type: contracts.TraceToolProviderFailed, Payload: map[string]any{"provider_id": toolcatalog.ManagedHTTPAPIAdapterID, "tool_id": "crm.search", "operation": "customers.search", "latency_ms": 29, "error_code": "tool_execution_failed"}, CreatedAt: base.Add(49 * time.Millisecond)},
+		{TraceID: traceID, TenantID: "tenant_1", Type: contracts.TraceToolProviderInvoked, Payload: map[string]any{"provider_id": toolcatalog.ManagedHTTPAPIAdapterID, "tool_id": "crm.other", "operation": "customers.other"}, CreatedAt: base.Add(60 * time.Millisecond)},
+	} {
+		if err := appCore.Trace.Record(context.Background(), event); err != nil {
+			t.Fatalf("record service connection usage trace: %v", err)
+		}
+	}
+	usage := doJSON(handler, "GET", "/v1/service-connections/crm-api/usage?trace_id=trace_service_connection_usage", nil)
+	if usage.Code != http.StatusOK {
+		t.Fatalf("service connection usage failed %d body %s", usage.Code, usage.Body.String())
+	}
+	var usageBody struct {
+		Usage struct {
+			Summary struct {
+				TraceEventsTotal int `json:"trace_events_total"`
+				InvocationsTotal int `json:"invocations_total"`
+				CompletionsTotal int `json:"completions_total"`
+				FailuresTotal    int `json:"failures_total"`
+				ToolsTotal       int `json:"tools_total"`
+			} `json:"summary"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(usage.Body.Bytes(), &usageBody); err != nil {
+		t.Fatalf("decode service connection usage: %v body %s", err, usage.Body.String())
+	}
+	if usageBody.Usage.Summary.TraceEventsTotal != 4 || usageBody.Usage.Summary.InvocationsTotal != 2 ||
+		usageBody.Usage.Summary.CompletionsTotal != 1 || usageBody.Usage.Summary.FailuresTotal != 1 || usageBody.Usage.Summary.ToolsTotal != 2 {
+		t.Fatalf("unexpected service connection usage summary: %+v body %s", usageBody.Usage.Summary, usage.Body.String())
+	}
+	if bytes.Contains(usage.Body.Bytes(), []byte("crm.other")) {
+		t.Fatalf("service connection usage included unrelated adapter operation: %s", usage.Body.String())
+	}
+	windowFrom := base.Add(15 * time.Millisecond).Format(time.RFC3339Nano)
+	windowTo := base.Add(50 * time.Millisecond).Format(time.RFC3339Nano)
+	windowedUsage := doJSON(handler, "GET", "/v1/service-connections/crm-api/usage?trace_id=trace_service_connection_usage&from="+windowFrom+"&to="+windowTo, nil)
+	if windowedUsage.Code != http.StatusOK {
+		t.Fatalf("service connection usage time window failed %d body %s", windowedUsage.Code, windowedUsage.Body.String())
+	}
+	var windowedUsageBody struct {
+		Usage struct {
+			From    string `json:"from"`
+			To      string `json:"to"`
+			Summary struct {
+				TraceEventsTotal int `json:"trace_events_total"`
+				InvocationsTotal int `json:"invocations_total"`
+				CompletionsTotal int `json:"completions_total"`
+				FailuresTotal    int `json:"failures_total"`
+			} `json:"summary"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(windowedUsage.Body.Bytes(), &windowedUsageBody); err != nil {
+		t.Fatalf("decode service connection usage window: %v body %s", err, windowedUsage.Body.String())
+	}
+	if windowedUsageBody.Usage.From == "" || windowedUsageBody.Usage.To == "" ||
+		windowedUsageBody.Usage.Summary.TraceEventsTotal != 2 || windowedUsageBody.Usage.Summary.InvocationsTotal != 1 ||
+		windowedUsageBody.Usage.Summary.CompletionsTotal != 0 || windowedUsageBody.Usage.Summary.FailuresTotal != 1 {
+		t.Fatalf("unexpected service connection usage window summary: %+v body %s", windowedUsageBody.Usage, windowedUsage.Body.String())
+	}
+	invalidUsageWindow := doJSON(handler, "GET", "/v1/service-connections/crm-api/usage?from="+windowTo+"&to="+windowFrom, nil)
+	if invalidUsageWindow.Code != http.StatusBadRequest {
+		t.Fatalf("invalid service connection usage time window should fail, got %d body %s", invalidUsageWindow.Code, invalidUsageWindow.Body.String())
+	}
+
+	legacyRotationResp := doJSON(handler, "POST", "/v1/service-connections/crm-api/secret-rotations", map[string]any{
+		"secret_ref": "secret://tenant_1/crm-new",
+	})
+	if legacyRotationResp.Code != http.StatusBadRequest || !bytes.Contains(legacyRotationResp.Body.Bytes(), []byte("auth_ref")) || !bytes.Contains(legacyRotationResp.Body.Bytes(), []byte("secret_ref")) {
+		t.Fatalf("legacy secret rotation secret_ref should be rejected, got %d body %s", legacyRotationResp.Code, legacyRotationResp.Body.String())
+	}
+	rotationResp := doJSON(handler, "POST", "/v1/service-connections/crm-api/secret-rotations", map[string]any{
+		"auth_type": "api_key",
+		"auth_ref":  "secret://tenant_1/crm-new",
+		"reason":    "scheduled rotation",
+	})
+	if rotationResp.Code != http.StatusCreated {
+		t.Fatalf("service connection secret rotation failed %d body %s", rotationResp.Code, rotationResp.Body.String())
+	}
+	var rotationBody struct {
+		Rotation struct {
+			PreviousAuthRefHash string `json:"previous_auth_ref_hash"`
+			NewAuthRefHash      string `json:"new_auth_ref_hash"`
+		} `json:"rotation"`
+	}
+	if err := json.Unmarshal(rotationResp.Body.Bytes(), &rotationBody); err != nil {
+		t.Fatalf("decode service connection secret rotation: %v body %s", err, rotationResp.Body.String())
+	}
+	if rotationBody.Rotation.PreviousAuthRefHash == "" || rotationBody.Rotation.NewAuthRefHash == "" ||
+		strings.Contains(rotationBody.Rotation.PreviousAuthRefHash, "crm-old") || strings.Contains(rotationBody.Rotation.NewAuthRefHash, "crm-new") {
+		t.Fatalf("secret rotation leaked auth ref plaintext in hashes: %+v", rotationBody.Rotation)
+	}
+	rotationsResp := doJSON(handler, "GET", "/v1/service-connections/crm-api/secret-rotations", nil)
+	if rotationsResp.Code != http.StatusOK || !bytes.Contains(rotationsResp.Body.Bytes(), []byte(`"secret_rotations"`)) || !bytes.Contains(rotationsResp.Body.Bytes(), []byte(rotationBody.Rotation.NewAuthRefHash)) {
+		t.Fatalf("service connection secret rotation history failed %d body %s", rotationsResp.Code, rotationsResp.Body.String())
+	}
+	auditResp := doJSON(handler, "GET", "/v1/audit?action=service_connection.secret_rotated", nil)
+	if auditResp.Code != http.StatusOK || !bytes.Contains(auditResp.Body.Bytes(), []byte("service_connection.secret_rotated")) {
+		t.Fatalf("expected secret rotation audit, got %d body %s", auditResp.Code, auditResp.Body.String())
+	}
+	if bytes.Contains(auditResp.Body.Bytes(), []byte("secret://tenant_1/crm-old")) || bytes.Contains(auditResp.Body.Bytes(), []byte("secret://tenant_1/crm-new")) {
+		t.Fatalf("secret rotation audit leaked auth_ref: %s", auditResp.Body.String())
+	}
+}
+
 func TestToolProviderGovernanceMatrixIncludesCatalogAndTraceEvidence(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	handler := NewHandlerWithCore(appCore, logging.New("error"))
-	for _, provider := range []map[string]any{
+	crmHealth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	}))
+	defer crmHealth.Close()
+	billingHealth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "billing unavailable", http.StatusInternalServerError)
+	}))
+	defer billingHealth.Close()
+	for _, connection := range []map[string]any{
 		{
-			"provider_id":   "crm-provider",
-			"provider_type": "static_tool_host",
-			"name":          "CRM Provider",
-			"endpoint":      "http://crm.local",
-			"health_status": "healthy",
+			"connection_id":   "crm-provider-connection",
+			"connection_type": "http_api",
+			"name":            "CRM Provider Connection",
+			"status":          "enabled",
+			"base_url":        crmHealth.URL,
 		},
 		{
-			"provider_id":       "billing-provider",
-			"provider_type":     "static_tool_host",
-			"name":              "Billing Provider",
-			"endpoint":          "http://billing.local",
-			"health_status":     "unhealthy",
-			"last_health_error": "timeout",
+			"connection_id":   "billing-provider-connection",
+			"connection_type": "http_api",
+			"name":            "Billing Provider Connection",
+			"status":          "enabled",
+			"base_url":        billingHealth.URL,
+		},
+	} {
+		resp := doJSON(handler, "POST", "/v1/service-connections", connection)
+		if resp.Code != http.StatusCreated {
+			t.Fatalf("service connection create failed %d body %s", resp.Code, resp.Body.String())
+		}
+	}
+	for _, provider := range []map[string]any{
+		{
+			"provider_id":           "crm-provider",
+			"provider_type":         "static_tool_host",
+			"name":                  "CRM Provider",
+			"service_connection_id": "crm-provider-connection",
+		},
+		{
+			"provider_id":           "billing-provider",
+			"provider_type":         "static_tool_host",
+			"name":                  "Billing Provider",
+			"service_connection_id": "billing-provider-connection",
 		},
 	} {
 		resp := doJSON(handler, "POST", "/v1/tool-providers", provider)
 		if resp.Code != http.StatusCreated {
 			t.Fatalf("tool provider create failed %d body %s", resp.Code, resp.Body.String())
 		}
+	}
+	if resp := doJSON(handler, "POST", "/v1/tool-providers/crm-provider/health", nil); resp.Code != http.StatusOK || !bytes.Contains(resp.Body.Bytes(), []byte(`"health_status":"healthy"`)) {
+		t.Fatalf("crm provider health check failed %d body %s", resp.Code, resp.Body.String())
+	}
+	if resp := doJSON(handler, "POST", "/v1/tool-providers/billing-provider/health", nil); resp.Code != http.StatusOK || !bytes.Contains(resp.Body.Bytes(), []byte(`"health_status":"unhealthy"`)) {
+		t.Fatalf("billing provider health check failed %d body %s", resp.Code, resp.Body.String())
 	}
 	group := doJSON(handler, "POST", "/v1/tool-groups", map[string]any{
 		"group_id": "blocked",
@@ -2884,11 +3672,12 @@ func TestToolProviderGovernanceMatrixIncludesCatalogAndTraceEvidence(t *testing.
 	}
 	for _, manifest := range []map[string]any{
 		{
-			"tool_id":      "crm.lookup",
-			"name":         "CRM lookup",
-			"description":  "Lookup CRM records.",
-			"input_schema": map[string]any{"type": "object"},
-			"risk_level":   "high",
+			"tool_id":       "crm.lookup",
+			"name":          "CRM lookup",
+			"description":   "Lookup CRM records.",
+			"input_schema":  map[string]any{"type": "object"},
+			"output_schema": map[string]any{"type": "object"},
+			"risk_level":    "high",
 			"executor": map[string]any{
 				"type":        "static_tool_host",
 				"provider_id": "crm-provider",
@@ -2896,11 +3685,12 @@ func TestToolProviderGovernanceMatrixIncludesCatalogAndTraceEvidence(t *testing.
 			},
 		},
 		{
-			"tool_id":      "billing.charge",
-			"name":         "Billing charge",
-			"description":  "Charge a customer.",
-			"input_schema": map[string]any{"type": "object"},
-			"risk_level":   "critical",
+			"tool_id":       "billing.charge",
+			"name":          "Billing charge",
+			"description":   "Charge a customer.",
+			"input_schema":  map[string]any{"type": "object"},
+			"output_schema": map[string]any{"type": "object"},
+			"risk_level":    "critical",
 			"executor": map[string]any{
 				"type":        "static_tool_host",
 				"provider_id": "billing-provider",
@@ -2908,11 +3698,12 @@ func TestToolProviderGovernanceMatrixIncludesCatalogAndTraceEvidence(t *testing.
 			},
 		},
 		{
-			"tool_id":      "crm.blocked",
-			"group_id":     "blocked",
-			"name":         "Blocked CRM lookup",
-			"description":  "Lookup CRM records through a disabled group.",
-			"input_schema": map[string]any{"type": "object"},
+			"tool_id":       "crm.blocked",
+			"group_id":      "blocked",
+			"name":          "Blocked CRM lookup",
+			"description":   "Lookup CRM records through a disabled group.",
+			"input_schema":  map[string]any{"type": "object"},
+			"output_schema": map[string]any{"type": "object"},
 			"executor": map[string]any{
 				"type":        "static_tool_host",
 				"provider_id": "crm-provider",
@@ -2920,10 +3711,11 @@ func TestToolProviderGovernanceMatrixIncludesCatalogAndTraceEvidence(t *testing.
 			},
 		},
 		{
-			"tool_id":      "orphan.lookup",
-			"name":         "Orphan lookup",
-			"description":  "References a missing provider.",
-			"input_schema": map[string]any{"type": "object"},
+			"tool_id":       "orphan.lookup",
+			"name":          "Orphan lookup",
+			"description":   "References a missing provider.",
+			"input_schema":  map[string]any{"type": "object"},
+			"output_schema": map[string]any{"type": "object"},
 			"executor": map[string]any{
 				"type":        "static_tool_host",
 				"provider_id": "missing-provider",
@@ -3271,13 +4063,14 @@ func TestAgentDraftSubresourceAPIs(t *testing.T) {
 		t.Fatalf("collaborator upsert failed %d body %s", collaborator.Code, collaborator.Body.String())
 	}
 	exportedTool := doJSON(handler, "PUT", "/v1/agents/test-agent/exported-tools/customer.lookup", map[string]any{
-		"draft_id":     draft.DraftID,
-		"name":         "Customer lookup",
-		"description":  "Look up customer context.",
-		"when_to_use":  []any{"customer lookup"},
-		"input_schema": map[string]any{"type": "object"},
-		"risk_level":   "low",
-		"visibility":   "protected",
+		"draft_id":      draft.DraftID,
+		"name":          "Customer lookup",
+		"description":   "Look up customer context.",
+		"when_to_use":   []any{"customer lookup"},
+		"input_schema":  map[string]any{"type": "object"},
+		"output_schema": map[string]any{"type": "object"},
+		"risk_level":    "low",
+		"visibility":    "protected",
 	})
 	if exportedTool.Code != http.StatusOK || !bytes.Contains(exportedTool.Body.Bytes(), []byte("customer.lookup")) {
 		t.Fatalf("exported tool upsert failed %d body %s", exportedTool.Code, exportedTool.Body.String())

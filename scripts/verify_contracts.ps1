@@ -180,8 +180,24 @@ $requiredPaths = @(
     "/v1/tool-providers",
     "/v1/tool-provider-governance",
     "/v1/tool-providers/{provider_id}/health",
+    "/v1/tool-providers/{provider_id}/operations",
+    "/v1/tool-providers/{provider_id}/operations/{operation_id}",
+    "/v1/tool-providers/{provider_id}/operations/{operation_id}/publish",
+    "/v1/tool-providers/{provider_id}/operations/{operation_id}/test",
+    "/v1/service-connections",
+    "/v1/service-connections/templates",
+    "/v1/service-connections/{connection_id}",
+    "/v1/service-connections/{connection_id}/test",
+    "/v1/service-connections/{connection_id}/enable",
+    "/v1/service-connections/{connection_id}/disable",
+    "/v1/service-connections/{connection_id}/resources",
+    "/v1/service-connections/{connection_id}/health-events",
+    "/v1/service-connections/{connection_id}/impact",
+    "/v1/service-connections/{connection_id}/usage",
+    "/v1/service-connections/{connection_id}/secret-rotations",
     "/v1/tool-groups",
     "/v1/tool-manifests",
+    "/v1/tool-manifests/{tool_id}",
     "/v1/runtime-hook-providers",
     "/v1/runtime-hook-providers/{provider_id}/catalog",
     "/v1/runtime-hook-providers/{provider_id}/catalog/sync",
@@ -219,6 +235,327 @@ foreach ($path in $requiredPaths) {
         Add-Failure "OpenAPI is missing path '$path'"
     }
 }
+
+function Assert-PathQueryParameters {
+    param(
+        [string]$Path,
+        [string]$Method,
+        [string[]]$Names
+    )
+    if (-not ($openapi.paths.PSObject.Properties.Name -contains $Path)) {
+        return
+    }
+    $pathItem = $openapi.paths.PSObject.Properties[$Path].Value
+    if (-not ($pathItem.PSObject.Properties.Name -contains $Method)) {
+        Add-Failure "OpenAPI path '$Path' is missing method '$Method'"
+        return
+    }
+    $operation = $pathItem.$Method
+    $parameterNames = @()
+    if ($operation.PSObject.Properties.Name -contains "parameters") {
+        $parameterNames = @($operation.parameters | ForEach-Object { $_.name })
+    }
+    foreach ($name in $Names) {
+        if ($name -notin $parameterNames) {
+            Add-Failure "OpenAPI $Method $Path is missing query parameter '$name'"
+        }
+    }
+}
+
+function Assert-PathMethods {
+    param(
+        [string]$Path,
+        [string[]]$Methods
+    )
+    if (-not ($openapi.paths.PSObject.Properties.Name -contains $Path)) {
+        return
+    }
+    $pathItem = $openapi.paths.PSObject.Properties[$Path].Value
+    foreach ($method in $Methods) {
+        if (-not ($pathItem.PSObject.Properties.Name -contains $method)) {
+            Add-Failure "OpenAPI path '$Path' is missing method '$method'"
+        }
+    }
+}
+
+function Assert-PathOperationDescriptionContains {
+    param(
+        [string]$Path,
+        [string]$Method,
+        [string]$ExpectedText
+    )
+    if (-not ($openapi.paths.PSObject.Properties.Name -contains $Path)) {
+        Add-Failure "OpenAPI path '$Path' is missing"
+        return
+    }
+    $pathItem = $openapi.paths.PSObject.Properties[$Path].Value
+    if (-not ($pathItem.PSObject.Properties.Name -contains $Method)) {
+        Add-Failure "OpenAPI path '$Path' is missing method '$Method'"
+        return
+    }
+    $operation = $pathItem.PSObject.Properties[$Method].Value
+    if (-not ($operation.PSObject.Properties.Name -contains "description") -or [string]$operation.description -notmatch [regex]::Escape($ExpectedText)) {
+        Add-Failure "OpenAPI operation '$Method $Path' description must mention '$ExpectedText'"
+    }
+}
+
+function Assert-PathRequestSchemaRef {
+    param(
+        [string]$Path,
+        [string]$Method,
+        [string]$ExpectedRef
+    )
+    if (-not ($openapi.paths.PSObject.Properties.Name -contains $Path)) {
+        Add-Failure "OpenAPI path '$Path' is missing"
+        return
+    }
+    $pathItem = $openapi.paths.PSObject.Properties[$Path].Value
+    if (-not ($pathItem.PSObject.Properties.Name -contains $Method)) {
+        Add-Failure "OpenAPI path '$Path' is missing method '$Method'"
+        return
+    }
+    $operation = $pathItem.PSObject.Properties[$Method].Value
+    if (-not ($operation.PSObject.Properties.Name -contains "requestBody")) {
+        Add-Failure "OpenAPI operation '$Method $Path' is missing requestBody"
+        return
+    }
+    $schema = $operation.requestBody.content.'application/json'.schema
+    $actual = $schema.'$ref'
+    if ($actual -ne $ExpectedRef) {
+        Add-Failure "OpenAPI operation '$Method $Path' request schema must be '$ExpectedRef', got '$actual'"
+    }
+}
+
+function Assert-SchemaPropertyEnum {
+    param(
+        [string]$SchemaName,
+        [string]$PropertyName,
+        [string[]]$Values
+    )
+    $schemas = $openapi.components.schemas
+    if (-not ($schemas.PSObject.Properties.Name -contains $SchemaName)) {
+        Add-Failure "OpenAPI is missing schema '$SchemaName'"
+        return
+    }
+    $schema = $schemas.PSObject.Properties[$SchemaName].Value
+    if (-not ($schema.properties.PSObject.Properties.Name -contains $PropertyName)) {
+        Add-Failure "OpenAPI schema '$SchemaName' is missing property '$PropertyName'"
+        return
+    }
+    $property = $schema.properties.PSObject.Properties[$PropertyName].Value
+    $actual = @($property.enum)
+    foreach ($value in $Values) {
+        if ($value -notin $actual) {
+            Add-Failure "OpenAPI schema '$SchemaName.$PropertyName' enum is missing '$value'"
+        }
+    }
+}
+
+function Assert-SchemaPropertyEnumExactly {
+    param(
+        [string]$SchemaName,
+        [string]$PropertyName,
+        [string[]]$Values
+    )
+    $schemas = $openapi.components.schemas
+    if (-not ($schemas.PSObject.Properties.Name -contains $SchemaName)) {
+        return
+    }
+    $schema = $schemas.PSObject.Properties[$SchemaName].Value
+    if (-not ($schema.properties.PSObject.Properties.Name -contains $PropertyName)) {
+        Add-Failure "OpenAPI schema '$SchemaName' is missing property '$PropertyName'"
+        return
+    }
+    $property = $schema.properties.PSObject.Properties[$PropertyName].Value
+    $actual = @($property.enum)
+    foreach ($value in $Values) {
+        if ($value -notin $actual) {
+            Add-Failure "OpenAPI schema '$SchemaName.$PropertyName' enum is missing '$value'"
+        }
+    }
+    foreach ($value in $actual) {
+        if ($value -notin $Values) {
+            Add-Failure "OpenAPI schema '$SchemaName.$PropertyName' enum must not include '$value'"
+        }
+    }
+}
+
+function Assert-SchemaLacksProperties {
+    param(
+        [string]$SchemaName,
+        [string[]]$PropertyNames
+    )
+    $schemas = $openapi.components.schemas
+    if (-not ($schemas.PSObject.Properties.Name -contains $SchemaName)) {
+        return
+    }
+    $schema = $schemas.PSObject.Properties[$SchemaName].Value
+    if (-not ($schema.PSObject.Properties.Name -contains "properties")) {
+        return
+    }
+    foreach ($name in $PropertyNames) {
+        if ($schema.properties.PSObject.Properties.Name -contains $name) {
+            Add-Failure "OpenAPI schema '$SchemaName' must not expose legacy property '$name'"
+        }
+    }
+}
+
+function Assert-SchemaHasProperties {
+    param(
+        [string]$SchemaName,
+        [string[]]$PropertyNames
+    )
+    $schemas = $openapi.components.schemas
+    if (-not ($schemas.PSObject.Properties.Name -contains $SchemaName)) {
+        Add-Failure "OpenAPI schema '$SchemaName' is missing"
+        return
+    }
+    $schema = $schemas.PSObject.Properties[$SchemaName].Value
+    if (-not ($schema.PSObject.Properties.Name -contains "properties")) {
+        Add-Failure "OpenAPI schema '$SchemaName' has no properties"
+        return
+    }
+    foreach ($name in $PropertyNames) {
+        if (-not ($schema.properties.PSObject.Properties.Name -contains $name)) {
+            Add-Failure "OpenAPI schema '$SchemaName' is missing property '$name'"
+        }
+    }
+}
+
+function Assert-SchemaPropertyDescriptionContains {
+    param(
+        [string]$SchemaName,
+        [string]$PropertyName,
+        [string]$ExpectedText
+    )
+    $schemas = $openapi.components.schemas
+    if (-not ($schemas.PSObject.Properties.Name -contains $SchemaName)) {
+        Add-Failure "OpenAPI schema '$SchemaName' is missing"
+        return
+    }
+    $schema = $schemas.PSObject.Properties[$SchemaName].Value
+    if (-not ($schema.PSObject.Properties.Name -contains "properties") -or -not ($schema.properties.PSObject.Properties.Name -contains $PropertyName)) {
+        Add-Failure "OpenAPI schema '$SchemaName.$PropertyName' is missing"
+        return
+    }
+    $property = $schema.properties.PSObject.Properties[$PropertyName].Value
+    if (-not ($property.PSObject.Properties.Name -contains "description") -or [string]$property.description -notmatch [regex]::Escape($ExpectedText)) {
+        Add-Failure "OpenAPI schema '$SchemaName.$PropertyName' description must mention '$ExpectedText'"
+    }
+}
+
+function Assert-SchemaRequiresProperties {
+    param(
+        [string]$SchemaName,
+        [string[]]$PropertyNames
+    )
+    $schemas = $openapi.components.schemas
+    if (-not ($schemas.PSObject.Properties.Name -contains $SchemaName)) {
+        Add-Failure "OpenAPI schema '$SchemaName' is missing"
+        return
+    }
+    $schema = $schemas.PSObject.Properties[$SchemaName].Value
+    $actual = @($schema.required)
+    foreach ($name in $PropertyNames) {
+        if ($name -notin $actual) {
+            Add-Failure "OpenAPI schema '$SchemaName' required list is missing '$name'"
+        }
+    }
+}
+
+function Assert-SchemaHasNoRequired {
+    param([string]$SchemaName)
+    $schemas = $openapi.components.schemas
+    if (-not ($schemas.PSObject.Properties.Name -contains $SchemaName)) {
+        Add-Failure "OpenAPI schema '$SchemaName' is missing"
+        return
+    }
+    $schema = $schemas.PSObject.Properties[$SchemaName].Value
+    if (($schema.PSObject.Properties.Name -contains "required") -and @($schema.required).Count -gt 0) {
+        Add-Failure "OpenAPI schema '$SchemaName' must not require fields because it is a PATCH request schema"
+    }
+}
+
+Assert-PathQueryParameters "/v1/tool-providers" "get" @("q", "provider_type", "status", "health_status", "include_managed", "page_size", "cursor")
+Assert-PathQueryParameters "/v1/tool-manifests" "get" @("q", "provider_id", "executor_type", "status", "risk_level", "visibility", "page_size", "cursor")
+Assert-PathQueryParameters "/v1/service-connections" "get" @("q", "connection_type", "status", "health_status", "environment", "page_size", "cursor")
+Assert-PathQueryParameters "/v1/service-connections/{connection_id}/usage" "get" @("trace_id", "limit", "from", "to")
+Assert-PathMethods "/v1/service-connections/{connection_id}" @("get", "put", "patch", "delete")
+Assert-PathMethods "/v1/tool-providers/{provider_id}" @("get", "put", "patch", "delete")
+Assert-PathMethods "/v1/tool-groups/{group_id}" @("get", "put", "patch", "delete")
+Assert-PathMethods "/v1/tool-manifests/{tool_id}" @("get", "put", "patch", "delete")
+Assert-PathMethods "/v1/tool-providers/{provider_id}/operations/{operation_id}" @("get", "put", "patch")
+Assert-PathMethods "/v1/tool-providers/{provider_id}/operations/from-resource" @("post")
+Assert-PathOperationDescriptionContains "/v1/service-connections/{connection_id}" "put" "Full replacement"
+Assert-PathOperationDescriptionContains "/v1/service-connections/{connection_id}" "patch" "preserves omitted fields"
+Assert-PathOperationDescriptionContains "/v1/service-connections/{connection_id}" "patch" "auth_type and auth_ref must be patched together"
+Assert-PathOperationDescriptionContains "/v1/tool-providers" "get" "external tool sources by default"
+Assert-PathOperationDescriptionContains "/v1/tool-providers" "get" "include_managed=true"
+Assert-PathOperationDescriptionContains "/v1/tool-providers/{provider_id}" "patch" "preserves omitted fields"
+Assert-PathOperationDescriptionContains "/v1/tool-providers/{provider_id}" "patch" "provider_id"
+Assert-PathOperationDescriptionContains "/v1/tool-groups/{group_id}" "patch" "preserves omitted fields"
+Assert-PathOperationDescriptionContains "/v1/tool-groups/{group_id}" "patch" "group_id"
+Assert-PathOperationDescriptionContains "/v1/tool-manifests/{tool_id}" "patch" "preserves omitted fields"
+Assert-PathOperationDescriptionContains "/v1/tool-manifests/{tool_id}" "patch" "tool_id"
+Assert-PathOperationDescriptionContains "/v1/tool-providers/{provider_id}/operations/{operation_id}" "patch" "preserves omitted fields"
+Assert-PathOperationDescriptionContains "/v1/tool-providers/{provider_id}/operations/{operation_id}" "patch" "operation_id"
+Assert-PathRequestSchemaRef "/v1/service-connections/{connection_id}" "patch" "#/components/schemas/ServiceConnectionPatchRequest"
+Assert-PathRequestSchemaRef "/v1/tool-providers/{provider_id}" "patch" "#/components/schemas/ToolProviderPatchRequest"
+Assert-PathRequestSchemaRef "/v1/tool-groups/{group_id}" "patch" "#/components/schemas/ToolGroupPatchRequest"
+Assert-PathRequestSchemaRef "/v1/tool-manifests/{tool_id}" "patch" "#/components/schemas/ToolManifestPatchRequest"
+Assert-PathRequestSchemaRef "/v1/tool-providers/{provider_id}/operations/{operation_id}" "patch" "#/components/schemas/AdapterOperationPatchRequest"
+Assert-PathRequestSchemaRef "/v1/tool-providers/{provider_id}/operations/from-resource" "post" "#/components/schemas/AdapterOperationFromResourceRequest"
+Assert-SchemaHasNoRequired "ServiceConnectionPatchRequest"
+Assert-SchemaHasNoRequired "ToolProviderPatchRequest"
+Assert-SchemaHasNoRequired "ToolGroupPatchRequest"
+Assert-SchemaHasNoRequired "ToolManifestPatchRequest"
+Assert-SchemaHasNoRequired "AdapterOperationPatchRequest"
+Assert-SchemaPropertyEnum "ToolProvider" "provider_type" @("static_tool_host", "agent_plugin_service", "mcp", "http_api_adapter", "database_adapter")
+Assert-SchemaPropertyEnumExactly "ToolProviderUpsertRequest" "provider_type" @("static_tool_host", "agent_plugin_service", "mcp")
+Assert-SchemaPropertyEnumExactly "ToolGroup" "status" @("draft", "enabled", "disabled")
+Assert-SchemaPropertyEnum "ToolExecutorSpec" "type" @("static_tool_host", "agent_plugin_service", "mcp", "agent_tool", "http_api_adapter", "database_adapter")
+Assert-SchemaHasProperties "ToolProviderGovernanceSummary" @("agent_plugin_service_tools_total")
+Assert-SchemaHasProperties "ServiceConnectionUsage" @("trace_id", "from", "to", "summary", "providers", "tools", "recent_events")
+Assert-SchemaPropertyEnum "ServiceConnection" "auth_type" @("none", "api_key", "bearer", "basic", "oauth2", "signed_request", "mtls")
+Assert-SchemaPropertyEnum "ServiceConnectionSecretRotationRequest" "auth_type" @("api_key", "bearer", "basic", "oauth2", "signed_request", "mtls")
+Assert-SchemaPropertyEnum "ServiceConnectionSecretRotation" "auth_type" @("api_key", "bearer", "basic", "oauth2", "signed_request", "mtls")
+Assert-SchemaLacksProperties "ToolExecutorSpec" @("url", "method", "headers")
+Assert-SchemaLacksProperties "ToolManifest" @("manifest", "tool", "executor_type", "provider_id", "operation")
+Assert-SchemaLacksProperties "ToolManifestPatchRequest" @("manifest", "tool", "executor_type", "provider_id", "operation")
+Assert-SchemaLacksProperties "ToolProvider" @("provider", "endpoint", "endpoint_ref", "auth_ref", "secret_ref", "token_ref")
+Assert-SchemaLacksProperties "ToolProviderUpsertRequest" @("provider", "endpoint", "endpoint_ref", "auth_ref", "secret_ref", "token_ref", "health_status", "last_health_check_at", "last_health_error")
+Assert-SchemaLacksProperties "ToolProviderPatchRequest" @("provider", "endpoint", "endpoint_ref", "auth_ref", "secret_ref", "token_ref", "health_status", "last_health_check_at", "last_health_error")
+Assert-SchemaLacksProperties "ToolGroup" @("group", "tool_ids", "metadata")
+Assert-SchemaLacksProperties "ToolGroupUpsertRequest" @("group", "tool_ids", "metadata")
+Assert-SchemaLacksProperties "ToolGroupPatchRequest" @("group", "tool_ids", "metadata")
+Assert-SchemaLacksProperties "AdapterOperation" @("operation")
+Assert-SchemaLacksProperties "AdapterOperationPatchRequest" @("operation")
+Assert-SchemaLacksProperties "ServiceConnectionUpsertRequest" @("connection", "secret_ref", "token_ref", "health_status", "last_health_at", "last_health_error")
+Assert-SchemaLacksProperties "ServiceConnectionPatchRequest" @("connection", "secret_ref", "token_ref", "health_status", "last_health_at", "last_health_error")
+Assert-SchemaPropertyDescriptionContains "ServiceConnection" "auth_type" "auth_ref"
+Assert-SchemaPropertyDescriptionContains "ServiceConnection" "auth_ref" "Plain secret values must not be submitted"
+Assert-SchemaPropertyDescriptionContains "ServiceConnection" "connection_type" "model-only"
+Assert-SchemaPropertyDescriptionContains "ServiceConnectionUpsertRequest" "connection_type" "not implemented"
+Assert-SchemaPropertyDescriptionContains "ServiceConnectionPatchRequest" "connection_type" "not implemented"
+Assert-SchemaPropertyDescriptionContains "ServiceConnection" "metadata" "metadata.openapi_path"
+Assert-SchemaPropertyDescriptionContains "ServiceConnectionUpsertRequest" "metadata" "metadata.openapi_path"
+Assert-SchemaPropertyDescriptionContains "ServiceConnectionPatchRequest" "metadata" "metadata.openapi_path"
+Assert-SchemaPropertyDescriptionContains "ServiceConnectionResource" "resource_type" "http_operation"
+Assert-SchemaPropertyDescriptionContains "ServiceConnectionResource" "resource_type" "table/view"
+Assert-SchemaPropertyDescriptionContains "ServiceConnectionSecretRotationRequest" "auth_type" "must not be none"
+Assert-SchemaRequiresProperties "ServiceConnectionSecretRotationRequest" @("auth_ref", "auth_type")
+Assert-SchemaPropertyDescriptionContains "AdapterOperation" "method" "HTTP API adapter only"
+Assert-SchemaPropertyDescriptionContains "AdapterOperation" "request_mapping" "HTTP API adapter only"
+Assert-SchemaPropertyDescriptionContains "AdapterOperation" "request_mapping" "path_params"
+Assert-SchemaPropertyDescriptionContains "AdapterOperationPatchRequest" "request_mapping" "headers"
+Assert-SchemaRequiresProperties "AdapterOperationFromResourceRequest" @("service_connection_id", "resource_id")
+Assert-SchemaPropertyDescriptionContains "AdapterOperationFromResourceRequest" "resource_id" "ServiceConnectionResource"
+Assert-SchemaPropertyDescriptionContains "AdapterOperationFromResourceRequest" "service_connection_id" "managed_database_adapter"
+Assert-SchemaPropertyDescriptionContains "AdapterOperationFromResourceRequest" "query_template" "Database adapter only"
+Assert-SchemaPropertyDescriptionContains "AdapterOperationFromResourceRequest" "redact_columns" "discovered resource column schema"
+Assert-SchemaPropertyDescriptionContains "AdapterOperation" "resource_id" "Database adapter only"
+Assert-SchemaPropertyDescriptionContains "AdapterOperation" "query_template" "Database adapter only"
+Assert-SchemaPropertyDescriptionContains "AdapterOperation" "read_only" "Database adapter only"
 
 if ($StrictTestCoverage) {
     foreach ($warning in $warnings) {

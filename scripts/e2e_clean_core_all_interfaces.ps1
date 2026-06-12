@@ -234,6 +234,8 @@ function New-AIHost {
                 $body = "{}"
                 if ($path -eq "/healthz") {
                     $body = '{"status":"ok","service":"all-interface-host"}'
+                } elseif ($path -eq "/openapi.json") {
+                    $body = '{"openapi":"3.0.3","paths":{"/adapter/search":{"post":{"operationId":"adapter.search","summary":"Adapter search","requestBody":{"content":{"application/json":{"schema":{"type":"object","properties":{"query":{"type":"string"}}}}},"responses":{"200":{"description":"OK"}}}}}}'
                 } elseif ($path -eq "/.well-known/agent-card.json") {
                     $body = '{"name":"All Interface A2A Agent","url":"http://all-interface-a2a.local","description":"A2A mock agent for all-interface E2E."}'
                 } elseif ($path -eq "/tools/catalog") {
@@ -255,6 +257,23 @@ function New-AIHost {
                             tool_id = [string]$request.tool_id
                             operation = [string]$request.operation
                             arguments = $request.arguments
+                        }
+                    } | ConvertTo-Json -Depth 20 -Compress)
+                } elseif ($path -eq "/adapter/search") {
+                    $reader = [System.IO.StreamReader]::new($ctx.Request.InputStream, [System.Text.Encoding]::UTF8)
+                    $requestBody = $reader.ReadToEnd()
+                    $request = $requestBody | ConvertFrom-Json
+                    $entry = [ordered]@{
+                        at = (Get-Date).ToUniversalTime().ToString("o")
+                        path = $path
+                        query = [string]$request.query
+                    }
+                    ($entry | ConvertTo-Json -Compress) | Add-Content -Path $logPath -Encoding UTF8
+                    $body = (@{
+                        output = @{
+                            ok = $true
+                            query = [string]$request.query
+                            source = "http_api_adapter"
                         }
                     } | ConvertTo-Json -Depth 20 -Compress)
                 } elseif ($path -eq "/mcp") {
@@ -378,8 +397,18 @@ try {
     $draftVersion = "v1"
     $stableVersion = "v2"
     $providerID = "all-provider-$suffix"
+    $providerConnectionID = "$providerID-connection"
     $mcpProviderID = "all-mcp-$suffix"
+    $mcpConnectionID = "$mcpProviderID-connection"
     $mcpToolID = "$mcpProviderID.sum"
+    $adapterProviderID = "managed_http_api_adapter"
+    $adapterConnectionID = "all-http-adapter-$suffix-connection"
+    $adapterOperationID = "all.search.$suffix"
+    $adapterToolID = "all-http-adapter-$suffix.search"
+    $databaseProviderID = "managed_database_adapter"
+    $databaseConnectionID = "all-db-adapter-$suffix-connection"
+    $databaseOperationID = "all.customers.by_status.$suffix"
+    $databaseToolID = "all-db-adapter-$suffix.customers.by_status"
     $toolGroupID = "all.tools.$suffix"
     $toolID = "all.local.echo.$suffix"
     $hookProviderID = "all-hook-host"
@@ -497,13 +526,54 @@ try {
     Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/agents/$agentID/versions" -Operation "GET /v1/agents/{agent_id}/versions" -ExpectedStatus @(200) | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/agents/$agentID/versions/$stableVersion" -Operation "GET /v1/agents/{agent_id}/versions/{version}" -ExpectedStatus @(200) | Out-Null
 
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections" -Operation "POST /v1/service-connections" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
+        connection_id = $providerConnectionID
+        connection_type = "http_api"
+        name = "All Interface ToolHost Connection"
+        base_url = $hostPrefix.TrimEnd("/")
+        status = "enabled"
+        health_check_enabled = $true
+        metadata = @{ openapi_path = "/openapi.json" }
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections" -Operation "GET /v1/service-connections" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/templates" -Operation "GET /v1/service-connections/templates" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/$providerConnectionID" -Operation "GET /v1/service-connections/{connection_id}" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Put" -Path "/v1/service-connections/$providerConnectionID" -Operation "PUT /v1/service-connections/{connection_id}" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
+        connection_id = $providerConnectionID
+        connection_type = "http_api"
+        name = "All Interface ToolHost Connection Updated"
+        base_url = $hostPrefix.TrimEnd("/")
+        status = "enabled"
+        health_check_enabled = $true
+        metadata = @{ openapi_path = "/openapi.json" }
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections/$providerConnectionID/test" -Operation "POST /v1/service-connections/{connection_id}/test" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections/$providerConnectionID/disable" -Operation "POST /v1/service-connections/{connection_id}/disable" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections/$providerConnectionID/enable" -Operation "POST /v1/service-connections/{connection_id}/enable" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/$providerConnectionID/resources" -Operation "GET /v1/service-connections/{connection_id}/resources" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$adapterProviderID/operations/from-resource" -Operation "POST /v1/tool-providers/{provider_id}/operations/from-resource" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
+        service_connection_id = $providerConnectionID
+        resource_id = "POST /adapter/search"
+        operation_id = "adapter.search.generated"
+        tool_id = "adapter.search.generated"
+        status = "draft"
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/$providerConnectionID/health-events" -Operation "GET /v1/service-connections/{connection_id}/health-events" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/$providerConnectionID/impact" -Operation "GET /v1/service-connections/{connection_id}/impact" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/$providerConnectionID/usage" -Operation "GET /v1/service-connections/{connection_id}/usage" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/$providerConnectionID/usage?from=2000-01-01T00:00:00Z&to=2100-01-01T00:00:00Z" -Operation "GET /v1/service-connections/{connection_id}/usage" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections/$providerConnectionID/secret-rotations" -Operation "POST /v1/service-connections/{connection_id}/secret-rotations" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
+        auth_type = "api_key"
+        auth_ref = "secret://e2e/$providerConnectionID/rotated"
+        reason = "all-interface smoke rotation"
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/$providerConnectionID/secret-rotations" -Operation "GET /v1/service-connections/{connection_id}/secret-rotations" -ExpectedStatus @(200) | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers" -Operation "POST /v1/tool-providers" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
         provider_id = $providerID
         provider_type = "static_tool_host"
         name = "All Interface ToolHost"
-        endpoint = $hostPrefix.TrimEnd("/")
+        service_connection_id = $providerConnectionID
         status = "enabled"
-        health_status = "healthy"
         version = "v1"
     } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/tool-providers" -Operation "GET /v1/tool-providers" -ExpectedStatus @(200) | Out-Null
@@ -512,20 +582,27 @@ try {
         provider_id = $providerID
         provider_type = "static_tool_host"
         name = "All Interface ToolHost Updated"
-        endpoint = $hostPrefix.TrimEnd("/")
+        service_connection_id = $providerConnectionID
         status = "enabled"
-        health_status = "healthy"
         version = "v2"
     } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$providerID/health?trace_id=$traceID" -Operation "POST /v1/tool-providers/{provider_id}/health" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$providerID/sync" -Operation "POST /v1/tool-providers/{provider_id}/sync" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/tool-provider-governance?provider_id=$providerID" -Operation "GET /v1/tool-provider-governance" -ExpectedStatus @(200) | Out-Null
 
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections" -Operation "POST /v1/service-connections" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
+        connection_id = $mcpConnectionID
+        connection_type = "http_api"
+        name = "All Interface MCP Connection"
+        base_url = "$($hostPrefix.TrimEnd('/'))/mcp"
+        status = "enabled"
+        health_check_enabled = $true
+    } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers" -Operation "POST /v1/tool-providers" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
         provider_id = $mcpProviderID
         provider_type = "mcp"
         name = "All Interface MCP"
-        endpoint = "$($hostPrefix.TrimEnd('/'))/mcp"
+        service_connection_id = $mcpConnectionID
         status = "enabled"
         version = "v1"
     } | Out-Null
@@ -545,6 +622,86 @@ try {
     }
     Assert-AITrue ([string]$mcpResult.status -eq "succeeded") "MCP tools.invoke should succeed"
     Assert-AITrue ([double]$mcpResult.output.structuredContent.total -eq 12) "MCP tools.invoke should return structured total"
+
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections" -Operation "POST /v1/service-connections" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
+        connection_id = $adapterConnectionID
+        connection_type = "http_api"
+        name = "All Interface HTTP Adapter Connection"
+        base_url = $hostPrefix.TrimEnd("/")
+        status = "enabled"
+        health_check_enabled = $true
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$adapterProviderID/operations" -Operation "POST /v1/tool-providers/{provider_id}/operations" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
+        operation_id = $adapterOperationID
+        tool_id = $adapterToolID
+        group_id = $toolGroupID
+        name = "All adapter search"
+        description = "Search through HTTP API adapter."
+        when_to_use = @("adapter search")
+        service_connection_id = $adapterConnectionID
+        method = "POST"
+        path = "/adapter/search"
+        input_schema = @{ type = "object"; properties = @{ query = @{ type = "string" } }; required = @("query") }
+        output_schema = @{ type = "object" }
+        risk_level = "low"
+        visibility = "protected"
+        status = "enabled"
+        version = "v1"
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/tool-providers/$adapterProviderID/operations" -Operation "GET /v1/tool-providers/{provider_id}/operations" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/tool-providers/$adapterProviderID/operations/$adapterOperationID" -Operation "GET /v1/tool-providers/{provider_id}/operations/{operation_id}" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Put" -Path "/v1/tool-providers/$adapterProviderID/operations/$adapterOperationID" -Operation "PUT /v1/tool-providers/{provider_id}/operations/{operation_id}" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
+        operation_id = $adapterOperationID
+        tool_id = $adapterToolID
+        group_id = $toolGroupID
+        name = "All adapter search updated"
+        description = "Search through HTTP API adapter."
+        when_to_use = @("adapter search")
+        service_connection_id = $adapterConnectionID
+        method = "POST"
+        path = "/adapter/search"
+        input_schema = @{ type = "object"; properties = @{ query = @{ type = "string" } }; required = @("query") }
+        output_schema = @{ type = "object" }
+        risk_level = "low"
+        visibility = "protected"
+        status = "enabled"
+        version = "v2"
+    } | Out-Null
+    $adapterTest = Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$adapterProviderID/operations/$adapterOperationID/test" -Operation "POST /v1/tool-providers/{provider_id}/operations/{operation_id}/test" -ExpectedStatus @(200) -Roles "optimizer" -Body @{ arguments = @{ query = "adapter" } }
+    Assert-AITrue ([string]$adapterTest.Body.output.source -eq "http_api_adapter") "adapter operation test should call HTTP endpoint"
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$adapterProviderID/operations/$adapterOperationID/publish" -Operation "POST /v1/tool-providers/{provider_id}/operations/{operation_id}/publish" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$adapterProviderID/sync" -Operation "POST /v1/tool-providers/{provider_id}/sync" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
+
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections" -Operation "POST /v1/service-connections" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
+        connection_id = $databaseConnectionID
+        connection_type = "database"
+        name = "All Interface Database Connection"
+        status = "enabled"
+        base_url = "postgres://example.invalid/all-interface"
+        health_check_enabled = $false
+        metadata = @{ driver = "postgres" }
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$databaseProviderID/operations" -Operation "POST /v1/tool-providers/{provider_id}/operations" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
+        operation_id = $databaseOperationID
+        tool_id = $databaseToolID
+        group_id = $toolGroupID
+        name = "All database customers"
+        description = "Read customers from a database connection."
+        when_to_use = @("database customers")
+        service_connection_id = $databaseConnectionID
+        resource_id = "public.customers"
+        query_template = "select id, name from customers where status = :status limit :limit"
+        input_schema = @{ type = "object"; properties = @{ status = @{ type = "string" }; limit = @{ type = "integer" } }; required = @("status") }
+        parameter_schema = @{ type = "object"; properties = @{ status = @{ type = "string" }; limit = @{ type = "integer" } }; required = @("status") }
+        output_schema = @{ type = "object" }
+        max_rows = 50
+        read_only = $true
+        risk_level = "low"
+        visibility = "protected"
+        status = "draft"
+        version = "v1"
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/tool-providers/$databaseProviderID/operations" -Operation "GET /v1/tool-providers/{provider_id}/operations database adapter definitions" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
 
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-groups" -Operation "POST /v1/tool-groups" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
         group_id = $toolGroupID
@@ -596,25 +753,25 @@ try {
     Invoke-AIJson -BaseUrl $baseUrl -Method "Put" -Path "/v1/agents/$agentID/tool-bindings" -Operation "PUT /v1/agents/{agent_id}/tool-bindings" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
         version = $stableVersion
         tool_bindings = @{
-            allowed_tool_ids = @("echo", $toolID, "all.remote.echo")
+            allowed_tool_ids = @("echo", $toolID, $adapterToolID, "all.remote.echo")
             allowed_tool_group_ids = @($toolGroupID, "all.tools")
             denied_tool_ids = @()
-            exposed_tool_ids = @($toolID)
+            exposed_tool_ids = @($toolID, $adapterToolID)
         }
     } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/agents/$agentID/tool-bindings" -Operation "GET /v1/agents/{agent_id}/tool-bindings" -ExpectedStatus @(200) | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Patch" -Path "/v1/agents/$agentID/tool-bindings" -Operation "PATCH /v1/agents/{agent_id}/tool-bindings" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
         version = $stableVersion
         tool_bindings = @{
-            allowed_tool_ids = @("echo", $toolID, "all.remote.echo")
+            allowed_tool_ids = @("echo", $toolID, $adapterToolID, "all.remote.echo")
             allowed_tool_group_ids = @($toolGroupID, "all.tools")
             denied_tool_ids = @("origin.agent.delegate")
-            exposed_tool_ids = @($toolID)
+            exposed_tool_ids = @($toolID, $adapterToolID)
         }
     } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/agents/$agentID/tool-bindings" -Operation "POST /v1/agents/{agent_id}/tool-bindings" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
         version = $stableVersion
-        tool_bindings = @{ allowed_tool_ids = @("echo", $toolID, "all.remote.echo"); allowed_tool_group_ids = @($toolGroupID, "all.tools"); denied_tool_ids = @(); exposed_tool_ids = @($toolID) }
+        tool_bindings = @{ allowed_tool_ids = @("echo", $toolID, $adapterToolID, "all.remote.echo"); allowed_tool_group_ids = @($toolGroupID, "all.tools"); denied_tool_ids = @(); exposed_tool_ids = @($toolID, $adapterToolID) }
     } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/agents/$agentID/tool-bindings/governance" -Operation "GET /v1/agents/{agent_id}/tool-bindings/governance" -ExpectedStatus @(200) | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/agents/$agentID/tool-bindings/versions" -Operation "GET /v1/agents/{agent_id}/tool-bindings/versions" -ExpectedStatus @(200) | Out-Null
@@ -869,6 +1026,9 @@ try {
     $toolResult = Invoke-AICommand -BaseUrl $baseUrl -Command "tools.invoke" -Roles "runtime_caller" -TraceID $toolTraceID -Target @{ agent_id = $agentID; version = $stableVersion } -Payload @{ tool_id = $toolID; arguments = @{ value = "ok" } }
     $toolCallID = [string]$toolResult.tool_call_id
     Assert-AIStatus $toolCallID "tools.invoke should return tool_call_id"
+    $adapterToolResult = Invoke-AICommand -BaseUrl $baseUrl -Command "tools.invoke" -Roles "runtime_caller" -TraceID "trace_all_adapter_$suffix" -Target @{ agent_id = $agentID; version = $stableVersion } -Payload @{ tool_id = $adapterToolID; arguments = @{ query = "adapter" } }
+    Assert-AITrue ([string]$adapterToolResult.status -eq "succeeded") "HTTP API adapter tools.invoke should succeed"
+    Assert-AITrue ([string]$adapterToolResult.output.source -eq "http_api_adapter") "HTTP API adapter tools.invoke should return adapter output"
 
     $toolTrace = Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/tools/$toolCallID/trace" -Operation "GET /v1/tools/{tool_call_id}/trace" -ExpectedStatus @(200)
     Assert-AIStatus ([string]$toolTrace.Body.tool_call.tool_version) "tool trace should include tool_call.tool_version"
@@ -1032,10 +1192,15 @@ try {
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/cross-group-share-policies/$policyID" -Operation "DELETE /v1/cross-group-share-policies/{policy_id}" -ExpectedStatus @(200) -Roles "admin" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/runtime-hook-manifests/$goHookID" -Operation "DELETE /v1/runtime-hook-manifests/{hook_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/runtime-hook-providers/$hookProviderID" -Operation "DELETE /v1/runtime-hook-providers/{provider_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-manifests/$adapterToolID" -Operation "DELETE /v1/tool-manifests/{tool_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-manifests/$toolID" -Operation "DELETE /v1/tool-manifests/{tool_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-groups/$toolGroupID" -Operation "DELETE /v1/tool-groups/{group_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-providers/$mcpProviderID" -Operation "DELETE /v1/tool-providers/{provider_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-providers/$providerID" -Operation "DELETE /v1/tool-providers/{provider_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/service-connections/$databaseConnectionID" -Operation "DELETE /v1/service-connections/{connection_id}" -ExpectedStatus @(204) -Roles "optimizer" | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/service-connections/$adapterConnectionID" -Operation "DELETE /v1/service-connections/{connection_id}" -ExpectedStatus @(204) -Roles "optimizer" | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/service-connections/$mcpConnectionID" -Operation "DELETE /v1/service-connections/{connection_id}" -ExpectedStatus @(204) -Roles "optimizer" | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/service-connections/$providerConnectionID" -Operation "DELETE /v1/service-connections/{connection_id}" -ExpectedStatus @(204) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/agents" -Operation "POST /v1/agents" -ExpectedStatus @(201) -Roles "optimizer" -Body @{ agent_id = $deleteAgentID; name = "Delete Agent"; owner_id = "all-interface" } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/agents/$deleteAgentID" -Operation "DELETE /v1/agents/{agent_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
 

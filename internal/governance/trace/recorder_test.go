@@ -63,4 +63,13 @@ func TestInMemoryRecorderListFilterAndPaging(t *testing.T) {
 	if len(filtered) != 1 || filtered[0].TraceID != "trace_1" {
 		t.Fatalf("expected tenant-scoped run.created event, got %#v", filtered)
 	}
+	from := now.Add(500 * time.Millisecond)
+	to := now.Add(1500 * time.Millisecond)
+	windowed, err := rec.List(context.Background(), ListFilter{TenantID: "tenant_1", From: &from, To: &to})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windowed) != 1 || windowed[0].Type != contracts.TraceModelCalled {
+		t.Fatalf("expected time-windowed model call event, got %#v", windowed)
+	}
 }

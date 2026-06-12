@@ -43,7 +43,10 @@ type toolProviderGovernanceSummary struct {
 	DraftToolsTotal                  int `json:"draft_tools_total"`
 	BlockedToolsTotal                int `json:"blocked_tools_total"`
 	StaticToolHostToolsTotal         int `json:"static_tool_host_tools_total"`
-	HTTPDirectToolsTotal             int `json:"http_direct_tools_total"`
+	AgentPluginServiceToolsTotal     int `json:"agent_plugin_service_tools_total"`
+	MCPToolsTotal                    int `json:"mcp_tools_total"`
+	HTTPAPIAdapterToolsTotal         int `json:"http_api_adapter_tools_total"`
+	DatabaseAdapterToolsTotal        int `json:"database_adapter_tools_total"`
 	AgentToolToolsTotal              int `json:"agent_tool_tools_total"`
 	MissingProviderToolsTotal        int `json:"missing_provider_tools_total"`
 	HighRiskToolsTotal               int `json:"high_risk_tools_total"`
@@ -66,9 +69,7 @@ type toolProviderGovernanceProvider struct {
 	HealthStatus           string                               `json:"health_status"`
 	LastHealthCheckAt      *time.Time                           `json:"last_health_check_at,omitempty"`
 	LastHealthError        string                               `json:"last_health_error,omitempty"`
-	AuthRefSet             bool                                 `json:"auth_ref_set"`
-	TimeoutMS              int                                  `json:"timeout_ms"`
-	RetryMax               int                                  `json:"retry_max"`
+	ServiceConnectionID    string                               `json:"service_connection_id"`
 	Version                string                               `json:"version"`
 	Runnable               bool                                 `json:"runnable"`
 	BlockedReasons         []string                             `json:"blocked_reasons"`
@@ -156,12 +157,11 @@ func handleToolProviderGovernance(w http.ResponseWriter, r *http.Request, appCor
 		appCore.ToolCatalog.ListGroups(caller.TenantID),
 		appCore.ToolCatalog.ListManifests(caller.TenantID),
 		events,
-		appCore.ToolCatalog.DisableHTTPDirect,
 	)
 	writeJSON(w, map[string]any{"governance": view}, http.StatusOK)
 }
 
-func buildToolProviderGovernanceView(tenantID contracts.TenantID, query toolProviderGovernanceQuery, providers []toolcatalog.ToolProvider, groups []toolcatalog.ToolGroup, manifests []toolcatalog.ToolManifest, events []contracts.TraceEvent, disableHTTPDirect bool) toolProviderGovernanceView {
+func buildToolProviderGovernanceView(tenantID contracts.TenantID, query toolProviderGovernanceQuery, providers []toolcatalog.ToolProvider, groups []toolcatalog.ToolGroup, manifests []toolcatalog.ToolManifest, events []contracts.TraceEvent) toolProviderGovernanceView {
 	providerByKey := map[string]toolcatalog.ToolProvider{}
 	for _, provider := range providers {
 		providerByKey[toolProviderGovernanceKey(provider.TenantID, provider.ProviderID)] = provider
@@ -180,21 +180,19 @@ func buildToolProviderGovernanceView(tenantID contracts.TenantID, query toolProv
 		}
 		runnable, blockedReasons := toolProviderGovernanceProviderState(provider)
 		row := toolProviderGovernanceProvider{
-			TenantID:          provider.TenantID,
-			ProviderID:        provider.ProviderID,
-			ProviderType:      provider.ProviderType,
-			Name:              provider.Name,
-			Status:            provider.Status,
-			HealthStatus:      provider.HealthStatus,
-			LastHealthCheckAt: provider.LastHealthCheckAt,
-			LastHealthError:   provider.LastHealthError,
-			AuthRefSet:        provider.AuthRef != "",
-			TimeoutMS:         provider.TimeoutMS,
-			RetryMax:          provider.RetryMax,
-			Version:           provider.Version,
-			Runnable:          runnable,
-			BlockedReasons:    blockedReasons,
-			Groups:            []string{},
+			TenantID:            provider.TenantID,
+			ProviderID:          provider.ProviderID,
+			ProviderType:        provider.ProviderType,
+			Name:                provider.Name,
+			Status:              provider.Status,
+			HealthStatus:        provider.HealthStatus,
+			LastHealthCheckAt:   provider.LastHealthCheckAt,
+			LastHealthError:     provider.LastHealthError,
+			ServiceConnectionID: provider.ServiceConnectionID,
+			Version:             provider.Version,
+			Runnable:            runnable,
+			BlockedReasons:      blockedReasons,
+			Groups:              []string{},
 		}
 		if evidence, ok := providerEvidence[provider.ProviderID]; ok {
 			row.TraceEvidence = cloneToolProviderGovernanceTraceEvidence(evidence)
@@ -211,7 +209,7 @@ func buildToolProviderGovernanceView(tenantID contracts.TenantID, query toolProv
 		}
 		group, groupFound := toolProviderGovernanceGroup(groupByKey, manifest.TenantID, manifest.GroupID)
 		provider, providerFound := lookupToolProviderGovernanceProvider(providerByKey, manifest.TenantID, providerID)
-		runnable, blockedReasons := toolProviderGovernanceToolState(manifest, group, groupFound, provider, providerFound, disableHTTPDirect)
+		runnable, blockedReasons := toolProviderGovernanceToolState(manifest, group, groupFound, provider, providerFound)
 		row := toolProviderGovernanceTool{
 			TenantID:       manifest.TenantID,
 			ToolID:         manifest.ToolID,
@@ -231,7 +229,7 @@ func buildToolProviderGovernanceView(tenantID contracts.TenantID, query toolProv
 			row.TraceEvidence = cloneToolProviderGovernanceTraceEvidence(evidence)
 		}
 		toolRows = append(toolRows, row)
-		if manifest.Executor.Type == toolcatalog.ExecutorTypeStaticToolHost && providerFound {
+		if toolProviderGovernanceExecutorUsesToolProvider(manifest.Executor.Type) && providerFound {
 			if idx, ok := providerIndex[toolProviderGovernanceKey(provider.TenantID, provider.ProviderID)]; ok {
 				updateToolProviderGovernanceProviderCounts(&providerRows[idx], manifest, runnable)
 			}
@@ -292,7 +290,7 @@ func toolProviderGovernanceProviderState(provider toolcatalog.ToolProvider) (boo
 	return len(reasons) == 0, reasons
 }
 
-func toolProviderGovernanceToolState(manifest toolcatalog.ToolManifest, group toolcatalog.ToolGroup, groupFound bool, provider toolcatalog.ToolProvider, providerFound bool, disableHTTPDirect bool) (bool, []string) {
+func toolProviderGovernanceToolState(manifest toolcatalog.ToolManifest, group toolcatalog.ToolGroup, groupFound bool, provider toolcatalog.ToolProvider, providerFound bool) (bool, []string) {
 	reasons := make([]string, 0)
 	if manifest.Status != toolcatalog.StatusEnabled {
 		reasons = append(reasons, "tool_status:"+manifest.Status)
@@ -300,7 +298,7 @@ func toolProviderGovernanceToolState(manifest toolcatalog.ToolManifest, group to
 	if strings.TrimSpace(manifest.GroupID) != "" && groupFound && group.Status != toolcatalog.StatusEnabled {
 		reasons = append(reasons, "group_status:"+group.Status)
 	}
-	if manifest.Executor.Type == toolcatalog.ExecutorTypeStaticToolHost {
+	if toolProviderGovernanceExecutorUsesToolProvider(manifest.Executor.Type) {
 		if !providerFound {
 			reasons = append(reasons, "provider_missing")
 		} else {
@@ -311,9 +309,6 @@ func toolProviderGovernanceToolState(manifest toolcatalog.ToolManifest, group to
 				reasons = append(reasons, "provider_unhealthy")
 			}
 		}
-	}
-	if manifest.Executor.Type == toolcatalog.ExecutorTypeHTTPDirect && disableHTTPDirect {
-		reasons = append(reasons, "http_direct_disabled")
 	}
 	return len(reasons) == 0, reasons
 }
@@ -391,8 +386,26 @@ func summarizeToolProviderGovernance(providers []toolProviderGovernanceProvider,
 			if contains(tool.BlockedReasons, "provider_missing") {
 				summary.MissingProviderToolsTotal++
 			}
-		case toolcatalog.ExecutorTypeHTTPDirect:
-			summary.HTTPDirectToolsTotal++
+		case toolcatalog.ExecutorTypeAgentPlugin:
+			summary.AgentPluginServiceToolsTotal++
+			if contains(tool.BlockedReasons, "provider_missing") {
+				summary.MissingProviderToolsTotal++
+			}
+		case toolcatalog.ExecutorTypeMCP:
+			summary.MCPToolsTotal++
+			if contains(tool.BlockedReasons, "provider_missing") {
+				summary.MissingProviderToolsTotal++
+			}
+		case toolcatalog.ExecutorTypeHTTPAPIAdapter:
+			summary.HTTPAPIAdapterToolsTotal++
+			if contains(tool.BlockedReasons, "provider_missing") {
+				summary.MissingProviderToolsTotal++
+			}
+		case toolcatalog.ExecutorTypeDatabaseAdapter:
+			summary.DatabaseAdapterToolsTotal++
+			if contains(tool.BlockedReasons, "provider_missing") {
+				summary.MissingProviderToolsTotal++
+			}
 		case toolcatalog.ExecutorTypeAgentTool:
 			summary.AgentToolToolsTotal++
 		}
@@ -490,11 +503,15 @@ func cloneToolProviderGovernanceTraceEvidence(evidence toolProviderGovernanceTra
 
 func toolProviderGovernanceManifestProviderID(manifest toolcatalog.ToolManifest) string {
 	switch manifest.Executor.Type {
-	case toolcatalog.ExecutorTypeStaticToolHost, toolcatalog.ExecutorTypeAgentTool:
+	case toolcatalog.ExecutorTypeStaticToolHost, toolcatalog.ExecutorTypeAgentPlugin, toolcatalog.ExecutorTypeMCP, toolcatalog.ExecutorTypeHTTPAPIAdapter, toolcatalog.ExecutorTypeDatabaseAdapter, toolcatalog.ExecutorTypeAgentTool:
 		return manifest.Executor.ProviderID
 	default:
 		return ""
 	}
+}
+
+func toolProviderGovernanceExecutorUsesToolProvider(executorType string) bool {
+	return executorType == toolcatalog.ExecutorTypeStaticToolHost || executorType == toolcatalog.ExecutorTypeAgentPlugin || executorType == toolcatalog.ExecutorTypeMCP || executorType == toolcatalog.ExecutorTypeHTTPAPIAdapter || executorType == toolcatalog.ExecutorTypeDatabaseAdapter
 }
 
 func lookupToolProviderGovernanceProvider(providerByKey map[string]toolcatalog.ToolProvider, tenantID contracts.TenantID, providerID string) (toolcatalog.ToolProvider, bool) {

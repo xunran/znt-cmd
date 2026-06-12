@@ -32,6 +32,7 @@ type Repositories struct {
 	Runs                *RunRepository
 	Tools               *ToolRepository
 	ToolCatalog         *ToolCatalogStore
+	ServiceConnections  *ServiceConnectionStore
 	RuntimeHooks        *RuntimeHookStore
 	Trace               *TraceRecorder
 	Audit               *AuditLogger
@@ -103,6 +104,7 @@ func NewRepositories(db *sql.DB) *Repositories {
 		Runs:                &RunRepository{db: db, now: time.Now},
 		Tools:               &ToolRepository{db: db},
 		ToolCatalog:         &ToolCatalogStore{db: db},
+		ServiceConnections:  &ServiceConnectionStore{db: db},
 		RuntimeHooks:        &RuntimeHookStore{db: db},
 		Trace:               &TraceRecorder{db: db},
 		Audit:               auditLogger,
@@ -371,12 +373,40 @@ func jsonValue(value any) ([]byte, error) {
 	return data, nil
 }
 
+func nullableJSONValue(value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	return jsonValue(value)
+}
+
 func jsonBytes(value any) []byte {
 	data, err := jsonValue(value)
 	if err != nil {
 		return []byte("{}")
 	}
 	return data
+}
+
+func normalizeStringSlice(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func scanJSON(data []byte, dst any) error {
@@ -1131,29 +1161,24 @@ func (s *ToolCatalogStore) UpsertProvider(ctx context.Context, provider toolcata
 	now := time.Now().UTC()
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO tool_providers (
-  tenant_id, provider_id, provider_type, name, description, endpoint, status,
-  health_status, last_health_check_at, last_health_error, auth_ref, timeout_ms,
-  retry_max, version, created_at, updated_at
+  tenant_id, provider_id, provider_type, name, description, service_connection_id, status,
+  health_status, last_health_check_at, last_health_error, version, created_at, updated_at
 )
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 ON CONFLICT (tenant_id, provider_id) DO UPDATE SET
   provider_type=EXCLUDED.provider_type,
   name=EXCLUDED.name,
   description=EXCLUDED.description,
-  endpoint=EXCLUDED.endpoint,
+  service_connection_id=EXCLUDED.service_connection_id,
   status=EXCLUDED.status,
   health_status=EXCLUDED.health_status,
   last_health_check_at=EXCLUDED.last_health_check_at,
   last_health_error=EXCLUDED.last_health_error,
-  auth_ref=EXCLUDED.auth_ref,
-  timeout_ms=EXCLUDED.timeout_ms,
-  retry_max=EXCLUDED.retry_max,
   version=EXCLUDED.version,
   updated_at=EXCLUDED.updated_at`,
 		provider.TenantID, provider.ProviderID, provider.ProviderType, provider.Name, nullString(provider.Description),
-		provider.Endpoint, provider.Status, provider.HealthStatus, nullTime(provider.LastHealthCheckAt),
-		nullString(provider.LastHealthError), nullString(provider.AuthRef), provider.TimeoutMS, provider.RetryMax,
-		provider.Version, now, now,
+		nullString(provider.ServiceConnectionID), provider.Status, provider.HealthStatus, nullTime(provider.LastHealthCheckAt),
+		nullString(provider.LastHealthError), provider.Version, now, now,
 	)
 	return err
 }
@@ -1174,6 +1199,86 @@ ON CONFLICT (tenant_id, group_id) DO UPDATE SET
 	return err
 }
 
+func (s *ToolCatalogStore) UpsertAdapterOperation(ctx context.Context, operation toolcatalog.AdapterOperation) error {
+	whenToUse, err := jsonValue(operation.WhenToUse)
+	if err != nil {
+		return err
+	}
+	headers, err := jsonValue(operation.Headers)
+	if err != nil {
+		return err
+	}
+	inputSchema, err := jsonValue(operation.InputSchema)
+	if err != nil {
+		return err
+	}
+	outputSchema, err := nullableJSONValue(operation.OutputSchema)
+	if err != nil {
+		return err
+	}
+	requestMapping, err := jsonValue(operation.RequestMapping)
+	if err != nil {
+		return err
+	}
+	responseMapping, err := jsonValue(operation.ResponseMapping)
+	if err != nil {
+		return err
+	}
+	parameterSchema, err := nullableJSONValue(operation.ParameterSchema)
+	if err != nil {
+		return err
+	}
+	redactColumns := operation.RedactColumns
+	if redactColumns == nil {
+		redactColumns = []string{}
+	}
+	redactColumnsJSON, err := jsonValue(redactColumns)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO tool_adapter_operations (
+  tenant_id, provider_id, operation_id, tool_id, group_id, name, description, when_to_use_json,
+  service_connection_id, method, path, headers_json, input_schema_json, output_schema_json,
+  request_mapping_json, response_mapping_json, resource_id, query_template, parameter_schema_json, max_rows, redact_columns_json, read_only,
+  risk_level, visibility, status, version, created_at, updated_at
+)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+ON CONFLICT (tenant_id, provider_id, operation_id) DO UPDATE SET
+  tool_id=EXCLUDED.tool_id,
+  group_id=EXCLUDED.group_id,
+  name=EXCLUDED.name,
+  description=EXCLUDED.description,
+  when_to_use_json=EXCLUDED.when_to_use_json,
+  service_connection_id=EXCLUDED.service_connection_id,
+  method=EXCLUDED.method,
+  path=EXCLUDED.path,
+  headers_json=EXCLUDED.headers_json,
+  input_schema_json=EXCLUDED.input_schema_json,
+  output_schema_json=EXCLUDED.output_schema_json,
+  request_mapping_json=EXCLUDED.request_mapping_json,
+  response_mapping_json=EXCLUDED.response_mapping_json,
+  resource_id=EXCLUDED.resource_id,
+  query_template=EXCLUDED.query_template,
+  parameter_schema_json=EXCLUDED.parameter_schema_json,
+  max_rows=EXCLUDED.max_rows,
+  redact_columns_json=EXCLUDED.redact_columns_json,
+  read_only=EXCLUDED.read_only,
+  risk_level=EXCLUDED.risk_level,
+  visibility=EXCLUDED.visibility,
+  status=EXCLUDED.status,
+  version=EXCLUDED.version,
+  updated_at=EXCLUDED.updated_at`,
+		operation.TenantID, operation.ProviderID, operation.OperationID, operation.ToolID, nullString(operation.GroupID),
+		operation.Name, operation.Description, whenToUse, operation.ServiceConnectionID, operation.Method, operation.Path,
+		headers, inputSchema, outputSchema, requestMapping, responseMapping,
+		nullString(operation.ResourceID), nullString(operation.QueryTemplate), parameterSchema, operation.MaxRows, redactColumnsJSON, operation.ReadOnly,
+		string(operation.RiskLevel), string(operation.Visibility), operation.Status, operation.Version, now, now,
+	)
+	return err
+}
+
 func (s *ToolCatalogStore) UpsertManifest(ctx context.Context, manifest toolcatalog.ToolManifest) error {
 	whenToUse, err := jsonValue(manifest.WhenToUse)
 	if err != nil {
@@ -1183,7 +1288,7 @@ func (s *ToolCatalogStore) UpsertManifest(ctx context.Context, manifest toolcata
 	if err != nil {
 		return err
 	}
-	outputSchema, err := jsonValue(manifest.OutputSchema)
+	outputSchema, err := nullableJSONValue(manifest.OutputSchema)
 	if err != nil {
 		return err
 	}
@@ -1259,8 +1364,8 @@ ON CONFLICT (tenant_id, tool_id) DO UPDATE SET
 
 func (s *ToolCatalogStore) ListProviders(ctx context.Context) ([]toolcatalog.ToolProvider, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT tenant_id, provider_id, provider_type, name, description, endpoint, status, health_status, last_health_check_at, last_health_error,
-       auth_ref, timeout_ms, retry_max, version
+SELECT tenant_id, provider_id, provider_type, name, description, service_connection_id, status, health_status, last_health_check_at, last_health_error,
+       version
 FROM tool_providers
 ORDER BY tenant_id, provider_id`)
 	if err != nil {
@@ -1304,6 +1409,32 @@ ORDER BY tenant_id, group_id`)
 	return out, rows.Err()
 }
 
+func (s *ToolCatalogStore) ListAdapterOperations(ctx context.Context) ([]toolcatalog.AdapterOperation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT tenant_id, provider_id, operation_id, tool_id, group_id, name, description, when_to_use_json,
+  service_connection_id, method, path, headers_json, input_schema_json, output_schema_json,
+  request_mapping_json, response_mapping_json, resource_id, query_template, parameter_schema_json, max_rows, redact_columns_json, read_only,
+  risk_level, visibility, status, version
+FROM tool_adapter_operations
+ORDER BY tenant_id, provider_id, operation_id`)
+	if err != nil {
+		if isSchemaNotReadyError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]toolcatalog.AdapterOperation, 0)
+	for rows.Next() {
+		operation, err := scanAdapterOperation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, operation)
+	}
+	return out, rows.Err()
+}
+
 func (s *ToolCatalogStore) ListManifests(ctx context.Context) ([]toolcatalog.ToolManifest, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT tenant_id, tool_id, group_id, name, description, when_to_use_json,
@@ -1333,20 +1464,19 @@ func scanToolProvider(row interface {
 	Scan(dest ...any) error
 }) (toolcatalog.ToolProvider, error) {
 	var provider toolcatalog.ToolProvider
-	var tenantID, description, lastHealthError, authRef sql.NullString
+	var tenantID, description, serviceConnectionID, lastHealthError sql.NullString
 	var lastHealthCheckAt sql.NullTime
 	if err := row.Scan(
-		&tenantID, &provider.ProviderID, &provider.ProviderType, &provider.Name, &description, &provider.Endpoint,
-		&provider.Status, &provider.HealthStatus, &lastHealthCheckAt, &lastHealthError, &authRef, &provider.TimeoutMS,
-		&provider.RetryMax, &provider.Version,
+		&tenantID, &provider.ProviderID, &provider.ProviderType, &provider.Name, &description, &serviceConnectionID,
+		&provider.Status, &provider.HealthStatus, &lastHealthCheckAt, &lastHealthError, &provider.Version,
 	); err != nil {
 		return toolcatalog.ToolProvider{}, mapSQLError(err)
 	}
 	provider.TenantID = contracts.TenantID(tenantID.String)
 	provider.Description = description.String
+	provider.ServiceConnectionID = serviceConnectionID.String
 	provider.LastHealthCheckAt = timePtr(lastHealthCheckAt)
 	provider.LastHealthError = lastHealthError.String
-	provider.AuthRef = authRef.String
 	return provider, nil
 }
 
@@ -1363,13 +1493,68 @@ func scanToolGroup(row interface {
 	return group, nil
 }
 
+func scanAdapterOperation(row interface {
+	Scan(dest ...any) error
+}) (toolcatalog.AdapterOperation, error) {
+	var operation toolcatalog.AdapterOperation
+	var tenantID, groupID, resourceID, queryTemplate sql.NullString
+	var whenToUseJSON, headersJSON, inputSchemaJSON, requestMappingJSON, responseMappingJSON, redactColumnsJSON []byte
+	var outputSchemaJSON, parameterSchemaJSON sql.NullString
+	var riskLevel, visibility string
+	if err := row.Scan(
+		&tenantID, &operation.ProviderID, &operation.OperationID, &operation.ToolID, &groupID, &operation.Name, &operation.Description,
+		&whenToUseJSON, &operation.ServiceConnectionID, &operation.Method, &operation.Path, &headersJSON, &inputSchemaJSON,
+		&outputSchemaJSON, &requestMappingJSON, &responseMappingJSON, &resourceID, &queryTemplate, &parameterSchemaJSON,
+		&operation.MaxRows, &redactColumnsJSON, &operation.ReadOnly, &riskLevel, &visibility, &operation.Status, &operation.Version,
+	); err != nil {
+		return toolcatalog.AdapterOperation{}, mapSQLError(err)
+	}
+	operation.TenantID = contracts.TenantID(tenantID.String)
+	operation.GroupID = groupID.String
+	operation.ResourceID = resourceID.String
+	operation.QueryTemplate = queryTemplate.String
+	operation.RiskLevel = contracts.RiskLevel(riskLevel)
+	operation.Visibility = contracts.ToolVisibility(visibility)
+	if err := scanJSON(whenToUseJSON, &operation.WhenToUse); err != nil {
+		return toolcatalog.AdapterOperation{}, err
+	}
+	if err := scanJSON(headersJSON, &operation.Headers); err != nil {
+		return toolcatalog.AdapterOperation{}, err
+	}
+	if err := scanJSON(inputSchemaJSON, &operation.InputSchema); err != nil {
+		return toolcatalog.AdapterOperation{}, err
+	}
+	if outputSchemaJSON.Valid {
+		if err := scanJSON([]byte(outputSchemaJSON.String), &operation.OutputSchema); err != nil {
+			return toolcatalog.AdapterOperation{}, err
+		}
+	}
+	if parameterSchemaJSON.Valid {
+		if err := scanJSON([]byte(parameterSchemaJSON.String), &operation.ParameterSchema); err != nil {
+			return toolcatalog.AdapterOperation{}, err
+		}
+	}
+	if err := scanJSON(requestMappingJSON, &operation.RequestMapping); err != nil {
+		return toolcatalog.AdapterOperation{}, err
+	}
+	if err := scanJSON(responseMappingJSON, &operation.ResponseMapping); err != nil {
+		return toolcatalog.AdapterOperation{}, err
+	}
+	if err := scanJSON(redactColumnsJSON, &operation.RedactColumns); err != nil {
+		return toolcatalog.AdapterOperation{}, err
+	}
+	operation.RedactColumns = normalizeStringSlice(operation.RedactColumns)
+	return operation, nil
+}
+
 func scanToolManifest(row interface {
 	Scan(dest ...any) error
 }) (toolcatalog.ToolManifest, error) {
 	var manifest toolcatalog.ToolManifest
 	var tenantID, groupID sql.NullString
 	var riskLevel, visibility string
-	var whenToUseJSON, inputSchemaJSON, outputSchemaJSON, executorJSON []byte
+	var whenToUseJSON, inputSchemaJSON, executorJSON []byte
+	var outputSchemaJSON sql.NullString
 	if err := row.Scan(
 		&tenantID, &manifest.ToolID, &groupID, &manifest.Name, &manifest.Description, &whenToUseJSON,
 		&inputSchemaJSON, &outputSchemaJSON, &riskLevel, &visibility, &manifest.ExecutionProfile,
@@ -1387,8 +1572,10 @@ func scanToolManifest(row interface {
 	if err := scanJSON(inputSchemaJSON, &manifest.InputSchema); err != nil {
 		return toolcatalog.ToolManifest{}, err
 	}
-	if err := scanJSON(outputSchemaJSON, &manifest.OutputSchema); err != nil {
-		return toolcatalog.ToolManifest{}, err
+	if outputSchemaJSON.Valid {
+		if err := scanJSON([]byte(outputSchemaJSON.String), &manifest.OutputSchema); err != nil {
+			return toolcatalog.ToolManifest{}, err
+		}
 	}
 	if err := scanJSON(executorJSON, &manifest.Executor); err != nil {
 		return toolcatalog.ToolManifest{}, err
@@ -1971,6 +2158,12 @@ func (r *TraceRecorder) List(ctx context.Context, filter tracequery.ListFilter) 
 	}
 	if filter.Type != "" {
 		add("type=$%d", filter.Type)
+	}
+	if filter.From != nil {
+		add("created_at >= $%d", filter.From.UTC())
+	}
+	if filter.To != nil {
+		add("created_at <= $%d", filter.To.UTC())
 	}
 	query := `SELECT trace_id, tenant_id, span_id, run_id, task_id, type, payload, created_at FROM trace_events`
 	if len(where) > 0 {

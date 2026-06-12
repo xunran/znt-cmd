@@ -35,6 +35,7 @@ import (
 	runtimehook "znt/internal/runtime/hook"
 	"znt/internal/runtime/kernel"
 	runrepo "znt/internal/runtime/run"
+	serviceconnection "znt/internal/serviceconnection"
 	"znt/internal/skillupdate"
 	"znt/internal/storage/postgres"
 	taskhandoff "znt/internal/task/handoff"
@@ -76,15 +77,16 @@ type Core struct {
 	PolicyEngine        policyengine.Engine
 	PolicyManager       policyengine.PolicyManager
 
-	Tools           *registry.InMemoryRegistry
-	ToolCatalog     *toolcatalog.Service
-	RuntimeHooks    *runtimehook.Service
-	ToolRepo        toolrepo.Repository
-	ToolRuntime     toolruntime.Runtime
-	ExternalTools   toolinvoke.Service
-	Artifacts       artifact.Store
-	Memory          artifact.MemoryStore
-	ContextPackages artifact.ContextPackageStore
+	Tools              *registry.InMemoryRegistry
+	ToolCatalog        *toolcatalog.Service
+	ServiceConnections *serviceconnection.Service
+	RuntimeHooks       *runtimehook.Service
+	ToolRepo           toolrepo.Repository
+	ToolRuntime        toolruntime.Runtime
+	ExternalTools      toolinvoke.Service
+	Artifacts          artifact.Store
+	Memory             artifact.MemoryStore
+	ContextPackages    artifact.ContextPackageStore
 
 	Identity          identity.Service
 	GroupPermissions  grouppermission.Service
@@ -155,6 +157,7 @@ func New(cfg config.Config) (*Core, error) {
 	var agentDraftRequestStore agentfactory.Store
 	var tonePolicyStore tone.Store
 	var toolCatalogStore toolcatalog.Store
+	var serviceConnectionStore serviceconnection.Store
 	var runtimeHookStore runtimehook.Store = runtimehook.NewInMemoryStore()
 	evalStore := eval.NewStore()
 	if pg != nil {
@@ -182,6 +185,7 @@ func New(cfg config.Config) (*Core, error) {
 		agentDraftRequestStore = pg.AgentDraftRequests
 		tonePolicyStore = pg.TonePolicies
 		toolCatalogStore = pg.ToolCatalog
+		serviceConnectionStore = pg.ServiceConnections
 		runtimeHookStore = pg.RuntimeHooks
 		policies = pg.Policies
 		policyEngine = policyengine.New(policies, auditLogger)
@@ -208,7 +212,8 @@ func New(cfg config.Config) (*Core, error) {
 	}
 	toolCatalog := toolcatalog.NewServiceWithStore(tools, auditLogger, toolCatalogStore)
 	toolCatalog.SetTraceRecorder(traceRecorder)
-	toolCatalog.DisableHTTPDirect = cfg.DisableHTTPDirect
+	serviceConnections := serviceconnection.NewServiceWithStore(serviceConnectionStore)
+	toolCatalog.SetServiceConnections(serviceConnections)
 	runtimeHooks := runtimehook.NewService(runtimeHookStore, traceRecorder, auditLogger)
 	toolRuntime := toolruntime.New(tools, toolpolicy.New(auditLogger), traceRecorder)
 	toolRuntime.Audit = auditLogger
@@ -428,6 +433,7 @@ func New(cfg config.Config) (*Core, error) {
 		PolicyManager:       policyManager,
 		Tools:               tools,
 		ToolCatalog:         toolCatalog,
+		ServiceConnections:  serviceConnections,
 		RuntimeHooks:        runtimeHooks,
 		ToolRepo:            toolRepo,
 		ToolRuntime:         toolRuntime,

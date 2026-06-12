@@ -25,6 +25,5 @@
   "disabled_agent_ids": [],
   "disabled_tool_ids": [],
   "disable_handoff": false,
-  "disable_external_tools_invoke": false,
-  "disable_http_direct": false
+  "disable_external_tools_invoke": false
 }

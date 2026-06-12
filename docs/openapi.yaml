@@ -38,7 +38,7 @@ tags:
   - name: Intake
   - name: Agents
   - name: Skills
-  - name: Tools
+  - name: ToolManifests
   - name: ToolProviders
   - name: ToolGroups
   - name: ServiceConnections
@@ -696,139 +696,210 @@ paths:
               schema:
                 $ref: "#/components/schemas/RunResponse"
 
-  /v1/tools:
+  /v1/tool-manifests:
     get:
-      tags: [Tools]
-      operationId: listTools
-      summary: List product tools.
+      tags: [ToolManifests]
+      operationId: listToolManifests
+      summary: List tool manifests.
       parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
-        - name: provider_id
-          in: query
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Tool list.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ToolListResponse"
-    post:
-      tags: [Tools]
-      operationId: createTool
-      summary: Register a product tool.
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ToolUpsertRequest"
-      responses:
-        "201":
-          description: Tool created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ToolResponse"
-
-  /v1/tools/{tool_id}:
-    parameters:
-      - $ref: "#/components/parameters/ToolId"
-    get:
-      tags: [Tools]
-      operationId: getTool
-      summary: Get a product tool.
-      responses:
-        "200":
-          description: Tool resource.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ToolResponse"
-    patch:
-      tags: [Tools]
-      operationId: patchTool
-      summary: Patch a product tool.
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ToolUpsertRequest"
-      responses:
-        "200":
-          description: Tool patched.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ToolResponse"
-    delete:
-      tags: [Tools]
-      operationId: deleteTool
-      summary: Delete a product tool.
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "204":
-          description: Tool deleted.
-
-  /v1/tools/{tool_id}/details:
-    get:
-      tags: [Tools]
-      operationId: getToolDetails
-      summary: Get tool detail panel data, including schema, usage, agents, and versions.
-      parameters:
-        - $ref: "#/components/parameters/ToolId"
-        - name: period
+        - name: q
           in: query
           required: false
           schema:
             type: string
-            enum: [7d, 30d, month]
-            default: 7d
+        - name: provider_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: executor_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [static_tool_host, agent_plugin_service, mcp, agent_tool, http_api_adapter, database_adapter]
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [draft, enabled, disabled]
+        - name: risk_level
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [low, medium, high, critical]
+        - name: visibility
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [private, protected, exposed]
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
       responses:
         "200":
-          description: Tool detail aggregate.
+          description: Tool manifest list.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ToolDetailsResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
-
-  /v1/tools/{tool_id}/invoke:
+                $ref: "#/components/schemas/ToolManifestListResponse"
     post:
-      tags: [Tools]
-      operationId: invokeTool
-      summary: Invoke or smoke-test a product tool.
+      tags: [ToolManifests]
+      operationId: createToolManifest
+      summary: Create or update a tool manifest.
       parameters:
-        - $ref: "#/components/parameters/ToolId"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ToolInvokeRequest"
+              $ref: "#/components/schemas/ToolManifest"
       responses:
-        "202":
-          description: Tool invocation accepted.
+        "201":
+          description: Tool manifest created or updated.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ToolInvokeResponse"
+                $ref: "#/components/schemas/ToolManifestResponse"
+
+  /v1/tool-manifests/{tool_id}:
+    parameters:
+      - $ref: "#/components/parameters/ToolId"
+    get:
+      tags: [ToolManifests]
+      operationId: getToolManifest
+      summary: Get a tool manifest.
+      responses:
+        "200":
+          description: Tool manifest resource.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolManifestResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [ToolManifests]
+      operationId: putToolManifest
+      summary: Replace a tool manifest.
+      description: Full replacement. Body tool_id, when supplied, must match the path tool_id.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolManifest"
+      responses:
+        "200":
+          description: Tool manifest replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolManifestResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [ToolManifests]
+      operationId: patchToolManifest
+      summary: Patch a tool manifest.
+      description: Partial update that preserves omitted fields. Body tool_id, when supplied, must match the path tool_id.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolManifestPatchRequest"
+      responses:
+        "200":
+          description: Tool manifest patched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolManifestResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [ToolManifests]
+      operationId: disableToolManifest
+      summary: Disable a tool manifest.
+      responses:
+        "200":
+          description: Tool manifest disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolManifestResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /v1/tool-providers:
     get:
       tags: [ToolProviders]
       operationId: listToolProviders
       summary: List tool providers.
+      description: Lists external tool sources by default. Set include_managed=true to include internal adapter providers such as managed_http_api_adapter and managed_database_adapter.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: provider_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [static_tool_host, agent_plugin_service, mcp, http_api_adapter, database_adapter]
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [draft, enabled, disabled]
+        - name: health_status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [unknown, healthy, unhealthy]
+        - name: include_managed
+          in: query
+          required: false
+          description: Include internal managed adapter providers. Defaults to false for tool source pages.
+          schema:
+            type: boolean
+            default: false
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 200
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
       responses:
         "200":
           description: Tool provider list.
@@ -840,6 +911,7 @@ paths:
       tags: [ToolProviders]
       operationId: createToolProvider
       summary: Create a tool provider.
+      description: Public tool provider creation is for external tool sources only. Managed adapter providers are internal; create HTTP API or database tools through AdapterOperation under managed_http_api_adapter or managed_database_adapter.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -870,10 +942,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ToolProviderResponse"
-    patch:
+    put:
       tags: [ToolProviders]
-      operationId: patchToolProvider
-      summary: Patch a tool provider.
+      operationId: putToolProvider
+      summary: Replace a tool provider.
+      description: Full replacement. Body provider_id, when supplied, must match the path provider_id. Managed adapter providers are internal and cannot be replaced through this public provider endpoint.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -884,6 +957,26 @@ paths:
               $ref: "#/components/schemas/ToolProviderUpsertRequest"
       responses:
         "200":
+          description: Tool provider replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolProviderResponse"
+    patch:
+      tags: [ToolProviders]
+      operationId: patchToolProvider
+      summary: Patch a tool provider.
+      description: Partial update that preserves omitted fields. Body provider_id, when supplied, must match the path provider_id. Managed adapter providers are internal and cannot be patched through this public provider endpoint.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolProviderPatchRequest"
+      responses:
+        "200":
           description: Tool provider patched.
           content:
             application/json:
@@ -891,13 +984,17 @@ paths:
                 $ref: "#/components/schemas/ToolProviderResponse"
     delete:
       tags: [ToolProviders]
-      operationId: deleteToolProvider
-      summary: Delete a tool provider.
+      operationId: disableToolProvider
+      summary: Disable a tool provider.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "204":
-          description: Tool provider deleted.
+        "200":
+          description: Tool provider disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolProviderResponse"
 
   /v1/tool-providers/{provider_id}/sync:
     post:
@@ -908,14 +1005,14 @@ paths:
         - $ref: "#/components/parameters/ProviderId"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "202":
-          description: Sync accepted.
+        "200":
+          description: Provider catalog synchronized.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ToolProviderResponse"
+                $ref: "#/components/schemas/ToolManifestListResponse"
 
-  /v1/tool-providers/{provider_id}/health-check:
+  /v1/tool-providers/{provider_id}/health:
     post:
       tags: [ToolProviders]
       operationId: checkToolProviderHealth
@@ -929,61 +1026,173 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ToolProviderHealthResponse"
+                $ref: "#/components/schemas/ToolProviderResponse"
 
-  /v1/tool-providers/{provider_id}/repair:
+  /v1/tool-providers/{provider_id}/operations:
+    get:
+      tags: [ToolProviders]
+      operationId: listAdapterOperations
+      summary: List adapter operations for a provider.
+      parameters:
+        - $ref: "#/components/parameters/ProviderId"
+      responses:
+        "200":
+          description: Adapter operation list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdapterOperationListResponse"
     post:
       tags: [ToolProviders]
-      operationId: repairToolProvider
-      summary: Attempt automatic repair for a degraded tool provider.
+      operationId: createAdapterOperation
+      summary: Create an adapter operation.
       parameters:
         - $ref: "#/components/parameters/ProviderId"
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RepairRequest"
+              $ref: "#/components/schemas/AdapterOperation"
       responses:
-        "202":
-          description: Repair accepted.
+        "201":
+          description: Adapter operation created.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ToolProviderResponse"
+                $ref: "#/components/schemas/AdapterOperationResponse"
 
-  /v1/tool-providers/{provider_id}/details:
-    get:
+  /v1/tool-providers/{provider_id}/operations/from-resource:
+    post:
       tags: [ToolProviders]
-      operationId: getToolProviderDetails
-      summary: Get tool provider detail panel data.
+      operationId: createAdapterOperationFromResource
+      summary: Create an adapter operation from a discovered service connection resource.
+      description: Uses a service_connection_id and discovered ServiceConnectionResource to generate an AdapterOperation under a managed adapter provider. managed_http_api_adapter accepts http_operation resources; managed_database_adapter accepts discovered table/view resources.
       parameters:
         - $ref: "#/components/parameters/ProviderId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdapterOperationFromResourceRequest"
       responses:
-        "200":
-          description: Tool provider detail aggregate.
+        "201":
+          description: Adapter operation generated from a service connection resource.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ToolProviderDetailsResponse"
+                $ref: "#/components/schemas/AdapterOperationResponse"
 
-  /v1/tool-providers/{provider_id}/tools:
+  /v1/tool-providers/{provider_id}/operations/{operation_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProviderId"
+      - name: operation_id
+        in: path
+        required: true
+        schema:
+          type: string
     get:
       tags: [ToolProviders]
-      operationId: listToolProviderTools
-      summary: List tools exposed by a tool provider.
-      parameters:
-        - $ref: "#/components/parameters/ProviderId"
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
+      operationId: getAdapterOperation
+      summary: Get an adapter operation.
       responses:
         "200":
-          description: Provider tool catalog.
+          description: Adapter operation resource.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ToolListResponse"
+                $ref: "#/components/schemas/AdapterOperationResponse"
+    put:
+      tags: [ToolProviders]
+      operationId: putAdapterOperation
+      summary: Replace an adapter operation.
+      description: Full replacement. Body provider_id and operation_id, when supplied, must match the path values.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdapterOperation"
+      responses:
+        "200":
+          description: Adapter operation replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdapterOperationResponse"
+    patch:
+      tags: [ToolProviders]
+      operationId: patchAdapterOperation
+      summary: Patch an adapter operation.
+      description: Partial update that preserves omitted fields. Body provider_id and operation_id, when supplied, must match the path values.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdapterOperationPatchRequest"
+      responses:
+        "200":
+          description: Adapter operation patched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdapterOperationResponse"
+
+  /v1/tool-providers/{provider_id}/operations/{operation_id}/publish:
+    post:
+      tags: [ToolProviders]
+      operationId: publishAdapterOperation
+      summary: Publish an adapter operation as a tool manifest.
+      parameters:
+        - $ref: "#/components/parameters/ProviderId"
+        - name: operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Published tool manifest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolManifestResponse"
+
+  /v1/tool-providers/{provider_id}/operations/{operation_id}/test:
+    post:
+      tags: [ToolProviders]
+      operationId: testAdapterOperation
+      summary: Test an adapter operation without publishing it.
+      parameters:
+        - $ref: "#/components/parameters/ProviderId"
+        - name: operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdapterOperationTestRequest"
+      responses:
+        "200":
+          description: Adapter operation test result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdapterOperationTestResponse"
 
   /v1/tool-groups:
     get:
@@ -1031,10 +1240,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ToolGroupResponse"
-    patch:
+    put:
       tags: [ToolGroups]
-      operationId: patchToolGroup
-      summary: Patch a tool group.
+      operationId: putToolGroup
+      summary: Replace a tool group.
+      description: Full replacement. Body group_id, when supplied, must match the path group_id.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -1043,6 +1253,26 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/ToolGroupUpsertRequest"
+      responses:
+        "200":
+          description: Tool group replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ToolGroupResponse"
+    patch:
+      tags: [ToolGroups]
+      operationId: patchToolGroup
+      summary: Patch a tool group.
+      description: Partial update that preserves omitted fields. Body group_id, when supplied, must match the path group_id.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ToolGroupPatchRequest"
       responses:
         "200":
           description: Tool group patched.
@@ -1064,10 +1294,13 @@ paths:
     get:
       tags: [ServiceConnections]
       operationId: listServiceConnections
-      summary: List product service connections.
+      summary: List service connections.
       parameters:
-        - $ref: "#/components/parameters/Limit"
-        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
         - name: connection_type
           in: query
           required: false
@@ -1078,7 +1311,27 @@ paths:
           required: false
           schema:
             type: string
+            enum: [draft, enabled, disabled]
+        - name: health_status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [unknown, healthy, unhealthy]
         - name: environment
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 200
+        - name: cursor
           in: query
           required: false
           schema:
@@ -1093,7 +1346,7 @@ paths:
     post:
       tags: [ServiceConnections]
       operationId: createServiceConnection
-      summary: Create a product service connection.
+      summary: Create a service connection.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -1121,7 +1374,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ServiceConnectionTemplateListResponse"
+                $ref: "#/components/schemas/ServiceConnectionTemplatesResponse"
 
   /v1/service-connections/{connection_id}:
     parameters:
@@ -1129,7 +1382,7 @@ paths:
     get:
       tags: [ServiceConnections]
       operationId: getServiceConnection
-      summary: Get a product service connection.
+      summary: Get a service connection.
       responses:
         "200":
           description: Service connection resource.
@@ -1137,23 +1390,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServiceConnectionResponse"
-    post:
+    put:
       tags: [ServiceConnections]
-      operationId: checkServiceConnection
-      summary: Run a live health check for a service connection.
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "200":
-          description: Health check result.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ServiceConnectionHealthResponse"
-    patch:
-      tags: [ServiceConnections]
-      operationId: patchServiceConnection
-      summary: Patch a service connection.
+      operationId: putServiceConnection
+      summary: Replace a service connection.
+      description: Full replacement. Body connection_id, when supplied, must match the path connection_id.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -1162,6 +1403,26 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/ServiceConnectionUpsertRequest"
+      responses:
+        "200":
+          description: Service connection replaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConnectionResponse"
+    patch:
+      tags: [ServiceConnections]
+      operationId: patchServiceConnection
+      summary: Patch a service connection.
+      description: Partial update that preserves omitted fields. Body connection_id, when supplied, must match the path connection_id. auth_type and auth_ref must be patched together.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceConnectionPatchRequest"
       responses:
         "200":
           description: Service connection patched.
@@ -1173,28 +1434,14 @@ paths:
       tags: [ServiceConnections]
       operationId: deleteServiceConnection
       summary: Delete a service connection.
+      description: Deletes the connection only when its impact is empty. Providers, adapter operations, and tool manifests that reference the connection must be removed or disabled first.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "204":
           description: Service connection deleted.
-
-  /v1/service-connections/{connection_id}/details:
-    get:
-      tags: [ServiceConnections]
-      operationId: getServiceConnectionDetails
-      summary: Get service connection detail panel data.
-      parameters:
-        - $ref: "#/components/parameters/ConnectionId"
-      responses:
-        "200":
-          description: Service connection detail aggregate.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ServiceConnectionDetailsResponse"
-        "404":
-          $ref: "#/components/responses/NotFound"
+        "400":
+          $ref: "#/components/responses/APIError"
 
   /v1/service-connections/{connection_id}/test:
     post:
@@ -1256,28 +1503,6 @@ paths:
               schema:
                 $ref: "#/components/schemas/ServiceConnectionResponse"
 
-  /v1/service-connections/{connection_id}/rotate-secret:
-    post:
-      tags: [ServiceConnections]
-      operationId: rotateServiceConnectionSecret
-      summary: Rotate the credential reference for a service connection.
-      parameters:
-        - $ref: "#/components/parameters/ConnectionId"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RotateSecretRequest"
-      responses:
-        "200":
-          description: Service connection secret rotated.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ServiceConnectionResponse"
-
   /v1/service-connections/{connection_id}/resources:
     get:
       tags: [ServiceConnections]
@@ -1291,7 +1516,121 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ServiceConnectionResourceListResponse"
+                $ref: "#/components/schemas/ServiceConnectionResourcesResponse"
+
+  /v1/service-connections/{connection_id}/health-events:
+    get:
+      tags: [ServiceConnections]
+      operationId: listServiceConnectionHealthEvents
+      summary: List health check history for a service connection.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: Service connection health history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConnectionHealthEventsResponse"
+
+  /v1/service-connections/{connection_id}/impact:
+    get:
+      tags: [ServiceConnections]
+      operationId: getServiceConnectionImpact
+      summary: Get providers, adapter operations, and tools that depend on a service connection.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      responses:
+        "200":
+          description: Service connection dependency impact.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConnectionImpactResponse"
+
+  /v1/service-connections/{connection_id}/usage:
+    get:
+      tags: [ServiceConnections]
+      operationId: getServiceConnectionUsage
+      summary: Get trace-backed usage evidence for a service connection.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - name: trace_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Used only when trace_id is omitted.
+          schema:
+            type: integer
+            default: 500
+            maximum: 2000
+        - name: from
+          in: query
+          description: Inclusive RFC3339Nano lower bound for trace events.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Inclusive RFC3339Nano upper bound for trace events.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Service connection usage evidence.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConnectionUsageResponse"
+
+  /v1/service-connections/{connection_id}/secret-rotations:
+    get:
+      tags: [ServiceConnections]
+      operationId: listServiceConnectionSecretRotations
+      summary: List auth_ref rotation history for a service connection.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: Service connection secret rotation history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConnectionSecretRotationsResponse"
+    post:
+      tags: [ServiceConnections]
+      operationId: rotateServiceConnectionSecret
+      summary: Rotate the auth_ref used by a service connection.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceConnectionSecretRotationRequest"
+      responses:
+        "201":
+          description: Service connection auth_ref rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceConnectionSecretRotationResponse"
 
   /v1/runs:
     get:
@@ -2704,31 +3043,37 @@ components:
         meta:
           $ref: "#/components/schemas/ListMeta"
 
-    Tool:
+    ToolExecutorSpec:
       type: object
-      required: [tool_id, name, provider_id, status]
+      required: [type]
       properties:
+        type:
+          type: string
+          description: static_tool_host, agent_plugin_service, mcp, and agent_tool can be submitted through public ToolManifest upsert. http_api_adapter and database_adapter are emitted by AdapterOperation publish/sync and rejected by public manual upsert.
+          enum: [static_tool_host, agent_plugin_service, agent_tool, mcp, http_api_adapter, database_adapter]
+        provider_id:
+          type: string
+        operation:
+          type: string
+
+    ToolManifest:
+      type: object
+      required: [tool_id, name, description, input_schema, executor, status]
+      properties:
+        tenant_id:
+          type: string
         tool_id:
+          type: string
+        group_id:
           type: string
         name:
           type: string
         description:
           type: string
-        provider_id:
-          type: string
-        group_id:
-          type: string
-        status:
-          type: string
-          enum: [draft, active, available, limited, unavailable, disabled, archived]
-        version:
-          type: string
-        method:
-          type: string
-        path:
-          type: string
-        tool_type:
-          type: string
+        when_to_use:
+          type: array
+          items:
+            type: string
         input_schema:
           type: object
           additionalProperties: true
@@ -2738,56 +3083,36 @@ components:
         risk_level:
           type: string
           enum: [low, medium, high, critical]
-        tags:
-          type: array
-          items:
-            type: string
-        usage_count:
-          type: integer
-        success_rate:
-          type: number
-          format: double
-        failure_count:
-          type: integer
-        input_count:
-          type: integer
-        output_count:
-          type: integer
-        last_smoke_status:
+        visibility:
           type: string
-          nullable: true
-        last_smoke_at:
+          enum: [private, protected, exposed]
+        execution_profile:
           type: string
-          format: date-time
-          nullable: true
-        creator:
+        executor:
+          $ref: "#/components/schemas/ToolExecutorSpec"
+        status:
           type: string
-        metadata:
-          type: object
-          additionalProperties: true
+          enum: [draft, enabled, disabled]
+        version:
+          type: string
 
-    ToolUpsertRequest:
+    ToolManifestPatchRequest:
       type: object
-      required: [name, provider_id]
       properties:
+        tenant_id:
+          type: string
+        tool_id:
+          type: string
+        group_id:
+          type: string
         name:
           type: string
         description:
           type: string
-        provider_id:
-          type: string
-        group_id:
-          type: string
-        method:
-          type: string
-        path:
-          type: string
-        status:
-          type: string
-        version:
-          type: string
-        tool_type:
-          type: string
+        when_to_use:
+          type: array
+          items:
+            type: string
         input_schema:
           type: object
           additionalProperties: true
@@ -2796,33 +3121,35 @@ components:
           additionalProperties: true
         risk_level:
           type: string
-        tags:
-          type: array
-          items:
-            type: string
-        metadata:
-          type: object
-          additionalProperties: true
+          enum: [low, medium, high, critical]
+        visibility:
+          type: string
+          enum: [private, protected, exposed]
+        execution_profile:
+          type: string
+        executor:
+          $ref: "#/components/schemas/ToolExecutorSpec"
+        status:
+          type: string
+          enum: [draft, enabled, disabled]
+        version:
+          type: string
 
-    ToolResponse:
+    ToolManifestResponse:
       type: object
-      required: [tool, meta]
+      required: [tool]
       properties:
         tool:
-          $ref: "#/components/schemas/Tool"
-        meta:
-          $ref: "#/components/schemas/Meta"
+          $ref: "#/components/schemas/ToolManifest"
 
-    ToolListResponse:
+    ToolManifestListResponse:
       type: object
-      required: [tools, meta]
+      required: [tools]
       properties:
         tools:
           type: array
           items:
-            $ref: "#/components/schemas/Tool"
-        meta:
-          $ref: "#/components/schemas/ListMeta"
+            $ref: "#/components/schemas/ToolManifest"
 
     IntakePolicy:
       type: object
@@ -2936,96 +3263,386 @@ components:
 
     ToolProvider:
       type: object
-      required: [provider_id, name, provider_type, status]
+      required: [provider_id, provider_type, status]
       properties:
-        provider_id:
+        tenant_id:
           type: string
-        name:
+        provider_id:
           type: string
         provider_type:
           type: string
-          enum: [agent-plugin-service, toolhost, http, http-direct, mcp, static-toolhost, static_tool_host]
+          enum: [static_tool_host, agent_plugin_service, mcp, http_api_adapter, database_adapter]
+        name:
+          type: string
+        description:
+          type: string
+        service_connection_id:
+          type: string
+          description: Required for static_tool_host, agent_plugin_service, and mcp providers. Managed adapter providers must leave this empty and set service_connection_id on each AdapterOperation.
         status:
           type: string
-          enum: [healthy, degraded, unhealthy, offline, disabled, unknown]
-        tool_count:
-          type: integer
-        catalog_version:
+          enum: [draft, enabled, disabled]
+        health_status:
           type: string
-        last_sync_at:
+          description: Read-only observation maintained by provider health checks.
+          enum: [unknown, healthy, unhealthy]
+        last_health_check_at:
           type: string
+          description: Read-only observation maintained by provider health checks.
           format: date-time
           nullable: true
-        health_checked_at:
+        last_health_error:
           type: string
-          format: date-time
-          nullable: true
-        endpoint_ref:
+          description: Read-only observation maintained by provider health checks.
+        version:
           type: string
-        auth_ref:
-          type: string
-        secret_ref:
-          type: string
-          nullable: true
-        environment:
-          type: string
-        workspace_id:
-          type: string
-        metadata:
-          type: object
-          additionalProperties: true
 
     ToolProviderUpsertRequest:
       type: object
-      required: [name, provider_type]
+      required: [provider_id, provider_type]
       properties:
-        name:
+        provider_id:
           type: string
         provider_type:
           type: string
+          description: Public provider upsert only accepts external tool sources. HTTP API and database adapters are managed internally and are selected by AdapterOperation provider_id.
+          enum: [static_tool_host, agent_plugin_service, mcp]
+        name:
+          type: string
+        description:
+          type: string
+        service_connection_id:
+          type: string
         status:
           type: string
-        endpoint_ref:
+          enum: [draft, enabled, disabled]
+        version:
           type: string
-        auth_ref:
+
+    ToolProviderPatchRequest:
+      type: object
+      properties:
+        provider_id:
           type: string
-        secret_ref:
+        provider_type:
           type: string
-        environment:
+          description: Public provider upsert only accepts external tool sources. HTTP API and database adapters are managed internally and are selected by AdapterOperation provider_id.
+          enum: [static_tool_host, agent_plugin_service, mcp]
+        name:
           type: string
-        workspace_id:
+        description:
           type: string
-        auto_sync:
-          type: boolean
-        health_check_enabled:
-          type: boolean
-        metadata:
-          type: object
-          additionalProperties: true
+        service_connection_id:
+          type: string
+        status:
+          type: string
+          enum: [draft, enabled, disabled]
+        version:
+          type: string
 
     ToolProviderResponse:
       type: object
-      required: [provider, meta]
+      required: [provider]
       properties:
         provider:
           $ref: "#/components/schemas/ToolProvider"
-        meta:
-          $ref: "#/components/schemas/Meta"
 
     ToolProviderListResponse:
       type: object
-      required: [providers, meta]
+      required: [providers]
       properties:
         providers:
           type: array
           items:
             $ref: "#/components/schemas/ToolProvider"
-        meta:
-          $ref: "#/components/schemas/ListMeta"
+
+    AdapterOperation:
+      type: object
+      required: [provider_id, operation_id, tool_id, name, description, service_connection_id, input_schema]
+      properties:
+        tenant_id:
+          type: string
+        provider_id:
+          type: string
+          description: Use managed_http_api_adapter for HTTP API tools and managed_database_adapter for database query tools.
+        operation_id:
+          type: string
+        tool_id:
+          type: string
+        group_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        when_to_use:
+          type: array
+          items:
+            type: string
+        service_connection_id:
+          type: string
+        method:
+          type: string
+          description: HTTP API adapter only. Database adapter operations must not set HTTP request fields.
+          enum: [GET, POST, PUT, PATCH, DELETE]
+        path:
+          type: string
+          description: HTTP API adapter only. Database adapter operations must not set HTTP request fields.
+        headers:
+          type: object
+          description: HTTP API adapter only.
+          additionalProperties:
+            type: string
+        input_schema:
+          type: object
+          additionalProperties: true
+        output_schema:
+          type: object
+          additionalProperties: true
+        request_mapping:
+          type: object
+          description: HTTP API adapter only. Optional mapping; supported keys are body, query, path_params, and headers. body/query values are dot-path strings or nested object mappings; path_params/headers values are object maps of target names to dot-path strings.
+          additionalProperties: true
+        response_mapping:
+          type: object
+          description: HTTP API adapter only. Optional response mapping; supported keys are body_path and output; output values are dot-path strings or nested object mappings over body/selected.
+          additionalProperties: true
+        resource_id:
+          type: string
+          description: Database adapter only. Required for database_adapter operations. Enabled/test/publish/runtime paths require it to match a table or view discovered under the referenced service_connection_id.
+        query_template:
+          type: string
+          description: Database adapter only. HTTP API adapter operations must not set database query fields.
+        parameter_schema:
+          type: object
+          description: Database adapter only.
+          additionalProperties: true
+        max_rows:
+          type: integer
+          description: Database adapter only.
+        redact_columns:
+          type: array
+          description: Database adapter only. Result columns to redact before returning tool output. Values must match discovered columns for the selected resource_id.
+          items:
+            type: string
+        read_only:
+          type: boolean
+          description: Database adapter only. Must be true for database_adapter operations.
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+        visibility:
+          type: string
+          enum: [private, protected, exposed]
+        status:
+          type: string
+          enum: [draft, enabled, disabled]
+        version:
+          type: string
+
+    AdapterOperationPatchRequest:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        provider_id:
+          type: string
+          description: Use managed_http_api_adapter for HTTP API tools and managed_database_adapter for database query tools.
+        operation_id:
+          type: string
+        tool_id:
+          type: string
+        group_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        when_to_use:
+          type: array
+          items:
+            type: string
+        service_connection_id:
+          type: string
+        method:
+          type: string
+          description: HTTP API adapter only. Database adapter operations must not set HTTP request fields.
+          enum: [GET, POST, PUT, PATCH, DELETE]
+        path:
+          type: string
+          description: HTTP API adapter only. Database adapter operations must not set HTTP request fields.
+        headers:
+          type: object
+          description: HTTP API adapter only.
+          additionalProperties:
+            type: string
+        input_schema:
+          type: object
+          additionalProperties: true
+        output_schema:
+          type: object
+          additionalProperties: true
+        request_mapping:
+          type: object
+          description: HTTP API adapter only. Optional mapping; supported keys are body, query, path_params, and headers. body/query values are dot-path strings or nested object mappings; path_params/headers values are object maps of target names to dot-path strings.
+          additionalProperties: true
+        response_mapping:
+          type: object
+          description: HTTP API adapter only. Optional response mapping; supported keys are body_path and output; output values are dot-path strings or nested object mappings over body/selected.
+          additionalProperties: true
+        resource_id:
+          type: string
+          description: Database adapter only. Required for database_adapter operations. Enabled/test/publish/runtime paths require it to match a table or view discovered under the referenced service_connection_id.
+        query_template:
+          type: string
+          description: Database adapter only. HTTP API adapter operations must not set database query fields.
+        parameter_schema:
+          type: object
+          description: Database adapter only.
+          additionalProperties: true
+        max_rows:
+          type: integer
+          description: Database adapter only.
+        redact_columns:
+          type: array
+          description: Database adapter only. Result columns to redact before returning tool output. Values must match discovered columns for the selected resource_id.
+          items:
+            type: string
+        read_only:
+          type: boolean
+          description: Database adapter only. Must be true for database_adapter operations.
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+        visibility:
+          type: string
+          enum: [private, protected, exposed]
+        status:
+          type: string
+          enum: [draft, enabled, disabled]
+        version:
+          type: string
+
+    AdapterOperationFromResourceRequest:
+      type: object
+      required: [service_connection_id, resource_id]
+      properties:
+        service_connection_id:
+          type: string
+          description: Service connection that owns the discovered resource. Use HTTP API connections with managed_http_api_adapter, or database connections with managed_database_adapter.
+        resource_id:
+          type: string
+          description: Discovered ServiceConnectionResource id, for example "GET /customers/{customer_id}" or "public.customers".
+        operation_id:
+          type: string
+          description: Optional override. Defaults to resource operation_id or a slug derived from the discovered resource.
+        tool_id:
+          type: string
+          description: Optional override. Defaults to operation_id.
+        group_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        when_to_use:
+          type: array
+          items:
+            type: string
+        input_schema:
+          type: object
+          description: Optional override. By default derived from OpenAPI parameters and requestBody.
+          additionalProperties: true
+        output_schema:
+          type: object
+          description: Optional override. HTTP resources derive from the first 2xx/default OpenAPI response schema; database resources derive a rows/row_count schema from discovered columns.
+          additionalProperties: true
+        query_template:
+          type: string
+          description: Database adapter only. Optional override for generated read-only SQL. Defaults to a safe select against the discovered table/view.
+        parameter_schema:
+          type: object
+          description: Database adapter only. Optional override for query parameters. Defaults to an empty object schema.
+          additionalProperties: true
+        max_rows:
+          type: integer
+          format: int32
+          description: Database adapter only. Optional maximum row count.
+        redact_columns:
+          type: array
+          description: Database adapter only. Result columns to redact; values must exist in the discovered resource column schema.
+          items:
+            type: string
+        risk_level:
+          type: string
+          enum: [low, medium, high, critical]
+        visibility:
+          type: string
+          enum: [private, protected, exposed]
+        status:
+          type: string
+          enum: [draft, enabled, disabled]
+          description: Defaults to draft so generated operations can be reviewed before publishing.
+        version:
+          type: string
+
+    AdapterOperationResponse:
+      type: object
+      required: [operation]
+      properties:
+        operation:
+          $ref: "#/components/schemas/AdapterOperation"
+
+    AdapterOperationListResponse:
+      type: object
+      required: [operations]
+      properties:
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdapterOperation"
+
+    AdapterOperationTestRequest:
+      type: object
+      properties:
+        arguments:
+          type: object
+          additionalProperties: true
+        payload:
+          type: object
+          additionalProperties: true
+
+    AdapterOperationTestResponse:
+      type: object
+      required: [operation, output]
+      properties:
+        operation:
+          $ref: "#/components/schemas/AdapterOperation"
+        output:
+          type: object
+          additionalProperties: true
 
     ToolGroup:
       type: object
       required: [group_id, name, status]
+      properties:
+        tenant_id:
+          type: string
+        group_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [draft, enabled, disabled]
+        version:
+          type: string
+
+    ToolGroupUpsertRequest:
+      type: object
+      required: [name]
       properties:
         group_id:
           type: string
@@ -3035,30 +3652,24 @@ components:
           type: string
         status:
           type: string
-          enum: [active, disabled, archived]
-        tool_ids:
-          type: array
-          items:
-            type: string
-        metadata:
-          type: object
-          additionalProperties: true
+          enum: [draft, enabled, disabled]
+        version:
+          type: string
 
-    ToolGroupUpsertRequest:
+    ToolGroupPatchRequest:
       type: object
-      required: [name]
       properties:
+        group_id:
+          type: string
         name:
           type: string
         description:
           type: string
-        tool_ids:
-          type: array
-          items:
-            type: string
-        metadata:
-          type: object
-          additionalProperties: true
+        status:
+          type: string
+          enum: [draft, enabled, disabled]
+        version:
+          type: string
 
     ToolGroupResponse:
       type: object
@@ -3082,7 +3693,67 @@ components:
 
     ServiceConnection:
       type: object
-      required: [connection_id, name, connection_type, status]
+      required: [connection_id, name, connection_type, status, health_status]
+      properties:
+        tenant_id:
+          type: string
+        connection_id:
+          type: string
+        name:
+          type: string
+        connection_type:
+          type: string
+          description: Connection asset type. cache, queue, and storage are model-only in the current CleanCore backend; connection test/resource discovery return not implemented instead of reporting fake health.
+          enum: [clean_core, http_api, database, webhook, oauth, cache, queue, storage]
+        environment:
+          type: string
+        status:
+          type: string
+          enum: [draft, enabled, disabled]
+        health_status:
+          type: string
+          description: Read-only observation maintained by service connection tests.
+          enum: [unknown, healthy, unhealthy]
+        description:
+          type: string
+        base_url:
+          type: string
+        auth_type:
+          type: string
+          enum: [none, api_key, bearer, basic, oauth2, signed_request, mtls]
+          description: Authentication scheme for this connection. Defaults to none only when auth_ref is empty; any non-none value requires auth_ref.
+        auth_ref:
+          type: string
+          description: Secret or credential reference for the selected auth_type. Required when auth_type is not none. Plain secret values must not be submitted.
+        network_scope:
+          type: string
+          description: Connection-level network allowlist. Accepts a comma/whitespace separated host list or a JSON string array. When set on HTTP-style connections, it must include the base_url host. When omitted, generated HTTP tool execution profiles default to the base_url host.
+        timeout_ms:
+          type: integer
+          format: int32
+        retry_max:
+          type: integer
+          format: int32
+        health_check_enabled:
+          type: boolean
+        metadata:
+          type: object
+          description: For http_api connections, metadata.openapi_path may be an absolute path such as /openapi.json; service connection test will fetch it under base_url and refresh http_operation resources.
+          additionalProperties: true
+        last_health_at:
+          type: string
+          description: Read-only observation maintained by service connection tests.
+          format: date-time
+          nullable: true
+        last_health_error:
+          type: string
+          description: Read-only observation maintained by service connection tests.
+        version:
+          type: string
+
+    ServiceConnectionUpsertRequest:
+      type: object
+      required: [name, connection_type]
       properties:
         connection_id:
           type: string
@@ -3090,130 +3761,102 @@ components:
           type: string
         connection_type:
           type: string
-          enum: [clean-core, toolhost, http, http-api, database, webhook, oauth, cache, queue, storage]
+          description: Connection asset type. cache, queue, and storage are model-only in the current CleanCore backend; connection test/resource discovery return not implemented instead of reporting fake health.
+          enum: [clean_core, http_api, database, webhook, oauth, cache, queue, storage]
         environment:
           type: string
         status:
           type: string
-          enum: [healthy, degraded, unavailable, disabled, unknown]
+          enum: [draft, enabled, disabled]
         description:
           type: string
         base_url:
           type: string
         auth_type:
           type: string
-        token_ref:
+          enum: [none, api_key, bearer, basic, oauth2, signed_request, mtls]
+          description: Authentication scheme for this connection. Defaults to none only when auth_ref is empty; any non-none value requires auth_ref.
+        auth_ref:
           type: string
-          nullable: true
-        scopes:
-          type: array
-          items:
-            type: string
-        calls_today:
-          type: integer
-        last_health_at:
-          type: string
-          format: date-time
-          nullable: true
-        latency_ms:
-          type: integer
-        availability_pct:
-          type: number
-          format: double
-        creator:
-          type: string
-        timeout_sec:
-          type: integer
-        retry_count:
-          type: integer
+          description: Secret or credential reference for the selected auth_type. Required when auth_type is not none. Plain secret values must not be submitted.
         network_scope:
           type: string
-        callback_url:
-          type: string
+          description: Connection-level network allowlist. Accepts a comma/whitespace separated host list or a JSON string array. When set on HTTP-style connections, it must include the base_url host. When omitted, generated HTTP tool execution profiles default to the base_url host.
+        timeout_ms:
+          type: integer
+          format: int32
+        retry_max:
+          type: integer
+          format: int32
         health_check_enabled:
-          type: boolean
-        auto_rotate_enabled:
           type: boolean
         metadata:
           type: object
+          description: For http_api connections, metadata.openapi_path may be an absolute path such as /openapi.json; service connection test will fetch it under base_url and refresh http_operation resources.
           additionalProperties: true
+        version:
+          type: string
 
-    ServiceConnectionUpsertRequest:
+    ServiceConnectionPatchRequest:
       type: object
-      required: [name, connection_type]
       properties:
+        connection_id:
+          type: string
         name:
           type: string
         connection_type:
           type: string
+          description: Connection asset type. cache, queue, and storage are model-only in the current CleanCore backend; connection test/resource discovery return not implemented instead of reporting fake health.
+          enum: [clean_core, http_api, database, webhook, oauth, cache, queue, storage]
         environment:
           type: string
         status:
           type: string
+          enum: [draft, enabled, disabled]
         description:
           type: string
         base_url:
           type: string
         auth_type:
           type: string
-        token_ref:
+          enum: [none, api_key, bearer, basic, oauth2, signed_request, mtls]
+          description: Authentication scheme for this connection. Defaults to none only when auth_ref is empty; any non-none value requires auth_ref.
+        auth_ref:
           type: string
-        scopes:
-          type: array
-          items:
-            type: string
-        timeout_sec:
-          type: integer
-        retry_count:
-          type: integer
+          description: Secret or credential reference for the selected auth_type. Required when auth_type is not none. Plain secret values must not be submitted.
         network_scope:
           type: string
-        callback_url:
-          type: string
+          description: Connection-level network allowlist. Accepts a comma/whitespace separated host list or a JSON string array. When set on HTTP-style connections, it must include the base_url host. When omitted, generated HTTP tool execution profiles default to the base_url host.
+        timeout_ms:
+          type: integer
+          format: int32
+        retry_max:
+          type: integer
+          format: int32
         health_check_enabled:
-          type: boolean
-        auto_rotate_enabled:
-          type: boolean
-        draft:
           type: boolean
         metadata:
           type: object
+          description: For http_api connections, metadata.openapi_path may be an absolute path such as /openapi.json; service connection test will fetch it under base_url and refresh http_operation resources.
           additionalProperties: true
+        version:
+          type: string
 
     ServiceConnectionResponse:
       type: object
-      required: [connection, meta]
+      required: [connection]
       properties:
         connection:
           $ref: "#/components/schemas/ServiceConnection"
-        meta:
-          $ref: "#/components/schemas/Meta"
 
     ServiceConnectionListResponse:
       type: object
-      required: [connections, meta]
+      required: [connections]
       properties:
         connections:
           type: array
           items:
             $ref: "#/components/schemas/ServiceConnection"
-        meta:
-          $ref: "#/components/schemas/ListMeta"
-
-    ServiceConnectionHealthResponse:
-      type: object
-      required: [connection, healthy, meta]
-      properties:
-        connection:
-          $ref: "#/components/schemas/ServiceConnection"
-        healthy:
-          type: boolean
-        latency_ms:
-          type: integer
-        message:
-          type: string
-        meta:
-          $ref: "#/components/schemas/Meta"
 
     Run:
       type: object
@@ -3777,7 +4420,7 @@ components:
       required: [metrics, meta]
       properties:
         service:
-          $ref: "#/components/schemas/ServiceConnectionHealthResponse"
+          $ref: "#/components/schemas/ServiceConnection"
         metrics:
           $ref: "#/components/schemas/DashboardMetrics"
         suggestions:
@@ -3799,7 +4442,7 @@ components:
         tools:
           type: array
           items:
-            $ref: "#/components/schemas/Tool"
+            $ref: "#/components/schemas/ToolManifest"
         runs:
           type: array
           items:
@@ -3941,23 +4584,6 @@ components:
         reason:
           type: string
 
-    RepairRequest:
-      type: object
-      properties:
-        reason:
-          type: string
-        strategy:
-          type: string
-          enum: [auto, resync, rotate_secret, reset_health]
-
-    RotateSecretRequest:
-      type: object
-      properties:
-        token_ref:
-          type: string
-        reason:
-          type: string
-
     AgentImportRequest:
       type: object
       properties:
@@ -4061,7 +4687,7 @@ components:
         tool_bindings:
           type: array
           items:
-            $ref: "#/components/schemas/Tool"
+            $ref: "#/components/schemas/ToolManifest"
         skills:
           type: array
           items:
@@ -4208,123 +4834,6 @@ components:
         trace_id:
           type: string
 
-    ToolUsageSummary:
-      type: object
-      properties:
-        call_count:
-          type: integer
-        success_count:
-          type: integer
-        failure_count:
-          type: integer
-        success_rate:
-          type: number
-          format: double
-        average_latency_ms:
-          type: integer
-        series:
-          type: array
-          items:
-            $ref: "#/components/schemas/TimeSeriesPoint"
-
-    ToolDetailsResponse:
-      type: object
-      required: [tool, meta]
-      properties:
-        tool:
-          $ref: "#/components/schemas/Tool"
-        provider:
-          $ref: "#/components/schemas/ToolProvider"
-        usage:
-          $ref: "#/components/schemas/ToolUsageSummary"
-        agents:
-          type: array
-          items:
-            $ref: "#/components/schemas/Agent"
-        versions:
-          type: array
-          items:
-            $ref: "#/components/schemas/AgentVersion"
-        docs_url:
-          type: string
-        meta:
-          $ref: "#/components/schemas/Meta"
-
-    ToolInvokeRequest:
-      type: object
-      properties:
-        input:
-          type: object
-          additionalProperties: true
-        dry_run:
-          type: boolean
-        agent_id:
-          type: string
-        trace_id:
-          type: string
-
-    ToolInvokeResponse:
-      type: object
-      required: [invocation_id, status, meta]
-      properties:
-        invocation_id:
-          type: string
-        status:
-          type: string
-          enum: [queued, running, succeeded, failed]
-        output:
-          type: object
-          additionalProperties: true
-        run_id:
-          type: string
-        trace_id:
-          type: string
-        meta:
-          $ref: "#/components/schemas/Meta"
-
-    ToolProviderHealthResponse:
-      type: object
-      required: [provider, healthy, meta]
-      properties:
-        provider:
-          $ref: "#/components/schemas/ToolProvider"
-        healthy:
-          type: boolean
-        successful_calls:
-          type: integer
-        failed_calls:
-          type: integer
-        success_rate:
-          type: number
-          format: double
-        average_latency_ms:
-          type: integer
-        message:
-          type: string
-        meta:
-          $ref: "#/components/schemas/Meta"
-
-    ToolProviderDetailsResponse:
-      type: object
-      required: [provider, meta]
-      properties:
-        provider:
-          $ref: "#/components/schemas/ToolProvider"
-        exposed_tools:
-          type: array
-          items:
-            $ref: "#/components/schemas/Tool"
-        health:
-          $ref: "#/components/schemas/ToolProviderHealthResponse"
-        recent_events:
-          type: array
-          items:
-            $ref: "#/components/schemas/ActivityEvent"
-        usage:
-          $ref: "#/components/schemas/ToolUsageSummary"
-        meta:
-          $ref: "#/components/schemas/Meta"
-
     ServiceConnectionTemplate:
       type: object
       required: [template_id, name, connection_type]
@@ -4349,57 +4858,95 @@ components:
         template_url:
           type: string
 
-    ServiceConnectionTemplateListResponse:
+    ServiceConnectionTemplatesResponse:
       type: object
-      required: [templates, meta]
+      required: [templates]
       properties:
         templates:
           type: array
           items:
             $ref: "#/components/schemas/ServiceConnectionTemplate"
-        meta:
-          $ref: "#/components/schemas/Meta"
 
     ServiceConnectionResource:
       type: object
-      required: [resource_id, name, method, path]
+      required: [connection_id, resource_id, resource_type, name, discovered_at]
       properties:
+        connection_id:
+          type: string
         resource_id:
           type: string
+        resource_type:
+          type: string
+          description: Discovered resource kind. Database discovery returns table/view; HTTP API OpenAPI discovery returns http_operation.
         name:
           type: string
-        method:
-          type: string
-        path:
-          type: string
-        purpose:
-          type: string
-        enabled:
-          type: boolean
-        metadata:
+        schema:
           type: object
           additionalProperties: true
+        metadata:
+          type: object
+          description: Resource discovery metadata such as source, openapi_path, method, path, operation_id, database schema, or driver.
+          additionalProperties: true
+        discovered_at:
+          type: string
+          format: date-time
 
-    ServiceConnectionDetailsResponse:
+    ServiceConnectionHealthEvent:
       type: object
-      required: [connection, meta]
+      required: [connection_id, health_status, checked_at]
       properties:
-        connection:
-          $ref: "#/components/schemas/ServiceConnection"
-        health:
-          $ref: "#/components/schemas/ServiceConnectionHealthResponse"
-        resources:
-          type: array
-          items:
-            $ref: "#/components/schemas/ServiceConnectionResource"
-        recent_activity:
-          type: array
-          items:
-            $ref: "#/components/schemas/ActivityEvent"
-        usage:
-          $ref: "#/components/schemas/ToolUsageSummary"
-        meta:
-          $ref: "#/components/schemas/Meta"
+        connection_id:
+          type: string
+        health_status:
+          type: string
+          enum: [unknown, healthy, unhealthy]
+        error:
+          type: string
+        latency_ms:
+          type: integer
+        checked_at:
+          type: string
+          format: date-time
+
+    ServiceConnectionSecretRotationRequest:
+      type: object
+      required: [auth_ref, auth_type]
+      properties:
+        auth_ref:
+          type: string
+          description: Secret or credential reference. Plain secret values must not be submitted.
+        auth_type:
+          type: string
+          enum: [api_key, bearer, basic, oauth2, signed_request, mtls]
+          description: Authentication scheme being rotated. Must be explicit and must not be none.
+        reason:
+          type: string
+
+    ServiceConnectionSecretRotation:
+      type: object
+      required: [connection_id, rotation_id, new_auth_ref_hash, rotated_at]
+      properties:
+        tenant_id:
+          type: string
+        connection_id:
+          type: string
+        rotation_id:
+          type: string
+        auth_type:
+          type: string
+          enum: [api_key, bearer, basic, oauth2, signed_request, mtls]
+          description: Authentication scheme rotated for this credential reference.
+        previous_auth_ref_hash:
+          type: string
+        new_auth_ref_hash:
+          type: string
+        reason:
+          type: string
+        rotated_by:
+          type: string
+        rotated_at:
+          type: string
+          format: date-time
 
     ServiceConnectionTestRequest:
       type: object
@@ -4413,32 +4960,209 @@ components:
 
     ServiceConnectionTestResponse:
       type: object
-      required: [ok, health, meta]
+      required: [connection, resources]
       properties:
-        ok:
-          type: boolean
-        health:
-          $ref: "#/components/schemas/ServiceConnectionHealthResponse"
+        connection:
+          $ref: "#/components/schemas/ServiceConnection"
         resources:
           type: array
           items:
             $ref: "#/components/schemas/ServiceConnectionResource"
-        raw_response:
-          type: object
-          additionalProperties: true
-        meta:
-          $ref: "#/components/schemas/Meta"
 
-    ServiceConnectionResourceListResponse:
+    ServiceConnectionResourcesResponse:
       type: object
-      required: [resources, meta]
+      required: [resources]
       properties:
         resources:
           type: array
           items:
             $ref: "#/components/schemas/ServiceConnectionResource"
-        meta:
-          $ref: "#/components/schemas/ListMeta"
+
+    ServiceConnectionHealthEventsResponse:
+      type: object
+      required: [connection, health_events]
+      properties:
+        connection:
+          $ref: "#/components/schemas/ServiceConnection"
+        health_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceConnectionHealthEvent"
+
+    ServiceConnectionSecretRotationResponse:
+      type: object
+      required: [connection, rotation]
+      properties:
+        connection:
+          $ref: "#/components/schemas/ServiceConnection"
+        rotation:
+          $ref: "#/components/schemas/ServiceConnectionSecretRotation"
+
+    ServiceConnectionSecretRotationsResponse:
+      type: object
+      required: [connection, secret_rotations]
+      properties:
+        connection:
+          $ref: "#/components/schemas/ServiceConnection"
+        secret_rotations:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceConnectionSecretRotation"
+
+    ServiceConnectionImpact:
+      type: object
+      required: [connection_id, providers, operations, tools, summary]
+      properties:
+        connection_id:
+          type: string
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolProvider"
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdapterOperation"
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/ToolManifest"
+        summary:
+          type: object
+          additionalProperties:
+            type: integer
+
+    ServiceConnectionImpactResponse:
+      type: object
+      required: [connection, impact]
+      properties:
+        connection:
+          $ref: "#/components/schemas/ServiceConnection"
+        impact:
+          $ref: "#/components/schemas/ServiceConnectionImpact"
+
+    ServiceConnectionTraceEvidence:
+      type: object
+      properties:
+        events_total:
+          type: integer
+        invocations_total:
+          type: integer
+        completions_total:
+          type: integer
+        failures_total:
+          type: integer
+        health_checks_total:
+          type: integer
+        health_failures_total:
+          type: integer
+        latency_ms:
+          type: integer
+        average_latency_ms:
+          type: integer
+        last_event_at:
+          type: string
+          format: date-time
+        error_codes:
+          type: array
+          items:
+            type: string
+        health_statuses:
+          type: array
+          items:
+            type: string
+
+    ServiceConnectionUsageSummary:
+      allOf:
+        - $ref: "#/components/schemas/ServiceConnectionTraceEvidence"
+        - type: object
+          properties:
+            providers_total:
+              type: integer
+            operations_total:
+              type: integer
+            tools_total:
+              type: integer
+            trace_events_total:
+              type: integer
+
+    ServiceConnectionUsageProvider:
+      type: object
+      required: [provider_id, provider_type, name, status, health_status, trace_evidence]
+      properties:
+        provider_id:
+          type: string
+        provider_type:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+        health_status:
+          type: string
+        service_connection_id:
+          type: string
+        trace_evidence:
+          $ref: "#/components/schemas/ServiceConnectionTraceEvidence"
+
+    ServiceConnectionUsageTool:
+      type: object
+      required: [tool_id, name, executor_type, status, trace_evidence]
+      properties:
+        tool_id:
+          type: string
+        name:
+          type: string
+        provider_id:
+          type: string
+        executor_type:
+          type: string
+        operation:
+          type: string
+        status:
+          type: string
+        trace_evidence:
+          $ref: "#/components/schemas/ServiceConnectionTraceEvidence"
+
+    ServiceConnectionUsage:
+      type: object
+      required: [tenant_id, connection_id, summary, providers, tools]
+      properties:
+        tenant_id:
+          type: string
+        connection_id:
+          type: string
+        trace_id:
+          type: string
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        summary:
+          $ref: "#/components/schemas/ServiceConnectionUsageSummary"
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceConnectionUsageProvider"
+        tools:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceConnectionUsageTool"
+        recent_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/TraceEvent"
+
+    ServiceConnectionUsageResponse:
+      type: object
+      required: [connection, usage]
+      properties:
+        connection:
+          $ref: "#/components/schemas/ServiceConnection"
+        usage:
+          $ref: "#/components/schemas/ServiceConnectionUsage"
 
     RunTimelineResponse:
       type: object

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"time"
 
 	"znt/internal/contracts"
 )
@@ -14,6 +15,8 @@ type ListFilter struct {
 	RunID    contracts.AgentRunID
 	TaskID   contracts.TaskID
 	Type     string
+	From     *time.Time
+	To       *time.Time
 	Limit    int
 	Offset   int
 }
@@ -75,6 +78,12 @@ func (r *InMemoryRecorder) List(_ context.Context, filter ListFilter) ([]contrac
 			return false
 		}
 		if filter.Type != "" && event.Type != filter.Type {
+			return false
+		}
+		if filter.From != nil && event.CreatedAt.Before(*filter.From) {
+			return false
+		}
+		if filter.To != nil && event.CreatedAt.After(*filter.To) {
 			return false
 		}
 		return true

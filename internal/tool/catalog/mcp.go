@@ -57,7 +57,7 @@ type mcpToolCallResult struct {
 
 func executorUsesProvider(executorType string) bool {
 	switch executorType {
-	case ExecutorTypeStaticToolHost, ExecutorTypeMCP:
+	case ExecutorTypeStaticToolHost, ExecutorTypeAgentPlugin, ExecutorTypeMCP, ExecutorTypeHTTPAPIAdapter, ExecutorTypeDatabaseAdapter:
 		return true
 	default:
 		return false
@@ -66,10 +66,18 @@ func executorUsesProvider(executorType string) bool {
 
 func executorTypeForProvider(providerType string) string {
 	switch providerType {
+	case ProviderTypeStaticToolHost:
+		return ExecutorTypeStaticToolHost
+	case ProviderTypeAgentPlugin:
+		return ExecutorTypeAgentPlugin
 	case ProviderTypeMCP:
 		return ExecutorTypeMCP
+	case ProviderTypeHTTPAPIAdapter:
+		return ExecutorTypeHTTPAPIAdapter
+	case ProviderTypeDatabaseAdapter:
+		return ExecutorTypeDatabaseAdapter
 	default:
-		return ExecutorTypeStaticToolHost
+		return ""
 	}
 }
 
@@ -100,10 +108,14 @@ func (s *Service) fetchMCPCatalog(ctx context.Context, provider ToolProvider) (p
 }
 
 func (s *Service) mcpRequest(ctx context.Context, provider ToolProvider, method string, params any, target any) error {
-	return mcpRequest(ctx, s.client, provider, method, params, target)
+	connection, err := s.providerConnection(ctx, provider)
+	if err != nil {
+		return err
+	}
+	return mcpRequest(ctx, s.client, provider.ProviderID, connection.BaseURL, connectionHeaders(connection), connection.TimeoutMS, connection.RetryMax, method, params, target)
 }
 
-func mcpRequest(ctx context.Context, client *http.Client, provider ToolProvider, method string, params any, target any) error {
+func mcpRequest(ctx context.Context, client *http.Client, providerID string, endpoint string, headers map[string]string, timeoutMS int, retryMax int, method string, params any, target any) error {
 	payload := mcpJSONRPCRequest{
 		JSONRPC: "2.0",
 		ID:      idgen.New("mcprpc"),
@@ -111,16 +123,16 @@ func mcpRequest(ctx context.Context, client *http.Client, provider ToolProvider,
 		Params:  params,
 	}
 	var response mcpJSONRPCResponse
-	if err := requestJSON(ctx, client, http.MethodPost, provider.Endpoint, nil, payload, &response, requestOptions{
-		Headers:   providerHeaders(provider),
-		TimeoutMS: provider.TimeoutMS,
-		RetryMax:  provider.RetryMax,
+	if err := requestJSON(ctx, client, http.MethodPost, endpoint, nil, payload, &response, requestOptions{
+		Headers:   headers,
+		TimeoutMS: timeoutMS,
+		RetryMax:  retryMax,
 	}); err != nil {
 		return err
 	}
 	if response.Error != nil {
 		return contracts.NewRuntimeError(contracts.CodeToolExecutionFailed, "mcp json-rpc error", map[string]any{
-			"provider_id": provider.ProviderID,
+			"provider_id": providerID,
 			"method":      method,
 			"rpc_code":    response.Error.Code,
 			"rpc_message": response.Error.Message,
@@ -132,13 +144,13 @@ func mcpRequest(ctx context.Context, client *http.Client, provider ToolProvider,
 	}
 	if len(response.Result) == 0 {
 		return contracts.NewRuntimeError(contracts.CodeToolExecutionFailed, "mcp json-rpc response result is empty", map[string]any{
-			"provider_id": provider.ProviderID,
+			"provider_id": providerID,
 			"method":      method,
 		})
 	}
 	if err := json.Unmarshal(response.Result, target); err != nil {
 		return contracts.NewRuntimeError(contracts.CodeToolExecutionFailed, "decode mcp json-rpc result failed", map[string]any{
-			"provider_id": provider.ProviderID,
+			"provider_id": providerID,
 			"method":      method,
 			"error":       err.Error(),
 		})
@@ -159,10 +171,6 @@ func mapMCPTool(provider ToolProvider, tool mcpTool) (providerCatalogTool, bool)
 	if description == "" {
 		description = "MCP tool " + operation
 	}
-	inputSchema := tool.InputSchema
-	if inputSchema == nil {
-		inputSchema = map[string]any{"type": "object"}
-	}
 	return providerCatalogTool{
 		ToolID:       strings.TrimSpace(provider.ProviderID) + "." + sanitizeToolIDSegment(operation),
 		GroupID:      strings.TrimSpace(provider.ProviderID),
@@ -170,7 +178,7 @@ func mapMCPTool(provider ToolProvider, tool mcpTool) (providerCatalogTool, bool)
 		Name:         name,
 		Description:  description,
 		WhenToUse:    []string{description},
-		InputSchema:  inputSchema,
+		InputSchema:  tool.InputSchema,
 		OutputSchema: tool.OutputSchema,
 		RiskLevel:    riskFromMCPAnnotations(tool.Annotations),
 		Visibility:   contracts.ToolProtected,
@@ -209,16 +217,17 @@ func boolAnnotation(values map[string]any, key string) bool {
 }
 
 type MCPExecutor struct {
-	Endpoint   string
-	ProviderID string
-	Operation  string
-	Headers    map[string]string
-	TimeoutMS  int
-	RetryMax   int
-	Client     *http.Client
-	TenantID   contracts.TenantID
-	Trace      trace.Recorder
-	Now        func() time.Time
+	Endpoint     string
+	ProviderID   string
+	ConnectionID string
+	Operation    string
+	Headers      map[string]string
+	TimeoutMS    int
+	RetryMax     int
+	Client       *http.Client
+	TenantID     contracts.TenantID
+	Trace        trace.Recorder
+	Now          func() time.Time
 }
 
 func (e MCPExecutor) NetworkTargetHost() string {
@@ -236,33 +245,18 @@ func (e MCPExecutor) Execute(ctx context.Context, call contracts.ToolCall) (map[
 		"tool_id":       call.ToolID,
 		"tool_call_id":  call.ToolCallID,
 		"operation":     e.Operation,
+		"connection_id": e.ConnectionID,
 	})
-	provider := ToolProvider{
-		ProviderID: e.ProviderID,
-		Endpoint:   e.Endpoint,
-		AuthRef:    headerAuthRef(e.Headers),
-		TimeoutMS:  e.TimeoutMS,
-		RetryMax:   e.RetryMax,
-	}
 	params := map[string]any{
 		"name":      e.Operation,
 		"arguments": call.Arguments,
 	}
 	var result mcpToolCallResult
-	if err := mcpRequest(ctx, e.Client, provider, "tools/call", params, &result); err != nil {
+	if err := mcpRequest(ctx, e.Client, e.ProviderID, e.Endpoint, e.Headers, e.TimeoutMS, e.RetryMax, "tools/call", params, &result); err != nil {
 		e.recordFailed(ctx, call, started, err)
 		return nil, nil, err
 	}
-	output := map[string]any{}
-	if len(result.Content) > 0 {
-		output["content"] = result.Content
-	}
-	if result.StructuredContent != nil {
-		output["structuredContent"] = result.StructuredContent
-	}
-	if result.Meta != nil {
-		output["_meta"] = result.Meta
-	}
+	output := normalizeMCPToolOutput(result)
 	if result.IsError {
 		output["isError"] = true
 		err := contracts.NewRuntimeError(contracts.CodeToolExecutionFailed, "mcp tool returned an error result", map[string]any{
@@ -279,9 +273,35 @@ func (e MCPExecutor) Execute(ctx context.Context, call contracts.ToolCall) (map[
 		"tool_id":       call.ToolID,
 		"tool_call_id":  call.ToolCallID,
 		"operation":     e.Operation,
+		"connection_id": e.ConnectionID,
 		"latency_ms":    int(executorNow(e.Now).Sub(started).Milliseconds()),
 	})
 	return output, nil, nil
+}
+
+func normalizeMCPToolOutput(result mcpToolCallResult) map[string]any {
+	if result.StructuredContent != nil {
+		return cloneMap(result.StructuredContent)
+	}
+	output := map[string]any{}
+	if len(result.Content) > 0 {
+		output["content"] = result.Content
+	}
+	if result.Meta != nil {
+		output["_meta"] = result.Meta
+	}
+	return output
+}
+
+func cloneMap(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func (e MCPExecutor) recordFailed(ctx context.Context, call contracts.ToolCall, started time.Time, err error) {
@@ -291,6 +311,7 @@ func (e MCPExecutor) recordFailed(ctx context.Context, call contracts.ToolCall, 
 		"tool_id":       call.ToolID,
 		"tool_call_id":  call.ToolCallID,
 		"operation":     e.Operation,
+		"connection_id": e.ConnectionID,
 		"latency_ms":    int(executorNow(e.Now).Sub(started).Milliseconds()),
 		"error_code":    errorCode(err),
 	})
@@ -310,16 +331,4 @@ func (e MCPExecutor) recordTrace(ctx context.Context, call contracts.ToolCall, e
 		Payload:   payload,
 		CreatedAt: executorNow(e.Now),
 	})
-}
-
-func headerAuthRef(headers map[string]string) string {
-	if len(headers) == 0 {
-		return ""
-	}
-	for key, value := range headers {
-		if strings.EqualFold(key, providerAuthRefHeader) {
-			return value
-		}
-	}
-	return ""
 }

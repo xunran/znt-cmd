@@ -144,7 +144,6 @@ conversation_retrieval_enabled: false
 conversation_max_retrieved: 4
 external_bridge_provider: a2a
 external_bridge_base_url: https://bridge.example.test
-disable_http_direct: true
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -166,9 +165,6 @@ disable_http_direct: true
 	}
 	if cfg.ExternalBridgeProvider != "a2a" || cfg.ExternalBridgeBaseURL != "https://bridge.example.test" {
 		t.Fatalf("expected yaml external bridge options, got %#v", cfg)
-	}
-	if !cfg.DisableHTTPDirect {
-		t.Fatalf("expected yaml http direct release switch, got %#v", cfg)
 	}
 }
 

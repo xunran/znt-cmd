@@ -108,10 +108,10 @@ func TestResolverDispatchesWorkerAdapter(t *testing.T) {
 	}
 }
 
-func TestDefaultFutureDomainsAreDisabledForSingleNodeProduction(t *testing.T) {
-	for _, raw := range []string{"worker:queue-a", "sandbox:firecracker", "managed:lambda"} {
+func TestDefaultNonCoreDomainsAreDisabledForSingleNodeProduction(t *testing.T) {
+	for _, raw := range []string{`{"domain_id":"database"}`, "worker:queue-a", "sandbox:firecracker", "managed:lambda"} {
 		t.Run(raw, func(t *testing.T) {
-			resolver := NewResolver(LocalExecutionDomain{}, HTTPDomain(), AgentToolDomain(), WorkerDomain(), SandboxDomain(), ManagedDomain())
+			resolver := NewResolver(LocalExecutionDomain{}, HTTPDomain(), AgentToolDomain(), DatabaseDomain(), WorkerDomain(), SandboxDomain(), ManagedDomain())
 			execDomain, profile, err := resolver.ResolveProfile(raw)
 			if err != nil {
 				t.Fatal(err)
@@ -145,7 +145,7 @@ func TestSingleNodeProductionStatusesListDisabledFutureDomains(t *testing.T) {
 			t.Fatalf("expected %s production ready, got %#v", domainID, byDomain[domainID])
 		}
 	}
-	for _, domainID := range []string{"worker", "sandbox", "managed"} {
+	for _, domainID := range []string{"database", "worker", "sandbox", "managed"} {
 		if byDomain[domainID].Enabled || byDomain[domainID].Status != DisabledStatus || byDomain[domainID].Details == "" {
 			t.Fatalf("expected %s disabled with details, got %#v", domainID, byDomain[domainID])
 		}
