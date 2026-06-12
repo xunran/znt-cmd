@@ -144,7 +144,10 @@ func evalSuiteAddCase(r *http.Request, appCore *core.Core, envelope contracts.Ag
 	if current.TenantID != caller.TenantID {
 		return nil, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "eval suite tenant does not match caller tenant", nil)
 	}
-	tc := evalCaseFromPayload(envelope, envelope.Payload)
+	tc, err := evalCaseFromPayload(envelope, envelope.Payload)
+	if err != nil {
+		return nil, err
+	}
 	suite, ok, err := appCore.Evals.AddCase(r.Context(), suiteID, tc)
 	if err != nil {
 		return nil, err
@@ -255,7 +258,7 @@ func evalCaseTraceIDs(results []eval.Result) []string {
 	return out
 }
 
-func evalCaseFromPayload(envelope contracts.AgentEnvelope, payload map[string]any) eval.Case {
+func evalCaseFromPayload(envelope contracts.AgentEnvelope, payload map[string]any) (eval.Case, error) {
 	status := contracts.RunStatus("")
 	if raw := payloadString(payload, "should_end_status"); raw != "" {
 		status = contracts.RunStatus(raw)
@@ -269,6 +272,10 @@ func evalCaseFromPayload(envelope contracts.AgentEnvelope, payload map[string]an
 			target.Version = contracts.AgentVersion(version)
 		}
 	}
+	runtimeContext, err := runtimeContextFromEvalPayload(envelope.Context, payload)
+	if err != nil {
+		return eval.Case{}, err
+	}
 	return eval.Case{
 		Name:                  payloadString(payload, "name"),
 		SuiteID:               contracts.EvalSuiteID(payloadString(payload, "suite_id")),
@@ -277,29 +284,32 @@ func evalCaseFromPayload(envelope contracts.AgentEnvelope, payload map[string]an
 		Safety:                payloadBool(payload, "safety"),
 		Input:                 payloadString(payload, "input"),
 		Target:                target,
-		Context:               runtimeContextFromEvalPayload(envelope.Context, payload),
+		Context:               runtimeContext,
 		MustCallTools:         stringSlice(payload["must_call_tools"]),
 		ShouldNotCallTools:    stringSlice(payload["should_not_call_tools"]),
 		FinalReplyContains:    stringSlice(payload["final_reply_contains"]),
 		FinalReplyNotContains: stringSlice(payload["final_reply_not_contains"]),
 		MaxToolCalls:          payloadInt(payload, "max_tool_calls"),
 		ShouldEndStatus:       status,
-	}
+	}, nil
 }
 
-func runtimeContextFromEvalPayload(base contracts.RuntimeContext, payload map[string]any) contracts.RuntimeContext {
+func runtimeContextFromEvalPayload(base contracts.RuntimeContext, payload map[string]any) (contracts.RuntimeContext, error) {
 	raw, ok := payload["context"].(map[string]any)
 	if !ok {
-		return base
+		return base, nil
+	}
+	if _, ok := raw["session_id"]; ok {
+		return base, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "session_id is removed; use context.conversation.conversation_id", nil)
+	}
+	if _, ok := raw["collaboration"]; ok {
+		return base, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "collaboration is removed; use context.conversation and context.external_task", nil)
 	}
 	if tenantID := payloadString(raw, "tenant_id"); tenantID != "" {
 		base.TenantID = contracts.TenantID(tenantID)
 	}
 	if userID := payloadString(raw, "user_id"); userID != "" {
 		base.UserID = contracts.UserID(userID)
-	}
-	if sessionID := payloadString(raw, "session_id"); sessionID != "" {
-		base.SessionID = sessionID
 	}
 	if taskID := payloadString(raw, "task_id"); taskID != "" {
 		base.TaskID = contracts.TaskID(taskID)
@@ -310,32 +320,62 @@ func runtimeContextFromEvalPayload(base contracts.RuntimeContext, payload map[st
 	if timezone := payloadString(raw, "timezone"); timezone != "" {
 		base.Timezone = timezone
 	}
-	if collabRaw, ok := raw["collaboration"].(map[string]any); ok {
-		collab := collaborationContextFromPayload(collabRaw)
-		base.Collaboration = &collab
+	if conversationRaw, ok := raw["conversation"].(map[string]any); ok {
+		conversation := runtimeConversationFromPayload(conversationRaw)
+		base.Conversation = &conversation
 	}
-	return base
+	if externalTaskRaw, ok := raw["external_task"].(map[string]any); ok {
+		base.ExternalTask = &contracts.ExternalTaskRef{
+			Provider:       payloadString(externalTaskRaw, "provider"),
+			ExternalTaskID: contracts.ExternalTaskID(payloadString(externalTaskRaw, "external_task_id")),
+		}
+	}
+	return base, nil
 }
 
-func collaborationContextFromPayload(raw map[string]any) contracts.CollaborationContext {
-	return contracts.CollaborationContext{
-		Provider:            payloadString(raw, "provider"),
-		ExternalWorkspaceID: payloadString(raw, "external_workspace_id"),
-		ExternalGroupID:     payloadString(raw, "external_group_id"),
-		ExternalChannelID:   payloadString(raw, "external_channel_id"),
-		ExternalThreadID:    payloadString(raw, "external_thread_id"),
-		ExternalTaskID:      payloadString(raw, "external_task_id"),
-		ExternalMessageID:   payloadString(raw, "external_message_id"),
-		CallerID:            payloadString(raw, "caller_id"),
-		CallerType:          payloadString(raw, "caller_type"),
-		ConversationKind:    payloadString(raw, "conversation_kind"),
-		CurrentSpeakerName:  payloadString(raw, "current_speaker_name"),
-		MentionedAgentIDs:   stringSlice(raw["mentioned_agent_ids"]),
-		ReplyToMessageID:    payloadString(raw, "reply_to_message_id"),
-		ThreadID:            payloadString(raw, "thread_id"),
-		RecentMessages:      conversationMessagesFromPayload(raw["recent_messages"]),
-		Participants:        conversationParticipantsFromPayload(raw["participants"]),
+func runtimeConversationFromPayload(raw map[string]any) contracts.RuntimeConversation {
+	conversation := contracts.RuntimeConversation{
+		Provider:       payloadString(raw, "provider"),
+		Kind:           payloadString(raw, "kind"),
+		ConversationID: payloadString(raw, "conversation_id"),
+		ThreadID:       payloadString(raw, "thread_id"),
+		ExternalRefs:   stringMap(raw["external_refs"]),
+		RecentMessages: conversationMessagesFromPayload(raw["recent_messages"]),
+		Participants:   conversationParticipantsFromPayload(raw["participants"]),
 	}
+	if currentRaw, ok := raw["current_message"].(map[string]any); ok {
+		message := runtimeMessageFromPayload(currentRaw)
+		conversation.CurrentMessage = &message
+	}
+	return conversation
+}
+
+func runtimeMessageFromPayload(raw map[string]any) contracts.RuntimeMessage {
+	return contracts.RuntimeMessage{
+		MessageID:         payloadString(raw, "message_id"),
+		ExternalMessageID: payloadString(raw, "external_message_id"),
+		SpeakerID:         payloadString(raw, "speaker_id"),
+		SpeakerType:       payloadString(raw, "speaker_type"),
+		SpeakerName:       payloadString(raw, "speaker_name"),
+		ReplyToMessageID:  payloadString(raw, "reply_to_message_id"),
+		ThreadID:          payloadString(raw, "thread_id"),
+		Mentions:          stringSlice(raw["mentions"]),
+		Text:              payloadString(raw, "text"),
+	}
+}
+
+func stringMap(value any) map[string]string {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for key, value := range raw {
+		if text, ok := value.(string); ok && text != "" {
+			out[key] = text
+		}
+	}
+	return out
 }
 
 func conversationMessagesFromPayload(value any) []contracts.ConversationMessage {

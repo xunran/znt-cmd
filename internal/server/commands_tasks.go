@@ -250,7 +250,7 @@ func approveTaskAction(r *http.Request, appCore *core.Core, task contracts.Task,
 		Target:     contracts.AgentTarget{AgentID: run.AgentID, Version: run.AgentVersion},
 		Caller:     contracts.AgentCaller{CallerID: caller.CallerID, CallerType: caller.CallerType, TenantID: caller.TenantID},
 		Command:    "agent.run",
-		Payload:    map[string]any{"input": task.Objective},
+		Payload:    map[string]any{},
 		Context: contracts.RuntimeContext{
 			TenantID: caller.TenantID,
 			TaskID:   task.TaskID,
@@ -408,10 +408,10 @@ func taskStart(r *http.Request, appCore *core.Core, envelope contracts.AgentEnve
 		return nil, err
 	}
 	var binding *contracts.ExternalTaskBinding
-	if envelope.Context.Collaboration != nil && envelope.Context.Collaboration.ExternalTaskID != "" {
+	if envelope.Context.ExternalTask != nil && envelope.Context.ExternalTask.ExternalTaskID != "" {
 		bound, err := appCore.ArrayBridge.BindTask(r.Context(), contracts.ExternalTaskBinding{
-			Provider:       envelope.Context.Collaboration.Provider,
-			ExternalTaskID: contracts.ExternalTaskID(envelope.Context.Collaboration.ExternalTaskID),
+			Provider:       envelope.Context.ExternalTask.Provider,
+			ExternalTaskID: envelope.Context.ExternalTask.ExternalTaskID,
 			CoreTaskID:     created.TaskID,
 			TenantID:       caller.TenantID,
 			SyncMode:       "two_way",

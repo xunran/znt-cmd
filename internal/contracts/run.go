@@ -13,6 +13,11 @@ type AgentRun struct {
 
 	TaskID TaskID `json:"task_id,omitempty"`
 
+	Input          string `json:"input,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	ThreadID       string `json:"thread_id,omitempty"`
+	MessageID      string `json:"message_id,omitempty"`
+
 	Status RunStatus `json:"status"`
 
 	StepCount     int `json:"step_count"`

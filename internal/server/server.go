@@ -48,6 +48,7 @@ func dispatchCommand(r *http.Request, appCore *core.Core, metrics *metricsState,
 				observeRun(true)
 				return nil, err
 			}
+			_ = recordAgentRouteResolved(r, appCore, caller.TenantID, envelope.TraceID, envelope.Target.AgentID, prepared.Run.RunID, route)
 			if route.Canary {
 				_ = recordCanaryRoute(r, appCore, caller.TenantID, envelope.TraceID, caller, envelope.Target.AgentID, prepared.Run.RunID, route.Release)
 			}
@@ -59,10 +60,18 @@ func dispatchCommand(r *http.Request, appCore *core.Core, metrics *metricsState,
 			return prepared.Result(), nil
 		}
 		defer releaseAdmission()
-		result, err := appCore.Coordinator.HandleEnvelope(r.Context(), envelope)
+		prepared, err := appCore.Coordinator.PrepareEnvelopeRun(r.Context(), envelope)
+		if err != nil {
+			observeRun(true)
+			return nil, err
+		}
+		_ = recordAgentRouteResolved(r, appCore, caller.TenantID, envelope.TraceID, envelope.Target.AgentID, prepared.Run.RunID, route)
+		result, err := appCore.Coordinator.ExecutePreparedRun(r.Context(), prepared)
 		observeRun(err != nil)
-		if err == nil && route.Canary {
-			_ = recordCanaryRoute(r, appCore, caller.TenantID, envelope.TraceID, caller, envelope.Target.AgentID, result.RunID, route.Release)
+		if err == nil {
+			if route.Canary {
+				_ = recordCanaryRoute(r, appCore, caller.TenantID, envelope.TraceID, caller, envelope.Target.AgentID, result.RunID, route.Release)
+			}
 		}
 		return result, err
 	case "task.start":

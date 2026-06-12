@@ -8,11 +8,13 @@ import (
 
 	contextconversation "znt/internal/context/conversation"
 	"znt/internal/contracts"
+	conversationstore "znt/internal/conversation"
 	"znt/pkg/idgen"
 )
 
 func (c Coordinator) conversationContext(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, events []contracts.TaskEvent, memories []contracts.MemorySummary, artifacts []contracts.ArtifactRef, tools []contracts.ToolResultSummary, userInput string) *contracts.ConversationContext {
-	conversation := buildConversationContext(envelope, definition, userInput, c.Now(), c.EnableDirectConversation)
+	recentFromStore := c.storedConversationMessages(ctx, envelope)
+	conversation := buildConversationContext(envelope, definition, userInput, c.Now(), c.EnableDirectConversation, recentFromStore)
 	if conversation == nil {
 		return nil
 	}
@@ -149,37 +151,22 @@ func (c Coordinator) conversationContext(ctx context.Context, envelope contracts
 	return conversation
 }
 
-func buildConversationContext(envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, userInput string, now time.Time, allowDirect bool) *contracts.ConversationContext {
-	collab := envelope.Context.Collaboration
-	if collab == nil && (!allowDirect || envelope.Caller.CallerID == "") {
+func buildConversationContext(envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, userInput string, now time.Time, allowDirect bool, storedRecent []contracts.ConversationMessage) *contracts.ConversationContext {
+	runtimeConversation := envelope.Context.Conversation
+	if runtimeConversation == nil && (!allowDirect || envelope.Caller.CallerID == "") {
 		return nil
 	}
 	kind := contextconversation.KindDirect
-	if collab != nil {
-		switch strings.TrimSpace(collab.ConversationKind) {
+	if runtimeConversation != nil {
+		switch strings.TrimSpace(runtimeConversation.Kind) {
 		case contextconversation.KindDirect, contextconversation.KindGroup, contextconversation.KindThread:
-			kind = strings.TrimSpace(collab.ConversationKind)
-		case "":
-			if collab.ExternalGroupID != "" || collab.ExternalChannelID != "" {
-				kind = contextconversation.KindGroup
-			}
-			if collab.ExternalThreadID != "" {
-				kind = contextconversation.KindThread
-			}
+			kind = strings.TrimSpace(runtimeConversation.Kind)
 		default:
-			kind = strings.TrimSpace(collab.ConversationKind)
+			kind = strings.TrimSpace(runtimeConversation.Kind)
 		}
 	}
 	speakerID := envelope.Caller.CallerID
 	speakerType := envelope.Caller.CallerType
-	if collab != nil {
-		if collab.CallerID != "" {
-			speakerID = collab.CallerID
-		}
-		if collab.CallerType != "" {
-			speakerType = collab.CallerType
-		}
-	}
 	if speakerType == "" {
 		speakerType = "user"
 	}
@@ -192,22 +179,32 @@ func buildConversationContext(envelope contracts.AgentEnvelope, definition contr
 	if current.CreatedAt.IsZero() {
 		current.CreatedAt = now
 	}
-	if collab != nil {
-		current.MessageID = collab.ExternalMessageID
-		current.ExternalMessageID = collab.ExternalMessageID
-		current.SpeakerName = collab.CurrentSpeakerName
-		current.ReplyToMessageID = contextconversation.FirstNonEmpty(collab.ReplyToMessageID, replyTargetID(collab.ReplyTarget))
-		current.ThreadID = contextconversation.FirstNonEmpty(collab.ThreadID, collab.ExternalThreadID)
-		current.Mentions = append(current.Mentions, collab.MentionedAgentIDs...)
+	if runtimeConversation != nil && runtimeConversation.CurrentMessage != nil {
+		message := runtimeConversation.CurrentMessage
+		current.MessageID = message.MessageID
+		current.ExternalMessageID = message.ExternalMessageID
+		current.SpeakerID = contextconversation.FirstNonEmpty(message.SpeakerID, current.SpeakerID)
+		current.SpeakerType = contextconversation.FirstNonEmpty(message.SpeakerType, current.SpeakerType)
+		current.SpeakerName = message.SpeakerName
+		current.ReplyToMessageID = message.ReplyToMessageID
+		current.ThreadID = contextconversation.FirstNonEmpty(message.ThreadID, runtimeConversation.ThreadID)
+		current.Mentions = append(current.Mentions, message.Mentions...)
+		if !message.CreatedAt.IsZero() {
+			current.CreatedAt = message.CreatedAt
+		}
+	}
+	if runtimeConversation != nil && current.ThreadID == "" {
+		current.ThreadID = runtimeConversation.ThreadID
 	}
 	if current.MessageID == "" {
 		current.MessageID = string(envelope.EnvelopeID)
 	}
 	participants := participantsWithAgent(definition, nil)
 	recent := []contracts.ConversationMessage(nil)
-	if collab != nil {
-		recent = append(recent, collab.RecentMessages...)
-		participants = participantsWithAgent(definition, collab.Participants)
+	if runtimeConversation != nil {
+		recent = append(recent, storedRecent...)
+		recent = append(recent, runtimeConversation.RecentMessages...)
+		participants = participantsWithAgent(definition, runtimeConversation.Participants)
 	}
 	recent = normalizeRecentMessages(recent, current, 20)
 	return &contracts.ConversationContext{
@@ -218,31 +215,59 @@ func buildConversationContext(envelope contracts.AgentEnvelope, definition contr
 	}
 }
 
+func (c Coordinator) recordPreparedInputFacts(ctx context.Context, envelope contracts.AgentEnvelope, run contracts.AgentRun, task contracts.Task, input string) error {
+	if err := c.appendConversationInputEvent(ctx, envelope, run.RunID, task.TaskID, task.Objective, input, "conversation.input"); err != nil {
+		return err
+	}
+	return c.persistConversationMessage(ctx, envelope, run, input)
+}
+
+func (c Coordinator) recordResumeInputFacts(ctx context.Context, envelope contracts.AgentEnvelope, run contracts.AgentRun, task contracts.Task, input string) error {
+	if err := c.appendConversationInputEvent(ctx, envelope, run.RunID, task.TaskID, task.Objective, input, "run.resumed_input"); err != nil {
+		return err
+	}
+	return c.persistConversationMessage(ctx, envelope, run, input)
+}
+
 func (c Coordinator) recordConversationInput(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, input string) {
+	_ = c.appendConversationInputEvent(ctx, envelope, runID, taskID, "", input, "conversation.input")
+}
+
+func (c Coordinator) appendConversationInputEvent(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, taskObjective string, input string, eventType string) error {
 	if c.Tasks == nil || taskID == "" || strings.TrimSpace(input) == "" {
-		return
+		return nil
 	}
 	payload := map[string]any{
-		"input": input,
+		"input":            input,
+		"task_objective":   taskObjective,
+		"run_id":           runID,
+		"auth_caller_id":   envelope.Caller.CallerID,
+		"auth_caller_type": envelope.Caller.CallerType,
 	}
-	if collab := envelope.Context.Collaboration; collab != nil {
-		payload["provider"] = collab.Provider
-		payload["conversation_kind"] = collab.ConversationKind
-		payload["external_group_id"] = collab.ExternalGroupID
-		payload["external_channel_id"] = collab.ExternalChannelID
-		payload["external_thread_id"] = collab.ExternalThreadID
-		payload["external_message_id"] = collab.ExternalMessageID
-		payload["caller_id"] = collab.CallerID
-		payload["caller_type"] = collab.CallerType
-		payload["reply_to_message_id"] = contextconversation.FirstNonEmpty(collab.ReplyToMessageID, replyTargetID(collab.ReplyTarget))
+	actorID := envelope.Caller.CallerID
+	actorType := envelope.Caller.CallerType
+	if conversation := envelope.Context.Conversation; conversation != nil {
+		payload["provider"] = conversation.Provider
+		payload["conversation_kind"] = conversation.Kind
+		payload["conversation_id"] = conversation.ConversationID
+		payload["thread_id"] = conversation.ThreadID
+		if current := conversation.CurrentMessage; current != nil {
+			payload["message_id"] = current.MessageID
+			payload["external_message_id"] = current.ExternalMessageID
+			payload["reply_to_message_id"] = current.ReplyToMessageID
+			payload["speaker_id"] = current.SpeakerID
+			payload["speaker_type"] = current.SpeakerType
+			actorID = contextconversation.FirstNonEmpty(current.SpeakerID, actorID)
+			actorType = contextconversation.FirstNonEmpty(current.SpeakerType, actorType)
+		}
 	}
 	event := contracts.TaskEvent{
 		EventID:   contracts.TaskEventID(idgen.New("taskevt")),
 		TaskID:    taskID,
 		TenantID:  envelope.Context.TenantID,
-		Type:      "conversation.input",
-		ActorID:   envelope.Caller.CallerID,
-		ActorType: envelope.Caller.CallerType,
+		Type:      eventType,
+		ActorID:   actorID,
+		ActorType: actorType,
 		Payload:   payload,
 		RunID:     runID,
 		CreatedAt: c.Now(),
@@ -258,11 +283,123 @@ func (c Coordinator) recordConversationInput(ctx context.Context, envelope contr
 			"reason": "record_conversation_input_failed",
 			"error":  err.Error(),
 		})
-		return
+		return err
 	}
 	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceConversationInputRecorded, map[string]any{
 		"event_id": event.EventID,
 	})
+	return nil
+}
+
+func (c Coordinator) persistConversationMessage(ctx context.Context, envelope contracts.AgentEnvelope, run contracts.AgentRun, input string) error {
+	if c.ConversationStore == nil || envelope.Context.Conversation == nil {
+		return nil
+	}
+	conversation := envelope.Context.Conversation
+	now := c.Now()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	message := runtimeConversationMessage(envelope, input, now)
+	thread := conversationstore.Thread{
+		TenantID:       envelope.Context.TenantID,
+		ConversationID: conversation.ConversationID,
+		ThreadID:       conversation.ThreadID,
+		Kind:           conversation.Kind,
+		Provider:       conversation.Provider,
+		ExternalRefs:   conversation.ExternalRefs,
+		LastMessageAt:  message.CreatedAt,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if err := c.ConversationStore.UpsertThread(ctx, thread); err != nil {
+		return err
+	}
+	return c.ConversationStore.AppendMessage(ctx, conversationstore.MessageRecord{
+		TenantID:       envelope.Context.TenantID,
+		ConversationID: conversation.ConversationID,
+		ThreadID:       conversation.ThreadID,
+		Message:        message,
+		Metadata: map[string]any{
+			"run_id":  run.RunID,
+			"task_id": run.TaskID,
+		},
+	})
+}
+
+func (c Coordinator) storedConversationMessages(ctx context.Context, envelope contracts.AgentEnvelope) []contracts.ConversationMessage {
+	if c.ConversationStore == nil || envelope.Context.Conversation == nil {
+		return nil
+	}
+	conversation := envelope.Context.Conversation
+	messages, err := c.ConversationStore.RecentMessages(ctx, envelope.Context.TenantID, conversation.ConversationID, conversation.ThreadID, 20)
+	if err != nil {
+		c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, "", envelope.Context.TaskID, contracts.TraceConversationContextRetrievalFailed, map[string]any{
+			"reason":          "conversation_store_recent_messages_failed",
+			"error":           err.Error(),
+			"conversation_id": conversation.ConversationID,
+			"thread_id":       conversation.ThreadID,
+		})
+		return nil
+	}
+	return messages
+}
+
+func runtimeConversationID(envelope contracts.AgentEnvelope) string {
+	if envelope.Context.Conversation == nil {
+		return ""
+	}
+	return envelope.Context.Conversation.ConversationID
+}
+
+func runtimeConversationThreadID(envelope contracts.AgentEnvelope) string {
+	if envelope.Context.Conversation == nil {
+		return ""
+	}
+	return envelope.Context.Conversation.ThreadID
+}
+
+func runtimeConversationMessageID(envelope contracts.AgentEnvelope) string {
+	if envelope.Context.Conversation == nil || envelope.Context.Conversation.CurrentMessage == nil {
+		return ""
+	}
+	return envelope.Context.Conversation.CurrentMessage.MessageID
+}
+
+func runtimeConversationMessage(envelope contracts.AgentEnvelope, input string, now time.Time) contracts.ConversationMessage {
+	message := contracts.ConversationMessage{
+		MessageID:   string(envelope.EnvelopeID),
+		SpeakerID:   envelope.Caller.CallerID,
+		SpeakerType: envelope.Caller.CallerType,
+		Text:        input,
+		CreatedAt:   envelope.CreatedAt,
+	}
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = now
+	}
+	if message.SpeakerID == "" {
+		message.SpeakerID = string(envelope.Context.UserID)
+	}
+	if message.SpeakerType == "" {
+		message.SpeakerType = "user"
+	}
+	if conversation := envelope.Context.Conversation; conversation != nil {
+		message.ThreadID = conversation.ThreadID
+		if current := conversation.CurrentMessage; current != nil {
+			message.MessageID = contextconversation.FirstNonEmpty(current.MessageID, message.MessageID)
+			message.ExternalMessageID = current.ExternalMessageID
+			message.SpeakerID = contextconversation.FirstNonEmpty(current.SpeakerID, message.SpeakerID)
+			message.SpeakerType = contextconversation.FirstNonEmpty(current.SpeakerType, message.SpeakerType)
+			message.SpeakerName = current.SpeakerName
+			message.ReplyToMessageID = current.ReplyToMessageID
+			message.ThreadID = contextconversation.FirstNonEmpty(current.ThreadID, message.ThreadID)
+			message.Mentions = append(message.Mentions, current.Mentions...)
+			if !current.CreatedAt.IsZero() {
+				message.CreatedAt = current.CreatedAt
+			}
+		}
+	}
+	return message
 }
 
 func participantsWithAgent(definition contracts.AgentDefinition, participants []contracts.ConversationParticipant) []contracts.ConversationParticipant {
@@ -310,13 +447,6 @@ func normalizeRecentMessages(messages []contracts.ConversationMessage, current c
 		out = out[len(out)-limit:]
 	}
 	return out
-}
-
-func replyTargetID(target *contracts.ReplyTarget) string {
-	if target == nil {
-		return ""
-	}
-	return target.ID
 }
 
 func retrievalQueryStrings(queries []contracts.ContextRetrievalQuery) []string {

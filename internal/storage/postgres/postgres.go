@@ -15,6 +15,7 @@ import (
 
 	agentpackage "znt/internal/agentdef/package"
 	"znt/internal/contracts"
+	conversationstore "znt/internal/conversation"
 	"znt/internal/eval"
 	"znt/internal/governance/audit"
 	tracequery "znt/internal/governance/trace"
@@ -31,6 +32,7 @@ type Repositories struct {
 	Tasks               *TaskStore
 	Runs                *RunRepository
 	Tools               *ToolRepository
+	Conversations       *ConversationStore
 	ToolCatalog         *ToolCatalogStore
 	ServiceConnections  *ServiceConnectionStore
 	RuntimeHooks        *RuntimeHookStore
@@ -103,6 +105,7 @@ func NewRepositories(db *sql.DB) *Repositories {
 		Tasks:               &TaskStore{db: db},
 		Runs:                &RunRepository{db: db, now: time.Now},
 		Tools:               &ToolRepository{db: db},
+		Conversations:       &ConversationStore{db: db},
 		ToolCatalog:         &ToolCatalogStore{db: db},
 		ServiceConnections:  &ServiceConnectionStore{db: db},
 		RuntimeHooks:        &RuntimeHookStore{db: db},
@@ -767,12 +770,13 @@ func (r *RunRepository) Create(ctx context.Context, run contracts.AgentRun) erro
 	}
 	result, err := r.db.ExecContext(ctx, `
 INSERT INTO agent_runs (
-  run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
+  run_id, trace_id, tenant_id, agent_id, agent_version, task_id, input, conversation_id, thread_id, message_id, status,
   step_count, tool_call_count, policy_set_id, version_snapshot,
   started_at, completed_at, error_code, error_message
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 ON CONFLICT (run_id) DO NOTHING`,
 		run.RunID, run.TraceID, run.TenantID, run.AgentID, run.AgentVersion, nullString(string(run.TaskID)),
+		run.Input, nullString(run.ConversationID), nullString(run.ThreadID), nullString(run.MessageID),
 		run.Status, run.StepCount, run.ToolCallCount, run.PolicySetID, snapshot,
 		run.StartedAt.UTC(), nullTime(run.CompletedAt), nullString(string(run.ErrorCode)), nullString(run.ErrorMessage),
 	)
@@ -870,7 +874,7 @@ func (r *RunRepository) UpdateVersionSnapshot(ctx context.Context, runID contrac
 UPDATE agent_runs SET version_snapshot=$2
 WHERE run_id=$1
 RETURNING run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`,
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`,
 		runID, value,
 	))
 }
@@ -880,7 +884,7 @@ func (r *RunRepository) IncrementStep(ctx context.Context, runID contracts.Agent
 UPDATE agent_runs SET step_count = step_count + 1
 WHERE run_id=$1
 RETURNING run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`, runID))
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`, runID))
 	if err != nil {
 		return contracts.AgentRun{}, "", err
 	}
@@ -892,7 +896,7 @@ func (r *RunRepository) IncrementToolCall(ctx context.Context, runID contracts.A
 UPDATE agent_runs SET tool_call_count = tool_call_count + 1
 WHERE run_id=$1
 RETURNING run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`, runID))
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`, runID))
 }
 
 func (r *RunRepository) updateStatus(ctx context.Context, runID contracts.AgentRunID, status contracts.RunStatus, completedAt *time.Time, runtimeErr *contracts.RuntimeError) (contracts.AgentRun, error) {
@@ -906,14 +910,14 @@ UPDATE agent_runs
 SET status=$2, completed_at=$3, error_code=$4, error_message=$5
 WHERE run_id=$1
 RETURNING run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`,
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`,
 		runID, status, nullTime(completedAt), nullString(code), nullString(message),
 	))
 }
 
 func runSelectSQL() string {
 	return `SELECT run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message
 FROM agent_runs`
 }
 
@@ -921,12 +925,13 @@ func scanRun(row interface {
 	Scan(dest ...any) error
 }) (contracts.AgentRun, error) {
 	var runID, traceID, tenantID, agentID, agentVersion, taskID, status, policySetID string
+	var input, conversationID, threadID, messageID sql.NullString
 	var snapshot []byte
 	var completed sql.NullTime
 	var code, message sql.NullString
 	run := contracts.AgentRun{}
 	err := row.Scan(&runID, &traceID, &tenantID, &agentID, &agentVersion, &taskID, &status,
-		&run.StepCount, &run.ToolCallCount, &policySetID, &snapshot, &run.StartedAt,
+		&input, &conversationID, &threadID, &messageID, &run.StepCount, &run.ToolCallCount, &policySetID, &snapshot, &run.StartedAt,
 		&completed, &code, &message)
 	if err != nil {
 		return contracts.AgentRun{}, mapSQLError(err)
@@ -937,6 +942,10 @@ func scanRun(row interface {
 	run.AgentID = contracts.AgentID(agentID)
 	run.AgentVersion = contracts.AgentVersion(agentVersion)
 	run.TaskID = contracts.TaskID(taskID)
+	run.Input = input.String
+	run.ConversationID = conversationID.String
+	run.ThreadID = threadID.String
+	run.MessageID = messageID.String
 	run.Status = contracts.RunStatus(status)
 	run.PolicySetID = contracts.PolicySetID(policySetID)
 	if err := scanJSON(snapshot, &run.VersionSnapshot); err != nil {
@@ -947,6 +956,155 @@ func scanRun(row interface {
 	run.ErrorMessage = message.String
 	run.StartedAt = run.StartedAt.UTC()
 	return run, nil
+}
+
+type ConversationStore struct {
+	db *sql.DB
+}
+
+func (s *ConversationStore) UpsertThread(ctx context.Context, thread conversationstore.Thread) error {
+	if thread.ThreadID == "" {
+		thread.ThreadID = thread.ConversationID
+	}
+	if thread.CreatedAt.IsZero() {
+		thread.CreatedAt = time.Now().UTC()
+	}
+	if thread.UpdatedAt.IsZero() {
+		thread.UpdatedAt = thread.CreatedAt
+	}
+	refs, err := jsonValue(thread.ExternalRefs)
+	if err != nil {
+		return err
+	}
+	var lastMessageAt sql.NullTime
+	if !thread.LastMessageAt.IsZero() {
+		lastMessageAt = sql.NullTime{Time: thread.LastMessageAt.UTC(), Valid: true}
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO conversation_threads (
+  tenant_id, conversation_id, thread_id, kind, provider, external_refs, last_message_at, created_at, updated_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+ON CONFLICT (tenant_id, conversation_id, thread_id)
+DO UPDATE SET
+  kind=EXCLUDED.kind,
+  provider=EXCLUDED.provider,
+  external_refs=EXCLUDED.external_refs,
+  last_message_at=EXCLUDED.last_message_at,
+  updated_at=EXCLUDED.updated_at`,
+		thread.TenantID, thread.ConversationID, thread.ThreadID, thread.Kind, thread.Provider, refs,
+		lastMessageAt, thread.CreatedAt.UTC(), thread.UpdatedAt.UTC(),
+	)
+	return err
+}
+
+func (s *ConversationStore) AppendMessage(ctx context.Context, message conversationstore.MessageRecord) error {
+	if message.ThreadID == "" {
+		message.ThreadID = message.ConversationID
+	}
+	if message.Message.ThreadID == "" {
+		message.Message.ThreadID = message.ThreadID
+	}
+	mentions, err := jsonValue(message.Message.Mentions)
+	if err != nil {
+		return err
+	}
+	metadata, err := jsonValue(message.Metadata)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `
+INSERT INTO conversation_messages (
+  tenant_id, conversation_id, thread_id, message_id, external_message_id,
+  speaker_id, speaker_type, speaker_name, text, reply_to_message_id, mentions, metadata, created_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+ON CONFLICT (tenant_id, conversation_id, message_id) DO NOTHING`,
+		message.TenantID, message.ConversationID, message.ThreadID, message.Message.MessageID, nullString(message.Message.ExternalMessageID),
+		message.Message.SpeakerID, message.Message.SpeakerType, nullString(message.Message.SpeakerName), message.Message.Text,
+		nullString(message.Message.ReplyToMessageID), mentions, metadata, message.Message.CreatedAt.UTC(),
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected > 0 {
+		return nil
+	}
+	existing, err := s.GetMessage(ctx, message.TenantID, message.ConversationID, message.Message.MessageID)
+	if err != nil {
+		return err
+	}
+	if existing.Text == message.Message.Text &&
+		existing.SpeakerID == message.Message.SpeakerID &&
+		existing.SpeakerType == message.Message.SpeakerType &&
+		existing.ThreadID == message.Message.ThreadID {
+		return nil
+	}
+	return contracts.NewRuntimeError(contracts.CodeTaskConflict, "conversation message id already exists with different content", map[string]any{
+		"conversation_id": message.ConversationID,
+		"message_id":      message.Message.MessageID,
+	})
+}
+
+func (s *ConversationStore) RecentMessages(ctx context.Context, tenantID contracts.TenantID, conversationID string, threadID string, limit int) ([]contracts.ConversationMessage, error) {
+	if threadID == "" {
+		threadID = conversationID
+	}
+	args := []any{tenantID, conversationID, threadID}
+	query := conversationMessageSelectSQL() + ` WHERE tenant_id=$1 AND conversation_id=$2 AND thread_id=$3 ORDER BY created_at DESC, message_id DESC`
+	if limit > 0 {
+		args = append(args, limit)
+		query += fmt.Sprintf(" LIMIT $%d", len(args))
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]contracts.ConversationMessage, 0)
+	for rows.Next() {
+		message, err := scanConversationMessage(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+func (s *ConversationStore) GetMessage(ctx context.Context, tenantID contracts.TenantID, conversationID string, messageID string) (contracts.ConversationMessage, error) {
+	return scanConversationMessage(s.db.QueryRowContext(ctx, conversationMessageSelectSQL()+` WHERE tenant_id=$1 AND conversation_id=$2 AND message_id=$3`, tenantID, conversationID, messageID))
+}
+
+func conversationMessageSelectSQL() string {
+	return `SELECT message_id, external_message_id, speaker_id, speaker_type, speaker_name, text, created_at, reply_to_message_id, thread_id, mentions FROM conversation_messages`
+}
+
+func scanConversationMessage(row interface {
+	Scan(dest ...any) error
+}) (contracts.ConversationMessage, error) {
+	var message contracts.ConversationMessage
+	var externalMessageID, speakerName, replyToMessageID sql.NullString
+	var mentions []byte
+	if err := row.Scan(&message.MessageID, &externalMessageID, &message.SpeakerID, &message.SpeakerType, &speakerName, &message.Text, &message.CreatedAt, &replyToMessageID, &message.ThreadID, &mentions); err != nil {
+		return contracts.ConversationMessage{}, mapSQLError(err)
+	}
+	message.ExternalMessageID = externalMessageID.String
+	message.SpeakerName = speakerName.String
+	message.ReplyToMessageID = replyToMessageID.String
+	if err := scanJSON(mentions, &message.Mentions); err != nil {
+		return contracts.ConversationMessage{}, err
+	}
+	message.CreatedAt = message.CreatedAt.UTC()
+	return message, nil
 }
 
 type ToolRepository struct {
@@ -1069,6 +1227,42 @@ func (r *ToolRepository) ListResultsByRun(ctx context.Context, runID contracts.A
 	rows, err := r.db.QueryContext(ctx, toolResultSelectSQL()+`
  WHERE tool_call_id IN (SELECT tool_call_id FROM tool_calls WHERE run_id=$1)
  ORDER BY completed_at ASC`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]contracts.ToolResult, 0)
+	for rows.Next() {
+		result, err := scanToolResult(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, result)
+	}
+	return out, rows.Err()
+}
+
+func (r *ToolRepository) ListCallsByTask(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID) ([]contracts.ToolCall, error) {
+	rows, err := r.db.QueryContext(ctx, toolCallSelectSQL()+" WHERE tenant_id=$1 AND task_id=$2 ORDER BY created_at ASC", tenantID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]contracts.ToolCall, 0)
+	for rows.Next() {
+		call, err := scanToolCall(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, call)
+	}
+	return out, rows.Err()
+}
+
+func (r *ToolRepository) ListResultsByTask(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID) ([]contracts.ToolResult, error) {
+	rows, err := r.db.QueryContext(ctx, toolResultSelectSQL()+`
+ WHERE tool_call_id IN (SELECT tool_call_id FROM tool_calls WHERE tenant_id=$1 AND task_id=$2)
+ ORDER BY completed_at ASC`, tenantID, taskID)
 	if err != nil {
 		return nil, err
 	}

@@ -15,6 +15,7 @@ import (
 	promptbuilder "znt/internal/context/promptbundle"
 	workviewbuilder "znt/internal/context/workview"
 	"znt/internal/contracts"
+	conversationstore "znt/internal/conversation"
 	decisionparser "znt/internal/decision/parser"
 	decisionvalidator "znt/internal/decision/validator"
 	tooldiscovery "znt/internal/discovery/tool"
@@ -49,6 +50,7 @@ type Coordinator struct {
 	Validator                    decisionvalidator.Validator
 	ToolRuntime                  toolruntime.Invoker
 	ToolRepo                     toolrepo.Repository
+	ConversationStore            conversationstore.Store
 	AddressingJudge              contextconversation.AddressingJudge
 	SufficiencyJudge             contextconversation.SufficiencyJudge
 	ContextRetriever             contextconversation.Retriever
@@ -259,6 +261,11 @@ func (c Coordinator) PrepareEnvelopeRun(ctx context.Context, envelope contracts.
 		runtimeErr := contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, fmt.Sprintf("unsupported command %q", envelope.Command), nil)
 		return PreparedRun{}, runtimeErr
 	}
+	normalized, userInput, err := c.normalizeRunEnvelope(envelope)
+	if err != nil {
+		return PreparedRun{}, err
+	}
+	envelope = normalized
 	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, "", envelope.Context.TaskID, contracts.TraceInputReceived, map[string]any{
 		"command": envelope.Command,
 		"target":  envelope.Target,
@@ -271,12 +278,78 @@ func (c Coordinator) PrepareEnvelopeRun(ctx context.Context, envelope contracts.
 		if task.TenantID != envelope.Context.TenantID {
 			return PreparedRun{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "task tenant does not match envelope tenant", nil)
 		}
-		return c.prepareTaskRun(ctx, envelope, task)
+		return c.prepareTaskRun(ctx, envelope, task, userInput)
 	}
-	return c.prepareNewTaskRun(ctx, envelope)
+	return c.prepareNewTaskRun(ctx, envelope, userInput)
 }
 
-func (c Coordinator) prepareNewTaskRun(ctx context.Context, envelope contracts.AgentEnvelope) (PreparedRun, error) {
+func (c Coordinator) normalizeRunEnvelope(envelope contracts.AgentEnvelope) (contracts.AgentEnvelope, string, error) {
+	if envelope.Payload == nil {
+		envelope.Payload = map[string]any{}
+	}
+	userInput, _ := envelope.Payload["input"].(string)
+	userInput = strings.TrimSpace(userInput)
+	if userInput == "" {
+		return contracts.AgentEnvelope{}, "", contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.run requires non-empty payload.input", nil)
+	}
+	if envelope.Context.ExternalTask != nil {
+		if strings.TrimSpace(envelope.Context.ExternalTask.Provider) == "" || strings.TrimSpace(string(envelope.Context.ExternalTask.ExternalTaskID)) == "" {
+			return contracts.AgentEnvelope{}, "", contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "context.external_task requires provider and external_task_id", nil)
+		}
+	}
+	if conversation := envelope.Context.Conversation; conversation != nil {
+		conversation.ConversationID = strings.TrimSpace(conversation.ConversationID)
+		if conversation.ConversationID == "" {
+			return contracts.AgentEnvelope{}, "", contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "context.conversation requires conversation_id", nil)
+		}
+		conversation.ThreadID = strings.TrimSpace(conversation.ThreadID)
+		if conversation.ThreadID == "" {
+			conversation.ThreadID = conversation.ConversationID
+		}
+		if conversation.CurrentMessage == nil {
+			conversation.CurrentMessage = &contracts.RuntimeMessage{}
+		}
+		current := conversation.CurrentMessage
+		if strings.TrimSpace(current.Text) != "" && strings.TrimSpace(current.Text) != userInput {
+			return contracts.AgentEnvelope{}, "", contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "context.conversation.current_message.text must match payload.input", nil)
+		}
+		current.Text = userInput
+		current.MessageID = strings.TrimSpace(current.MessageID)
+		if current.MessageID == "" {
+			current.MessageID = string(envelope.EnvelopeID)
+		}
+		if current.MessageID == "" {
+			current.MessageID = idgen.New("msg")
+		}
+		if current.ThreadID == "" {
+			current.ThreadID = conversation.ThreadID
+		}
+		if current.SpeakerID == "" {
+			current.SpeakerID = envelope.Caller.CallerID
+		}
+		if current.SpeakerID == "" {
+			current.SpeakerID = string(envelope.Context.UserID)
+		}
+		if current.SpeakerType == "" {
+			current.SpeakerType = envelope.Caller.CallerType
+		}
+		if current.SpeakerType == "" {
+			current.SpeakerType = "user"
+		}
+		if current.CreatedAt.IsZero() {
+			current.CreatedAt = envelope.CreatedAt
+		}
+		if current.CreatedAt.IsZero() {
+			current.CreatedAt = c.Now()
+		}
+		if conversation.Kind == "" {
+			conversation.Kind = contextconversation.KindDirect
+		}
+	}
+	return envelope, userInput, nil
+}
+
+func (c Coordinator) prepareNewTaskRun(ctx context.Context, envelope contracts.AgentEnvelope, userInput string) (PreparedRun, error) {
 	now := c.Now()
 	definition, err := c.Agents.Load(ctx, envelope.Context.TenantID, envelope.Target.AgentID, envelope.Target.Version)
 	if err != nil {
@@ -290,10 +363,6 @@ func (c Coordinator) prepareNewTaskRun(ctx context.Context, envelope contracts.A
 		"agent_version": definition.Version,
 		"policy_set_id": definition.PolicyRefs.PolicySetID,
 	})
-	userInput, _ := envelope.Payload["input"].(string)
-	if userInput == "" {
-		userInput = envelope.Command
-	}
 	task := taskrepo.NewTask(
 		contracts.TaskID(idgen.New("task")),
 		envelope.Context.TenantID,
@@ -321,12 +390,19 @@ func (c Coordinator) prepareNewTaskRun(ctx context.Context, envelope contracts.A
 		AgentID:         definition.AgentID,
 		AgentVersion:    definition.Version,
 		TaskID:          task.TaskID,
+		Input:           userInput,
+		ConversationID:  runtimeConversationID(envelope),
+		ThreadID:        runtimeConversationThreadID(envelope),
+		MessageID:       runtimeConversationMessageID(envelope),
 		Status:          contracts.RunCreated,
 		PolicySetID:     definition.PolicyRefs.PolicySetID,
 		VersionSnapshot: c.versionSnapshot(ctx, envelope.Context.TenantID, definition, userInput),
 		StartedAt:       now,
 	}
 	if err := c.Runs.Create(ctx, run); err != nil {
+		return PreparedRun{}, err
+	}
+	if err := c.recordPreparedInputFacts(ctx, envelope, run, task, userInput); err != nil {
 		return PreparedRun{}, err
 	}
 	c.observeHook(ctx, runtimehook.OnRunStarted, envelope, definition, run.RunID, task.TaskID, map[string]any{"source": "new_task"})
@@ -395,10 +471,24 @@ func (c Coordinator) ResumeRun(ctx context.Context, envelope contracts.AgentEnve
 	if _, err := c.Runs.MarkRunning(ctx, runID); err != nil {
 		return RunResult{}, err
 	}
-	if resumedInput, _ := envelope.Payload["input"].(string); resumedInput != "" {
-		c.recordConversationInput(ctx, envelope, runID, taskID, resumedInput)
+	resumedInput, _ := envelope.Payload["input"].(string)
+	resumedInput = strings.TrimSpace(resumedInput)
+	currentInput := strings.TrimSpace(run.Input)
+	if resumedInput != "" {
+		normalized, input, err := c.normalizeRunEnvelope(envelope)
+		if err != nil {
+			return RunResult{}, err
+		}
+		envelope = normalized
+		currentInput = input
+		if err := c.recordResumeInputFacts(ctx, envelope, run, task, input); err != nil {
+			return RunResult{}, err
+		}
 	}
-	result, err := c.loop(ctx, envelope, definition, runID, taskID, task.Objective)
+	if currentInput == "" {
+		return RunResult{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "resume requires run.input or non-empty payload.input", nil)
+	}
+	result, err := c.loop(ctx, envelope, definition, runID, taskID, currentInput)
 	if err != nil {
 		runtimeErr := normalizeRuntimeError(err)
 		_, _ = c.Runs.MarkFailed(ctx, runID, runtimeErr)
@@ -418,14 +508,18 @@ func (c Coordinator) ResumeRun(ctx context.Context, envelope contracts.AgentEnve
 }
 
 func (c Coordinator) StartTaskRun(ctx context.Context, envelope contracts.AgentEnvelope, task contracts.Task) (RunResult, error) {
-	prepared, err := c.prepareTaskRun(ctx, envelope, task)
+	normalized, userInput, err := c.normalizeRunEnvelope(envelope)
+	if err != nil {
+		return RunResult{}, err
+	}
+	prepared, err := c.prepareTaskRun(ctx, normalized, task, userInput)
 	if err != nil {
 		return RunResult{}, err
 	}
 	return c.ExecutePreparedRun(ctx, prepared)
 }
 
-func (c Coordinator) prepareTaskRun(ctx context.Context, envelope contracts.AgentEnvelope, task contracts.Task) (PreparedRun, error) {
+func (c Coordinator) prepareTaskRun(ctx context.Context, envelope contracts.AgentEnvelope, task contracts.Task, userInput string) (PreparedRun, error) {
 	definition, err := c.Agents.Load(ctx, task.TenantID, task.AgentID, task.AgentVersion)
 	if err != nil {
 		return PreparedRun{}, err
@@ -453,12 +547,19 @@ func (c Coordinator) prepareTaskRun(ctx context.Context, envelope contracts.Agen
 		AgentID:         definition.AgentID,
 		AgentVersion:    definition.Version,
 		TaskID:          task.TaskID,
+		Input:           userInput,
+		ConversationID:  runtimeConversationID(envelope),
+		ThreadID:        runtimeConversationThreadID(envelope),
+		MessageID:       runtimeConversationMessageID(envelope),
 		Status:          contracts.RunCreated,
 		PolicySetID:     definition.PolicyRefs.PolicySetID,
 		VersionSnapshot: c.versionSnapshot(ctx, task.TenantID, definition, task.Objective),
 		StartedAt:       now,
 	}
 	if err := c.Runs.Create(ctx, run); err != nil {
+		return PreparedRun{}, err
+	}
+	if err := c.recordPreparedInputFacts(ctx, envelope, run, task, userInput); err != nil {
 		return PreparedRun{}, err
 	}
 	c.observeHook(ctx, runtimehook.OnRunStarted, envelope, definition, run.RunID, task.TaskID, map[string]any{"source": "existing_task"})
@@ -486,7 +587,7 @@ func (c Coordinator) prepareTaskRun(ctx context.Context, envelope contracts.Agen
 		},
 		CreatedAt: now,
 	})
-	return PreparedRun{Envelope: envelope, Definition: definition, Task: task, Run: run, UserInput: task.Objective, Source: "existing_task"}, nil
+	return PreparedRun{Envelope: envelope, Definition: definition, Task: task, Run: run, UserInput: userInput, Source: "existing_task"}, nil
 }
 
 func (c Coordinator) ExecutePreparedRun(ctx context.Context, prepared PreparedRun) (RunResult, error) {
@@ -504,11 +605,6 @@ func (c Coordinator) ExecutePreparedRun(ctx context.Context, prepared PreparedRu
 		}); err != nil {
 			return RunResult{}, err
 		}
-	}
-	if prepared.Source == "new_task" {
-		c.recordConversationInput(ctx, envelope, run.RunID, task.TaskID, prepared.UserInput)
-	} else if input, _ := envelope.Payload["input"].(string); input != "" {
-		c.recordConversationInput(ctx, envelope, run.RunID, task.TaskID, input)
 	}
 	if _, err := c.Runs.MarkRunning(ctx, run.RunID); err != nil {
 		return RunResult{}, err
@@ -598,6 +694,7 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 		return RunResult{}, true, err
 	}
 	toolResults := c.toolSummaries(ctx, runID)
+	taskHistory := c.taskHistory(ctx, envelope.Context.TenantID, taskID, runID, events)
 	memorySummaries := c.memorySummaries(ctx, envelope.Context.TenantID, activeDefinition.AgentID, envelope.Context.UserID)
 	artifactRefs := c.artifactRefs(ctx, runID)
 	conversation := c.conversationContext(ctx, envelope, activeDefinition, runID, taskID, events, memorySummaries, artifactRefs, toolResults, userInput)
@@ -617,6 +714,7 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 		TaskEvents:        events,
 		Agent:             activeDefinition,
 		UserInput:         userInput,
+		TaskHistory:       taskHistory,
 		Plan:              plan,
 		CurrentStep:       currentStep,
 		Capabilities:      candidates.Capabilities,
@@ -648,6 +746,7 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 			"candidate_collaborators": len(candidates.Collaborators),
 			"has_conversation":        conversation != nil,
 			"retrieved_context":       retrievedContextCount(conversation),
+			"task_history_count":      len(taskHistory),
 		},
 		CreatedAt: c.Now(),
 	})
@@ -2045,19 +2144,143 @@ func (c Coordinator) toolSummaries(ctx context.Context, runID contracts.AgentRun
 	}
 	out := make([]contracts.ToolResultSummary, 0, len(results))
 	for _, result := range results {
-		summary := ""
-		if result.Error != nil {
-			summary = result.Error.Message
-		} else if len(result.Output) > 0 {
-			summary = "tool output available"
-		}
 		out = append(out, contracts.ToolResultSummary{
 			ToolCallID: result.ToolCallID,
 			Status:     result.Status,
-			Summary:    summary,
+			Summary:    summarizeToolResult(result),
 		})
 	}
 	return out
+}
+
+func (c Coordinator) taskHistory(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID, currentRunID contracts.AgentRunID, events []contracts.TaskEvent) []contracts.RetrievedContext {
+	if taskID == "" {
+		return nil
+	}
+	out := make([]contracts.RetrievedContext, 0)
+	for _, event := range events {
+		if event.Type != "conversation.input" && event.Type != "run.resumed_input" {
+			continue
+		}
+		if eventRunID(event) == string(currentRunID) {
+			continue
+		}
+		input, _ := event.Payload["input"].(string)
+		input = strings.TrimSpace(input)
+		if input == "" {
+			continue
+		}
+		out = append(out, contracts.RetrievedContext{
+			SourceType: "task_event",
+			SourceID:   string(event.EventID),
+			SpeakerID:  event.ActorID,
+			CreatedAt:  event.CreatedAt,
+			Summary:    "previous task input",
+			Snippet:    input,
+			TrustLevel: "untrusted_user_text",
+			Visibility: "task",
+		})
+	}
+	if c.Runs != nil {
+		if runs, err := c.Runs.List(ctx, runrepo.ListFilter{TenantID: tenantID, TaskID: taskID, Limit: 8}); err == nil {
+			for _, run := range runs {
+				if run.RunID == currentRunID {
+					continue
+				}
+				summary := fmt.Sprintf("run_id=%s status=%s", run.RunID, run.Status)
+				if strings.TrimSpace(run.Input) != "" {
+					summary += " input=" + run.Input
+				}
+				out = append(out, contracts.RetrievedContext{
+					SourceType: "previous_run",
+					SourceID:   string(run.RunID),
+					CreatedAt:  run.StartedAt,
+					Summary:    summary,
+					TrustLevel: "system_record",
+					Visibility: "task",
+				})
+			}
+		}
+	}
+	if c.ToolRepo != nil {
+		callsByID := map[contracts.ToolCallID]contracts.ToolCall{}
+		if calls, err := c.ToolRepo.ListCallsByTask(ctx, tenantID, taskID); err == nil {
+			for _, call := range calls {
+				callsByID[call.ToolCallID] = call
+			}
+		}
+		if results, err := c.ToolRepo.ListResultsByTask(ctx, tenantID, taskID); err == nil {
+			for _, result := range results {
+				call := callsByID[result.ToolCallID]
+				if call.RunID == currentRunID {
+					continue
+				}
+				toolName := contextconversation.FirstNonEmpty(call.ToolID, call.Name)
+				summary := fmt.Sprintf("tool=%s status=%s %s", toolName, result.Status, summarizeToolResult(result))
+				out = append(out, contracts.RetrievedContext{
+					SourceType: "tool_result",
+					SourceID:   string(result.ToolResultID),
+					CreatedAt:  result.CompletedAt,
+					Summary:    strings.TrimSpace(summary),
+					TrustLevel: "tool_result",
+					Visibility: "task",
+				})
+				for _, ref := range result.ArtifactRefs {
+					if ref.ArtifactID == "" {
+						continue
+					}
+					out = append(out, contracts.RetrievedContext{
+						SourceType: "artifact",
+						SourceID:   string(ref.ArtifactID),
+						CreatedAt:  result.CompletedAt,
+						Summary:    fmt.Sprintf("%s %s", ref.Type, ref.Summary),
+						TrustLevel: "tool_result",
+						Visibility: "task",
+					})
+				}
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt.IsZero() || out[j].CreatedAt.IsZero() {
+			return i < j
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	if len(out) > 30 {
+		out = out[len(out)-30:]
+	}
+	return out
+}
+
+func summarizeToolResult(result contracts.ToolResult) string {
+	if result.Error != nil {
+		return result.Error.Message
+	}
+	if len(result.Output) > 0 {
+		return "tool output available"
+	}
+	if len(result.ArtifactRefs) > 0 {
+		return "artifact refs available"
+	}
+	return ""
+}
+
+func eventRunID(event contracts.TaskEvent) string {
+	if event.Payload == nil {
+		return ""
+	}
+	switch value := event.Payload["run_id"].(type) {
+	case contracts.AgentRunID:
+		return string(value)
+	case string:
+		return value
+	default:
+		if value == nil {
+			return ""
+		}
+		return fmt.Sprint(value)
+	}
 }
 
 func (c Coordinator) artifactRefs(ctx context.Context, runID contracts.AgentRunID) []contracts.ArtifactRef {

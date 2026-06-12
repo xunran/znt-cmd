@@ -272,6 +272,7 @@ const (
 	TraceResponseSent                          = "response.sent"
 	TraceApprovalRequested                     = "approval.requested"
 	TraceApprovalResolved                      = "approval.resolved"
+	TraceAgentRouteResolved                    = "agent.route.resolved"
 	TraceCanaryRouted                          = "canary.routed"
 	TraceEvalRunStarted                        = "eval.run.started"
 	TraceEvalCaseCompleted                     = "eval.case.completed"

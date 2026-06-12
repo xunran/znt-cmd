@@ -17,6 +17,8 @@ type Repository interface {
 	GetResultByIdempotencyKey(ctx context.Context, tenantID contracts.TenantID, key string) (contracts.ToolResult, bool, error)
 	ListCallsByRun(ctx context.Context, runID contracts.AgentRunID) ([]contracts.ToolCall, error)
 	ListResultsByRun(ctx context.Context, runID contracts.AgentRunID) ([]contracts.ToolResult, error)
+	ListCallsByTask(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID) ([]contracts.ToolCall, error)
+	ListResultsByTask(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID) ([]contracts.ToolResult, error)
 }
 
 type InMemoryRepository struct {
@@ -106,6 +108,37 @@ func (r *InMemoryRepository) ListResultsByRun(_ context.Context, runID contracts
 	out := make([]contracts.ToolResult, 0)
 	for callID, result := range r.resultsByCall {
 		if r.calls[callID].RunID == runID {
+			out = append(out, result)
+		}
+	}
+	return out, nil
+}
+
+func (r *InMemoryRepository) ListCallsByTask(_ context.Context, tenantID contracts.TenantID, taskID contracts.TaskID) ([]contracts.ToolCall, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]contracts.ToolCall, 0)
+	for _, call := range r.calls {
+		if tenantID != "" && call.TenantID != tenantID {
+			continue
+		}
+		if call.TaskID == taskID {
+			out = append(out, call)
+		}
+	}
+	return out, nil
+}
+
+func (r *InMemoryRepository) ListResultsByTask(_ context.Context, tenantID contracts.TenantID, taskID contracts.TaskID) ([]contracts.ToolResult, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]contracts.ToolResult, 0)
+	for callID, result := range r.resultsByCall {
+		call := r.calls[callID]
+		if tenantID != "" && call.TenantID != tenantID {
+			continue
+		}
+		if call.TaskID == taskID {
 			out = append(out, result)
 		}
 	}

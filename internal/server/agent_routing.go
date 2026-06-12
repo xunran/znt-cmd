@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"time"
 
@@ -16,6 +18,9 @@ type agentRoute struct {
 	ResolvedVersion  contracts.AgentVersion
 	Release          contracts.AgentPackageVersion
 	Canary           bool
+	RouteReason      string
+	ReleaseStatus    contracts.ReleaseStatus
+	AssignmentKey    string
 }
 
 func resolveRunnableAgentTarget(r *http.Request, appCore *core.Core, tenantID contracts.TenantID, target contracts.AgentTarget, traceID contracts.TraceID, caller auth.CallerIdentity) (agentRoute, error) {
@@ -25,6 +30,8 @@ func resolveRunnableAgentTarget(r *http.Request, appCore *core.Core, tenantID co
 			return route, err
 		}
 		route.Release, _ = releaseForAgentVersion(appCore.Packages.ListReleases(), tenantID, target.AgentID, target.Version)
+		route.RouteReason = "explicit"
+		route.ReleaseStatus = route.Release.Status
 		return route, nil
 	}
 	defaultVersion := contracts.AgentVersion("")
@@ -32,17 +39,25 @@ func resolveRunnableAgentTarget(r *http.Request, appCore *core.Core, tenantID co
 		defaultVersion = appCore.AgentRegistry.DefaultVersionForTenant(tenantID, target.AgentID)
 	}
 	route.ResolvedVersion = defaultVersion
+	if route.ResolvedVersion != "" {
+		route.RouteReason = "registry_default"
+	}
 	releases := appCore.Packages.ListReleases()
 	stable, stableOK := latestReleaseWithStatus(releases, tenantID, target.AgentID, contracts.ReleaseStable)
 	canary, canaryOK := latestReleaseWithStatus(releases, tenantID, target.AgentID, contracts.ReleaseCanary)
 	if stableOK {
 		route.ResolvedVersion = stable.Version
 		route.Release = stable
+		route.ReleaseStatus = stable.Status
+		route.RouteReason = "latest_stable_fallback"
 	}
+	route.AssignmentKey = canaryAssignmentKey(caller, traceID)
 	if canaryOK && shouldRouteCanary(canary, caller, traceID, target.AgentID) {
 		route.ResolvedVersion = canary.Version
 		route.Release = canary
 		route.Canary = true
+		route.ReleaseStatus = canary.Status
+		route.RouteReason = "canary_percent"
 	}
 	if route.ResolvedVersion == "" {
 		return route, nil
@@ -110,6 +125,13 @@ func shouldRouteCanary(release contracts.AgentPackageVersion, caller auth.Caller
 	return stablePercent(key) < percent
 }
 
+func canaryAssignmentKey(caller auth.CallerIdentity, traceID contracts.TraceID) string {
+	if caller.CallerID != "" {
+		return caller.CallerID
+	}
+	return string(traceID)
+}
+
 func stablePercent(value string) int {
 	var sum uint32 = 2166136261
 	for _, b := range []byte(value) {
@@ -140,6 +162,7 @@ func recordCanaryRoute(r *http.Request, appCore *core.Core, tenantID contracts.T
 			TraceID:  traceID,
 			TenantID: tenantID,
 			SpanID:   contracts.SpanID(idgen.New("span")),
+			RunID:    runID,
 			Type:     contracts.TraceCanaryRouted,
 			Payload: map[string]any{
 				"agent_id":           agentID,
@@ -151,6 +174,45 @@ func recordCanaryRoute(r *http.Request, appCore *core.Core, tenantID contracts.T
 		})
 	}
 	return nil
+}
+
+func recordAgentRouteResolved(r *http.Request, appCore *core.Core, tenantID contracts.TenantID, traceID contracts.TraceID, agentID contracts.AgentID, runID contracts.AgentRunID, route agentRoute) error {
+	if appCore.Trace == nil || traceID == "" {
+		return nil
+	}
+	releaseStatus := route.ReleaseStatus
+	if releaseStatus == "" {
+		releaseStatus = route.Release.Status
+	}
+	payload := map[string]any{
+		"agent_id":            agentID,
+		"requested_version":   route.RequestedVersion,
+		"resolved_version":    route.ResolvedVersion,
+		"release_status":      releaseStatus,
+		"package_version_id":  route.Release.PackageVersionID,
+		"route_reason":        route.RouteReason,
+		"canary":              route.Canary,
+		"canary_percent":      route.Release.CanaryPercent,
+		"assignment_key_hash": hashRouteAssignmentKey(route.AssignmentKey),
+	}
+	_ = appCore.Trace.Record(r.Context(), contracts.TraceEvent{
+		TraceID:   traceID,
+		TenantID:  tenantID,
+		SpanID:    contracts.SpanID(idgen.New("span")),
+		RunID:     runID,
+		Type:      contracts.TraceAgentRouteResolved,
+		Payload:   payload,
+		CreatedAt: time.Now().UTC(),
+	})
+	return nil
+}
+
+func hashRouteAssignmentKey(value string) string {
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 func releaseForAgentVersion(releases []contracts.AgentPackageVersion, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion) (contracts.AgentPackageVersion, bool) {

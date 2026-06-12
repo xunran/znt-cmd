@@ -86,7 +86,22 @@ func NewHandlerWithCore(appCore *core.Core, logger *slog.Logger) http.Handler {
 			writeJSON(w, replay.Build(events), http.StatusOK)
 			return
 		}
+		if suffix == "diagnostics" {
+			diagnostics, err := buildTraceDiagnostics(r, appCore, caller, traceID, events)
+			if err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			writeJSON(w, diagnostics, http.StatusOK)
+			return
+		}
 		writeJSON(w, map[string]any{"trace_id": traceID, "events": events}, http.StatusOK)
+	}))
+	mux.HandleFunc("/v1/runs", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleRuns(w, r, appCore, caller)
+	}))
+	mux.HandleFunc("/v1/runs/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleRunResource(w, r, appCore, caller, strings.TrimPrefix(r.URL.Path, "/v1/runs/"))
 	}))
 	mux.HandleFunc("/v1/tasks/start", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		handleTaskStartResource(w, r, appCore, caller)

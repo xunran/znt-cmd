@@ -1794,6 +1794,22 @@ paths:
               schema:
                 $ref: "#/components/schemas/RunTimelineResponse"
 
+  /v1/runs/{run_id}/diagnostics:
+    get:
+      tags: [Runs]
+      operationId: getRunDiagnostics
+      summary: Get detailed run diagnostics for operations and prompt optimization.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run diagnostics.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
   /v1/runs/{run_id}/final-response:
     get:
       tags: [Runs]
@@ -2126,6 +2142,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TraceReplayResponse"
+
+  /v1/traces/{trace_id}/diagnostics:
+    get:
+      tags: [Traces]
+      operationId: getTraceDiagnostics
+      summary: Get trace diagnostics aggregated for operations and prompt optimization.
+      parameters:
+        - $ref: "#/components/parameters/TracePathId"
+      responses:
+        "200":
+          description: Trace diagnostics.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
 
   /v1/traces/{trace_id}/evidence:
     get:

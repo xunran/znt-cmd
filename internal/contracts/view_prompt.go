@@ -35,9 +35,10 @@ type WorkView struct {
 
 	ConversationContext *ConversationContext `json:"conversation_context,omitempty"`
 
-	TaskSummary     TaskSummary      `json:"task_summary"`
-	PlanSummary     *PlanSummary     `json:"plan_summary,omitempty"`
-	CurrentPlanStep *PlanStepSummary `json:"current_plan_step,omitempty"`
+	TaskSummary     TaskSummary        `json:"task_summary"`
+	PlanSummary     *PlanSummary       `json:"plan_summary,omitempty"`
+	CurrentPlanStep *PlanStepSummary   `json:"current_plan_step,omitempty"`
+	TaskHistory     []RetrievedContext `json:"task_history,omitempty"`
 
 	HandoffContext *HandoffContextSummary `json:"handoff_context,omitempty"`
 

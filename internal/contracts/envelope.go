@@ -1,6 +1,10 @@
 package contracts
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+)
 
 type Permission string
 
@@ -30,43 +34,62 @@ type RuntimeContext struct {
 	TenantID TenantID `json:"tenant_id"`
 	UserID   UserID   `json:"user_id,omitempty"`
 
-	SessionID string `json:"session_id,omitempty"`
-	TaskID    TaskID `json:"task_id,omitempty"`
+	TaskID TaskID `json:"task_id,omitempty"`
 
 	Permissions []Permission `json:"permissions,omitempty"`
 
-	Collaboration *CollaborationContext `json:"collaboration,omitempty"`
+	Conversation *RuntimeConversation `json:"conversation,omitempty"`
+	ExternalTask *ExternalTaskRef     `json:"external_task,omitempty"`
 
 	RequestID string `json:"request_id,omitempty"`
 	Locale    string `json:"locale,omitempty"`
 	Timezone  string `json:"timezone,omitempty"`
 }
 
-type CollaborationContext struct {
-	Provider string `json:"provider"`
-
-	ExternalWorkspaceID string `json:"external_workspace_id,omitempty"`
-	ExternalGroupID     string `json:"external_group_id,omitempty"`
-	ExternalChannelID   string `json:"external_channel_id,omitempty"`
-	ExternalThreadID    string `json:"external_thread_id,omitempty"`
-	ExternalTaskID      string `json:"external_task_id,omitempty"`
-	ExternalMessageID   string `json:"external_message_id,omitempty"`
-
-	CallerID   string `json:"caller_id"`
-	CallerType string `json:"caller_type"`
-
-	ReplyTarget *ReplyTarget `json:"reply_target,omitempty"`
-
-	ConversationKind   string                    `json:"conversation_kind,omitempty"` // direct, group, thread
-	CurrentSpeakerName string                    `json:"current_speaker_name,omitempty"`
-	MentionedAgentIDs  []string                  `json:"mentioned_agent_ids,omitempty"`
-	ReplyToMessageID   string                    `json:"reply_to_message_id,omitempty"`
-	ThreadID           string                    `json:"thread_id,omitempty"`
-	RecentMessages     []ConversationMessage     `json:"recent_messages,omitempty"`
-	Participants       []ConversationParticipant `json:"participants,omitempty"`
+func (c *RuntimeContext) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["session_id"]; ok {
+		return fmt.Errorf("session_id is removed; use context.conversation.conversation_id")
+	}
+	if _, ok := raw["collaboration"]; ok {
+		return fmt.Errorf("collaboration is removed; use context.conversation and context.external_task")
+	}
+	type runtimeContext RuntimeContext
+	var decoded runtimeContext
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*c = RuntimeContext(decoded)
+	return nil
 }
 
-type ReplyTarget struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
+type RuntimeConversation struct {
+	Provider string `json:"provider,omitempty"`
+	Kind     string `json:"kind,omitempty"` // direct, group, thread
+
+	ConversationID string `json:"conversation_id"`
+	ThreadID       string `json:"thread_id,omitempty"`
+
+	ExternalRefs map[string]string `json:"external_refs,omitempty"`
+
+	CurrentMessage *RuntimeMessage           `json:"current_message,omitempty"`
+	RecentMessages []ConversationMessage     `json:"recent_messages,omitempty"`
+	Participants   []ConversationParticipant `json:"participants,omitempty"`
+}
+
+type RuntimeMessage struct {
+	MessageID         string         `json:"message_id,omitempty"`
+	ExternalMessageID string         `json:"external_message_id,omitempty"`
+	SpeakerID         string         `json:"speaker_id,omitempty"`
+	SpeakerType       string         `json:"speaker_type,omitempty"`
+	SpeakerName       string         `json:"speaker_name,omitempty"`
+	ReplyToMessageID  string         `json:"reply_to_message_id,omitempty"`
+	ThreadID          string         `json:"thread_id,omitempty"`
+	Mentions          []string       `json:"mentions,omitempty"`
+	Text              string         `json:"text,omitempty"`
+	CreatedAt         time.Time      `json:"created_at,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
 }

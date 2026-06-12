@@ -8651,6 +8651,9 @@
       },
       "RuntimeContext": {
         "type": "object",
+        "required": [
+          "tenant_id"
+        ],
         "properties": {
           "tenant_id": {
             "type": "string"
@@ -8661,9 +8664,189 @@
           "task_id": {
             "type": "string"
           },
-          "collaboration": {
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "conversation": {
+            "$ref": "#/components/schemas/RuntimeConversation"
+          },
+          "external_task": {
+            "$ref": "#/components/schemas/ExternalTaskRef"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "locale": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          }
+        }
+      },
+      "RuntimeConversation": {
+        "type": "object",
+        "required": [
+          "conversation_id"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "group",
+              "thread"
+            ]
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string",
+            "description": "Defaults to conversation_id when omitted."
+          },
+          "external_refs": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "current_message": {
+            "$ref": "#/components/schemas/RuntimeMessage"
+          },
+          "recent_messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationMessage"
+            }
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationParticipant"
+            }
+          }
+        }
+      },
+      "RuntimeMessage": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "description": "Defaults to envelope_id when omitted."
+          },
+          "external_message_id": {
+            "type": "string"
+          },
+          "speaker_id": {
+            "type": "string"
+          },
+          "speaker_type": {
+            "type": "string"
+          },
+          "speaker_name": {
+            "type": "string"
+          },
+          "reply_to_message_id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "mentions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "text": {
+            "type": "string",
+            "description": "Optional; when present it must equal payload.input."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "metadata": {
             "type": "object",
             "additionalProperties": true
+          }
+        }
+      },
+      "ConversationMessage": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string"
+          },
+          "external_message_id": {
+            "type": "string"
+          },
+          "speaker_id": {
+            "type": "string"
+          },
+          "speaker_type": {
+            "type": "string"
+          },
+          "speaker_name": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "reply_to_message_id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "mentions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ConversationParticipant": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
+        }
+      },
+      "ExternalTaskRef": {
+        "type": "object",
+        "required": [
+          "provider",
+          "external_task_id"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "external_task_id": {
+            "type": "string"
           }
         }
       },
@@ -9117,6 +9300,9 @@
       },
       "AgentRunPayload": {
         "type": "object",
+        "required": [
+          "input"
+        ],
         "properties": {
           "input": {
             "type": "string"

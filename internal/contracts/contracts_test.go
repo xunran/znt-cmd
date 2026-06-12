@@ -26,13 +26,15 @@ func TestAgentEnvelopeJSONRoundTrip(t *testing.T) {
 		Context: RuntimeContext{
 			TenantID: TenantID("tenant_1"),
 			UserID:   UserID("user_1"),
-			Collaboration: &CollaborationContext{
-				Provider:   "array",
-				CallerID:   "user_1",
-				CallerType: "user",
-				ReplyTarget: &ReplyTarget{
-					Type: "thread",
-					ID:   "thread_1",
+			Conversation: &RuntimeConversation{
+				Provider:       "array",
+				Kind:           "thread",
+				ConversationID: "conv_1",
+				ThreadID:       "thread_1",
+				CurrentMessage: &RuntimeMessage{
+					MessageID:   "msg_1",
+					SpeakerID:   "user_1",
+					SpeakerType: "user",
 				},
 			},
 		},
@@ -46,7 +48,7 @@ func TestAgentEnvelopeJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out.Target.AgentID != in.Target.AgentID || out.Context.Collaboration.ReplyTarget.ID != "thread_1" {
+	if out.Target.AgentID != in.Target.AgentID || out.Context.Conversation.ThreadID != "thread_1" {
 		t.Fatalf("unexpected round trip: %#v", out)
 	}
 }

@@ -67,9 +67,35 @@ func TestCommandAgentRunAndQueries(t *testing.T) {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 
+	runsResp := doJSON(handler, "GET", "/v1/runs?agent_id=test-agent", nil)
+	if runsResp.Code != http.StatusOK || !bytes.Contains(runsResp.Body.Bytes(), []byte(string(result.RunID))) {
+		t.Fatalf("unexpected runs status %d body %s", runsResp.Code, runsResp.Body.String())
+	}
+	runResp := doJSON(handler, "GET", "/v1/runs/"+string(result.RunID), nil)
+	if runResp.Code != http.StatusOK || !bytes.Contains(runResp.Body.Bytes(), []byte(`"trace_id":"trace_api_1"`)) {
+		t.Fatalf("unexpected run status %d body %s", runResp.Code, runResp.Body.String())
+	}
+	runTimelineResp := doJSON(handler, "GET", "/v1/runs/"+string(result.RunID)+"/timeline", nil)
+	if runTimelineResp.Code != http.StatusOK || !bytes.Contains(runTimelineResp.Body.Bytes(), []byte(contracts.TracePromptBundleBuilt)) {
+		t.Fatalf("unexpected run timeline status %d body %s", runTimelineResp.Code, runTimelineResp.Body.String())
+	}
+	runDiagnosticsResp := doJSON(handler, "GET", "/v1/runs/"+string(result.RunID)+"/diagnostics", nil)
+	if runDiagnosticsResp.Code != http.StatusOK ||
+		!bytes.Contains(runDiagnosticsResp.Body.Bytes(), []byte(contracts.TraceAgentRouteResolved)) ||
+		!bytes.Contains(runDiagnosticsResp.Body.Bytes(), []byte(`"prompt_bundle_hash"`)) {
+		t.Fatalf("unexpected run diagnostics status %d body %s", runDiagnosticsResp.Code, runDiagnosticsResp.Body.String())
+	}
+	finalResp := doJSON(handler, "GET", "/v1/runs/"+string(result.RunID)+"/final-response", nil)
+	if finalResp.Code != http.StatusOK || !bytes.Contains(finalResp.Body.Bytes(), []byte(`"available":true`)) {
+		t.Fatalf("unexpected final response status %d body %s", finalResp.Code, finalResp.Body.String())
+	}
 	traceResp := doJSON(handler, "GET", "/v1/traces/trace_api_1", nil)
 	if traceResp.Code != http.StatusOK {
 		t.Fatalf("unexpected trace status %d body %s", traceResp.Code, traceResp.Body.String())
+	}
+	traceDiagnosticsResp := doJSON(handler, "GET", "/v1/traces/trace_api_1/diagnostics", nil)
+	if traceDiagnosticsResp.Code != http.StatusOK || !bytes.Contains(traceDiagnosticsResp.Body.Bytes(), []byte(string(result.RunID))) {
+		t.Fatalf("unexpected trace diagnostics status %d body %s", traceDiagnosticsResp.Code, traceDiagnosticsResp.Body.String())
 	}
 	replayResp := doJSON(handler, "GET", "/v1/traces/trace_api_1/replay", nil)
 	if replayResp.Code != http.StatusOK || !bytes.Contains(replayResp.Body.Bytes(), []byte(`"status":"ok"`)) {
@@ -962,11 +988,9 @@ func TestExternalWritebackFailureIsObservable(t *testing.T) {
 		"payload": map[string]any{"title": "external task", "objective": "do work"},
 		"context": map[string]any{
 			"tenant_id": "tenant_1",
-			"collaboration": map[string]any{
+			"external_task": map[string]any{
 				"provider":         "array",
 				"external_task_id": "ext_writeback_1",
-				"caller_id":        "user_1",
-				"caller_type":      "user",
 			},
 		},
 	})
@@ -1024,6 +1048,32 @@ func TestCommandRequiresTenant(t *testing.T) {
 	handler.ServeHTTP(resp, req)
 	if resp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected unauthorized, got %d", resp.Code)
+	}
+}
+
+func TestCommandRejectsRemovedRuntimeContextFields(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	for _, tc := range []struct {
+		name    string
+		context map[string]any
+		want    string
+	}{
+		{name: "session_id", context: map[string]any{"tenant_id": "tenant_1", "session_id": "s_1"}, want: "session_id is removed"},
+		{name: "collaboration", context: map[string]any{"tenant_id": "tenant_1", "collaboration": map[string]any{"provider": "array"}}, want: "collaboration is removed"},
+	} {
+		resp := doJSON(handler, "POST", "/v1/commands", map[string]any{
+			"command": "agent.run",
+			"target":  map[string]any{"agent_id": "test-agent", "version": "v1"},
+			"payload": map[string]any{"input": "hello"},
+			"context": tc.context,
+		})
+		if resp.Code != http.StatusBadRequest || !bytes.Contains(resp.Body.Bytes(), []byte(tc.want)) {
+			t.Fatalf("%s: expected removed field rejection, got %d body %s", tc.name, resp.Code, resp.Body.String())
+		}
 	}
 }
 
@@ -1203,15 +1253,19 @@ func TestEvalSuiteAddCaseAcceptsConversationContext(t *testing.T) {
 			"context": map[string]any{
 				"tenant_id": "tenant_1",
 				"user_id":   "user_1",
-				"collaboration": map[string]any{
-					"provider":             "eval",
-					"conversation_kind":    "group",
-					"external_group_id":    "group_1",
-					"external_message_id":  "msg_2",
-					"caller_id":            "user_1",
-					"caller_type":          "user",
-					"reply_to_message_id":  "msg_1",
-					"current_speaker_name": "张三",
+				"conversation": map[string]any{
+					"provider":        "eval",
+					"kind":            "group",
+					"conversation_id": "group_1",
+					"thread_id":       "group_1",
+					"current_message": map[string]any{
+						"message_id":          "msg_2",
+						"external_message_id": "msg_2",
+						"speaker_id":          "user_1",
+						"speaker_type":        "user",
+						"speaker_name":        "张三",
+						"reply_to_message_id": "msg_1",
+					},
 					"recent_messages": []any{
 						map[string]any{
 							"message_id":   "msg_1",
@@ -1234,12 +1288,12 @@ func TestEvalSuiteAddCaseAcceptsConversationContext(t *testing.T) {
 	if err := json.Unmarshal(addResp.Body.Bytes(), &updated); err != nil {
 		t.Fatal(err)
 	}
-	if len(updated.Cases) != 1 || updated.Cases[0].Context.Collaboration == nil {
+	if len(updated.Cases) != 1 || updated.Cases[0].Context.Conversation == nil {
 		t.Fatalf("expected case conversation context, got %#v", updated.Cases)
 	}
-	collab := updated.Cases[0].Context.Collaboration
-	if collab.ConversationKind != "group" || collab.ReplyToMessageID != "msg_1" || len(collab.RecentMessages) != 1 {
-		t.Fatalf("unexpected collaboration context: %#v", collab)
+	conversation := updated.Cases[0].Context.Conversation
+	if conversation.Kind != "group" || conversation.CurrentMessage == nil || conversation.CurrentMessage.ReplyToMessageID != "msg_1" || len(conversation.RecentMessages) != 1 {
+		t.Fatalf("unexpected conversation context: %#v", conversation)
 	}
 }
 
@@ -5308,6 +5362,7 @@ func TestTaskCommandUpgradeAgentVersion(t *testing.T) {
 	runBody := map[string]any{
 		"command": "agent.run",
 		"target":  map[string]any{"agent_id": "test-agent"},
+		"payload": map[string]any{"input": "run upgraded task"},
 		"context": map[string]any{"tenant_id": "tenant_1", "task_id": task.TaskID},
 	}
 	runResp := doJSON(handler, "POST", "/v1/commands", runBody)

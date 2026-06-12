@@ -229,13 +229,44 @@ function New-AIHost {
             while ($listener.IsListening) {
                 $ctx = $listener.GetContext()
                 $path = $ctx.Request.Url.AbsolutePath
+                $entry = [ordered]@{
+                    at = (Get-Date).ToUniversalTime().ToString("o")
+                    path = $path
+                    method = [string]$ctx.Request.HttpMethod
+                }
+                ($entry | ConvertTo-Json -Compress) | Add-Content -Path $logPath -Encoding UTF8
                 $ctx.Response.ContentType = "application/json; charset=utf-8"
                 $status = 200
                 $body = "{}"
                 if ($path -eq "/healthz") {
                     $body = '{"status":"ok","service":"all-interface-host"}'
                 } elseif ($path -eq "/openapi.json") {
-                    $body = '{"openapi":"3.0.3","paths":{"/adapter/search":{"post":{"operationId":"adapter.search","summary":"Adapter search","requestBody":{"content":{"application/json":{"schema":{"type":"object","properties":{"query":{"type":"string"}}}}},"responses":{"200":{"description":"OK"}}}}}}'
+                    $body = (@{
+                        openapi = "3.0.3"
+                        paths = @{
+                            "/adapter/search" = @{
+                                post = @{
+                                    operationId = "adapter.search"
+                                    summary = "Adapter search"
+                                    requestBody = @{
+                                        content = @{
+                                            "application/json" = @{
+                                                schema = @{
+                                                    type = "object"
+                                                    properties = @{
+                                                        query = @{ type = "string" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    responses = @{
+                                        "200" = @{ description = "OK" }
+                                    }
+                                }
+                            }
+                        }
+                    } | ConvertTo-Json -Depth 20 -Compress)
                 } elseif ($path -eq "/.well-known/agent-card.json") {
                     $body = '{"name":"All Interface A2A Agent","url":"http://all-interface-a2a.local","description":"A2A mock agent for all-interface E2E."}'
                 } elseif ($path -eq "/tools/catalog") {
@@ -296,6 +327,7 @@ function New-AIHost {
                                             b = @{ type = "number" }
                                         }
                                     }
+                                    outputSchema = @{ type = "object" }
                                     annotations = @{ readOnlyHint = $true }
                                 })
                             }
@@ -547,13 +579,20 @@ try {
         health_check_enabled = $true
         metadata = @{ openapi_path = "/openapi.json" }
     } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Patch" -Path "/v1/service-connections/$providerConnectionID" -Operation "PATCH /v1/service-connections/{connection_id}" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
+        description = "Patched all-interface service connection"
+    } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections/$providerConnectionID/test" -Operation "POST /v1/service-connections/{connection_id}/test" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections/$providerConnectionID/disable" -Operation "POST /v1/service-connections/{connection_id}/disable" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections/$providerConnectionID/enable" -Operation "POST /v1/service-connections/{connection_id}/enable" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
-    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/$providerConnectionID/resources" -Operation "GET /v1/service-connections/{connection_id}/resources" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections/$providerConnectionID/test" -Operation "POST /v1/service-connections/{connection_id}/test" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
+    $providerResources = Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/service-connections/$providerConnectionID/resources" -Operation "GET /v1/service-connections/{connection_id}/resources" -ExpectedStatus @(200)
+    $adapterResource = $providerResources.Body.resources | Where-Object { $_.resource_type -eq "http_operation" } | Select-Object -First 1
+    Assert-AIStatus $adapterResource "http_api service connection should expose at least one http_operation resource"
+    $adapterResourceID = [string]$adapterResource.resource_id
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$adapterProviderID/operations/from-resource" -Operation "POST /v1/tool-providers/{provider_id}/operations/from-resource" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
         service_connection_id = $providerConnectionID
-        resource_id = "POST /adapter/search"
+        resource_id = $adapterResourceID
         operation_id = "adapter.search.generated"
         tool_id = "adapter.search.generated"
         status = "draft"
@@ -585,6 +624,9 @@ try {
         service_connection_id = $providerConnectionID
         status = "enabled"
         version = "v2"
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Patch" -Path "/v1/tool-providers/$providerID" -Operation "PATCH /v1/tool-providers/{provider_id}" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
+        description = "Patched all-interface tool provider"
     } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$providerID/health?trace_id=$traceID" -Operation "POST /v1/tool-providers/{provider_id}/health" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$providerID/sync" -Operation "POST /v1/tool-providers/{provider_id}/sync" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
@@ -621,7 +663,7 @@ try {
         arguments = @{ a = 7; b = 5 }
     }
     Assert-AITrue ([string]$mcpResult.status -eq "succeeded") "MCP tools.invoke should succeed"
-    Assert-AITrue ([double]$mcpResult.output.structuredContent.total -eq 12) "MCP tools.invoke should return structured total"
+    Assert-AITrue ([double]$mcpResult.output.total -eq 12) "MCP tools.invoke should return structured total"
 
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections" -Operation "POST /v1/service-connections" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
         connection_id = $adapterConnectionID
@@ -666,6 +708,9 @@ try {
         visibility = "protected"
         status = "enabled"
         version = "v2"
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Patch" -Path "/v1/tool-providers/$adapterProviderID/operations/$adapterOperationID" -Operation "PATCH /v1/tool-providers/{provider_id}/operations/{operation_id}" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
+        description = "Patched HTTP API adapter operation."
     } | Out-Null
     $adapterTest = Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-providers/$adapterProviderID/operations/$adapterOperationID/test" -Operation "POST /v1/tool-providers/{provider_id}/operations/{operation_id}/test" -ExpectedStatus @(200) -Roles "optimizer" -Body @{ arguments = @{ query = "adapter" } }
     Assert-AITrue ([string]$adapterTest.Body.output.source -eq "http_api_adapter") "adapter operation test should call HTTP endpoint"
@@ -718,6 +763,9 @@ try {
         status = "enabled"
         version = "v2"
     } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Patch" -Path "/v1/tool-groups/$toolGroupID" -Operation "PATCH /v1/tool-groups/{group_id}" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
+        description = "Patched all-interface tool group"
+    } | Out-Null
 
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/tool-manifests" -Operation "POST /v1/tool-manifests" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
         tool_id = $toolID
@@ -748,6 +796,9 @@ try {
         executor = @{ type = "static_tool_host"; provider_id = $providerID; operation = "echo" }
         status = "enabled"
         version = "v2"
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Patch" -Path "/v1/tool-manifests/$toolID" -Operation "PATCH /v1/tool-manifests/{tool_id}" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
+        description = "Patched all-interface local tool"
     } | Out-Null
 
     Invoke-AIJson -BaseUrl $baseUrl -Method "Put" -Path "/v1/agents/$agentID/tool-bindings" -Operation "PUT /v1/agents/{agent_id}/tool-bindings" -ExpectedStatus @(200) -Roles "optimizer" -Body @{
@@ -1085,7 +1136,7 @@ try {
         objective = "Check external lookup"
     } -Context @{
         tenant_id = $tenantID
-        collaboration = @{ provider = "array"; external_task_id = "ext-$suffix" }
+        external_task = @{ provider = "array"; external_task_id = "ext-$suffix" }
     } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/external-tasks/array/ext-$suffix" -Operation "GET /v1/external-tasks/{provider}/{external_task_id}" -ExpectedStatus @(200) | Out-Null
     Assert-AIStatus $externalTaskID "external task setup should return task"
@@ -1097,7 +1148,7 @@ try {
         objective = "Check A2A external lookup"
     } -Context @{
         tenant_id = $tenantID
-        collaboration = @{ provider = "a2a"; external_task_id = "a2a-ext-$suffix" }
+        external_task = @{ provider = "a2a"; external_task_id = "a2a-ext-$suffix" }
     } | Out-Null
     $a2aExternal = Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/external-tasks/a2a/a2a-ext-$suffix" -Operation "GET /v1/external-tasks/{provider}/{external_task_id}" -ExpectedStatus @(200)
     Assert-AITrue ([string]$a2aExternal.Body.status -eq "working") "A2A external task lookup should return remote task status"
@@ -1192,15 +1243,20 @@ try {
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/cross-group-share-policies/$policyID" -Operation "DELETE /v1/cross-group-share-policies/{policy_id}" -ExpectedStatus @(200) -Roles "admin" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/runtime-hook-manifests/$goHookID" -Operation "DELETE /v1/runtime-hook-manifests/{hook_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/runtime-hook-providers/$hookProviderID" -Operation "DELETE /v1/runtime-hook-providers/{provider_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
-    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-manifests/$adapterToolID" -Operation "DELETE /v1/tool-manifests/{tool_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-manifests/$toolID" -Operation "DELETE /v1/tool-manifests/{tool_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-groups/$toolGroupID" -Operation "DELETE /v1/tool-groups/{group_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-providers/$mcpProviderID" -Operation "DELETE /v1/tool-providers/{provider_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/tool-providers/$providerID" -Operation "DELETE /v1/tool-providers/{provider_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
-    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/service-connections/$databaseConnectionID" -Operation "DELETE /v1/service-connections/{connection_id}" -ExpectedStatus @(204) -Roles "optimizer" | Out-Null
-    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/service-connections/$adapterConnectionID" -Operation "DELETE /v1/service-connections/{connection_id}" -ExpectedStatus @(204) -Roles "optimizer" | Out-Null
-    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/service-connections/$mcpConnectionID" -Operation "DELETE /v1/service-connections/{connection_id}" -ExpectedStatus @(204) -Roles "optimizer" | Out-Null
-    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/service-connections/$providerConnectionID" -Operation "DELETE /v1/service-connections/{connection_id}" -ExpectedStatus @(204) -Roles "optimizer" | Out-Null
+    $deleteConnectionID = "all-delete-$suffix-connection"
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/service-connections" -Operation "POST /v1/service-connections" -ExpectedStatus @(201) -Roles "optimizer" -Body @{
+        connection_id = $deleteConnectionID
+        connection_type = "http_api"
+        name = "All Interface Disposable Connection"
+        base_url = $hostPrefix.TrimEnd("/")
+        status = "draft"
+        health_check_enabled = $false
+    } | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/service-connections/$deleteConnectionID" -Operation "DELETE /v1/service-connections/{connection_id}" -ExpectedStatus @(204) -Roles "optimizer" | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/agents" -Operation "POST /v1/agents" -ExpectedStatus @(201) -Roles "optimizer" -Body @{ agent_id = $deleteAgentID; name = "Delete Agent"; owner_id = "all-interface" } | Out-Null
     Invoke-AIJson -BaseUrl $baseUrl -Method "Delete" -Path "/v1/agents/$deleteAgentID" -Operation "DELETE /v1/agents/{agent_id}" -ExpectedStatus @(200) -Roles "optimizer" | Out-Null
 

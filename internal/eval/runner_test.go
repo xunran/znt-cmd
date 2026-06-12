@@ -132,17 +132,24 @@ func TestRunnerSupportsFinalReplyNotContains(t *testing.T) {
 	}
 }
 
-func TestRunnerUsesCollaborationCaller(t *testing.T) {
+func TestRunnerKeepsConversationSpeakerSeparateFromEvalCaller(t *testing.T) {
 	ctx := contracts.RuntimeContext{
 		TenantID: "tenant_1",
 		UserID:   "user_1",
-		Collaboration: &contracts.CollaborationContext{
-			CallerID:   "user_2",
-			CallerType: "user",
+		Conversation: &contracts.RuntimeConversation{
+			Provider:       "eval",
+			Kind:           "group",
+			ConversationID: "conv_1",
+			ThreadID:       "thread_1",
+			CurrentMessage: &contracts.RuntimeMessage{
+				MessageID:   "msg_1",
+				SpeakerID:   "user_2",
+				SpeakerType: "user",
+			},
 		},
 	}
 	caller := evalCaller(ctx)
-	if caller.CallerID != "user_2" || caller.CallerType != "user" || caller.TenantID != "tenant_1" {
+	if caller.CallerID != "eval" || caller.CallerType != "system" || caller.TenantID != "tenant_1" {
 		t.Fatalf("unexpected eval caller: %#v", caller)
 	}
 }

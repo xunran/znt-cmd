@@ -103,6 +103,13 @@ func renderContext(view contracts.WorkView) string {
 	if view.CurrentPlanStep != nil {
 		parts = append(parts, sourceBlock("current plan step", fmt.Sprintf("step_id=%s index=%d status=%s title=%s", view.CurrentPlanStep.StepID, view.CurrentPlanStep.Index, view.CurrentPlanStep.Status, view.CurrentPlanStep.Title)))
 	}
+	if len(view.TaskHistory) > 0 {
+		lines := make([]string, 0, len(view.TaskHistory))
+		for _, item := range view.TaskHistory {
+			lines = append(lines, renderRetrievedContext(item))
+		}
+		parts = append(parts, sourceBlock("task history", strings.Join(lines, "\n\n")))
+	}
 	if view.HandoffContext != nil {
 		parts = append(parts, sourceBlock("handoff context", fmt.Sprintf("package_id=%s from=%s mode=%s summary=%s", view.HandoffContext.PackageID, view.HandoffContext.FromAgent, view.HandoffContext.Mode, view.HandoffContext.Summary)))
 	}

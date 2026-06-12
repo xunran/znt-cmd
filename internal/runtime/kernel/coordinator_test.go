@@ -10,6 +10,7 @@ import (
 	"znt/internal/agentdef/loader"
 	"znt/internal/asset/artifact"
 	"znt/internal/contracts"
+	conversationstore "znt/internal/conversation"
 	tooldiscovery "znt/internal/discovery/tool"
 	"znt/internal/governance/trace"
 	modelclient "znt/internal/model/client"
@@ -78,7 +79,8 @@ func TestCoordinatorRunsExistingTaskFromEnvelopeContext(t *testing.T) {
 	runRepo := runrepo.NewInMemoryRepository()
 	traceRecorder := trace.NewInMemoryRecorder()
 	agents := loader.NewStaticLoader(loader.TestAgentDefinition())
-	coordinator := NewCoordinator(agents, runRepo, taskService, taskRepo, traceRecorder, modelclient.StubModelClient{})
+	model := &capturingModel{}
+	coordinator := NewCoordinator(agents, runRepo, taskService, taskRepo, traceRecorder, model)
 
 	result, err := coordinator.HandleEnvelope(context.Background(), contracts.AgentEnvelope{
 		EnvelopeID: "env_existing_1",
@@ -86,6 +88,7 @@ func TestCoordinatorRunsExistingTaskFromEnvelopeContext(t *testing.T) {
 		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
 		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
 		Command:    "agent.run",
+		Payload:    map[string]any{"input": "continue existing task"},
 		Context:    contracts.RuntimeContext{TenantID: "tenant_1", TaskID: existing.TaskID, UserID: "user_1"},
 	})
 	if err != nil {
@@ -94,12 +97,215 @@ func TestCoordinatorRunsExistingTaskFromEnvelopeContext(t *testing.T) {
 	if result.TaskID != existing.TaskID || result.Status != contracts.RunCompleted {
 		t.Fatalf("expected existing task run, got %#v", result)
 	}
+	run, err := runRepo.Get(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Input != "continue existing task" {
+		t.Fatalf("expected run input to use current payload input, got %#v", run)
+	}
+	if !strings.Contains(model.lastRequest.PromptBundle.Context, "<user input>\ncontinue existing task\n</user input>") {
+		t.Fatalf("expected prompt to use current input, got %s", model.lastRequest.PromptBundle.Context)
+	}
+	if strings.Contains(model.lastRequest.PromptBundle.Context, "<user input>\nuse existing task\n</user input>") {
+		t.Fatalf("task objective leaked into current user input: %s", model.lastRequest.PromptBundle.Context)
+	}
 	task, err := taskRepo.Get(context.Background(), existing.TaskID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if task.Status != contracts.TaskCompleted {
 		t.Fatalf("expected existing task completed, got %#v", task)
+	}
+}
+
+func TestCoordinatorRejectsMismatchedConversationMessageText(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	coordinator := NewCoordinator(
+		loader.NewStaticLoader(loader.TestAgentDefinition()),
+		runrepo.NewInMemoryRepository(),
+		taskService,
+		taskRepo,
+		trace.NewInMemoryRecorder(),
+		modelclient.StubModelClient{},
+	)
+
+	_, err := coordinator.HandleEnvelope(context.Background(), contracts.AgentEnvelope{
+		EnvelopeID: "env_mismatch_text",
+		TraceID:    "trace_mismatch_text",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "hello"},
+		Context: contracts.RuntimeContext{
+			TenantID: "tenant_1",
+			UserID:   "user_1",
+			Conversation: &contracts.RuntimeConversation{
+				ConversationID: "conv_1",
+				ThreadID:       "thread_1",
+				CurrentMessage: &contracts.RuntimeMessage{
+					MessageID:   "msg_1",
+					SpeakerID:   "user_1",
+					SpeakerType: "user",
+					Text:        "different",
+				},
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "current_message.text") {
+		t.Fatalf("expected current_message.text validation error, got %v", err)
+	}
+}
+
+func TestCoordinatorLoadsRecentMessagesFromConversationStore(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	runRepo := runrepo.NewInMemoryRepository()
+	model := &capturingModel{}
+	coordinator := NewCoordinator(
+		loader.NewStaticLoader(loader.TestAgentDefinition()),
+		runRepo,
+		taskService,
+		taskRepo,
+		trace.NewInMemoryRecorder(),
+		model,
+	)
+	coordinator.ConversationStore = conversationstore.NewInMemoryStore()
+	ctx := context.Background()
+
+	for _, turn := range []struct {
+		envelopeID string
+		traceID    contracts.TraceID
+		messageID  string
+		input      string
+	}{
+		{envelopeID: "env_conv_1", traceID: "trace_conv_1", messageID: "msg_1", input: "我的名字叫张三"},
+		{envelopeID: "env_conv_2", traceID: "trace_conv_2", messageID: "msg_2", input: "我叫什么？"},
+	} {
+		_, err := coordinator.HandleEnvelope(ctx, contracts.AgentEnvelope{
+			EnvelopeID: turn.envelopeID,
+			TraceID:    turn.traceID,
+			Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+			Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+			Command:    "agent.run",
+			Payload:    map[string]any{"input": turn.input},
+			Context: contracts.RuntimeContext{
+				TenantID: "tenant_1",
+				UserID:   "user_1",
+				Conversation: &contracts.RuntimeConversation{
+					Provider:       "web",
+					Kind:           "thread",
+					ConversationID: "conv_1",
+					ThreadID:       "thread_1",
+					CurrentMessage: &contracts.RuntimeMessage{
+						MessageID:   turn.messageID,
+						SpeakerID:   "user_1",
+						SpeakerType: "user",
+					},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !strings.Contains(model.lastRequest.PromptBundle.Context, "<recent messages>") ||
+		!strings.Contains(model.lastRequest.PromptBundle.Context, "我的名字叫张三") {
+		t.Fatalf("expected second run to load previous message from store, got %s", model.lastRequest.PromptBundle.Context)
+	}
+}
+
+func TestTaskHistoryLoadsPreviousRunToolResults(t *testing.T) {
+	ctx := context.Background()
+	now := nowForTest()
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	task := taskrepo.NewTask("task_history_1", "tenant_1", "test-agent", "v1", "policy_default", "history", "handle ACME", now)
+	if _, err := taskService.CreateTask(ctx, task, "user_1", "user"); err != nil {
+		t.Fatal(err)
+	}
+	runRepo := runrepo.NewInMemoryRepository()
+	if err := runRepo.Create(ctx, contracts.AgentRun{
+		RunID:        "run_previous",
+		TraceID:      "trace_previous",
+		TenantID:     "tenant_1",
+		AgentID:      "test-agent",
+		AgentVersion: "v1",
+		TaskID:       task.TaskID,
+		Input:        "lookup ACME",
+		Status:       contracts.RunCompleted,
+		PolicySetID:  "policy_default",
+		StartedAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	toolRepo := toolrepo.NewInMemoryRepository()
+	if _, _, err := toolRepo.SaveCall(ctx, contracts.ToolCall{
+		ToolCallID: "call_previous",
+		TenantID:   "tenant_1",
+		ToolID:     "crm.lookup",
+		Name:       "crm.lookup",
+		Arguments:  map[string]any{"customer": "ACME"},
+		TraceID:    "trace_previous",
+		RunID:      "run_previous",
+		TaskID:     task.TaskID,
+		CreatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := toolRepo.SaveResult(ctx, contracts.ToolResult{
+		ToolResultID: "result_previous",
+		ToolCallID:   "call_previous",
+		Status:       contracts.ToolResultSucceeded,
+		Output:       map[string]any{"summary": "ACME has an open refund case"},
+		ArtifactRefs: []contracts.ArtifactRef{{
+			ArtifactID: "artifact_previous",
+			Type:       "customer_summary",
+			Summary:    "ACME refund case summary",
+		}},
+		StartedAt:   now,
+		CompletedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	model := &capturingModel{}
+	coordinator := NewCoordinator(
+		loader.NewStaticLoader(loader.TestAgentDefinition()),
+		runRepo,
+		taskService,
+		taskRepo,
+		trace.NewInMemoryRecorder(),
+		model,
+	)
+	coordinator.ToolRepo = toolRepo
+
+	result, err := coordinator.HandleEnvelope(ctx, contracts.AgentEnvelope{
+		EnvelopeID: "env_history_2",
+		TraceID:    "trace_history_2",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "用刚才查到的信息生成回复"},
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", TaskID: task.TaskID, UserID: "user_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("unexpected run result: %#v", result)
+	}
+	contextText := model.lastRequest.PromptBundle.Context
+	if !strings.Contains(contextText, "<task history>") ||
+		!strings.Contains(contextText, "run_previous") ||
+		!strings.Contains(contextText, "ACME refund case summary") {
+		t.Fatalf("expected previous run tool artifact in task history, got %s", contextText)
+	}
+	if strings.Contains(contextText, "<tool result>\ncall_previous") {
+		t.Fatalf("previous run tool result should not appear as current run result: %s", contextText)
 	}
 }
 
@@ -433,6 +639,7 @@ func TestCoordinatorPinsPolicyVersionAcrossRunSteps(t *testing.T) {
 		AgentID:      "test-agent",
 		AgentVersion: "v1",
 		TaskID:       "task_policy_pin",
+		Input:        "use echo",
 		Status:       contracts.RunCreated,
 		PolicySetID:  oldPolicy.PolicySetID,
 		VersionSnapshot: contracts.VersionSnapshot{
@@ -495,6 +702,64 @@ func TestCoordinatorPinsPolicyVersionAcrossRunSteps(t *testing.T) {
 	}
 	if updated.VersionSnapshot.PolicyVersionID != oldVersion.PolicyVersionID || updated.VersionSnapshot.PolicySetVersion != oldPolicy.Version {
 		t.Fatalf("expected run snapshot to remain pinned to old policy, got %#v", updated.VersionSnapshot)
+	}
+}
+
+func TestResumeRunUsesResumeInput(t *testing.T) {
+	ctx, coordinator, _, taskID, runID, model := setupResumeRunTest(t, "original run input")
+	result, err := coordinator.ResumeRun(ctx, contracts.AgentEnvelope{
+		EnvelopeID: "env_resume_input",
+		TraceID:    "trace_resume_input",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "审批通过，继续执行"},
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", TaskID: taskID, UserID: "user_1"},
+	}, runID, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("unexpected resume result: %#v", result)
+	}
+	if !strings.Contains(model.lastRequest.PromptBundle.Context, "<user input>\n审批通过，继续执行\n</user input>") {
+		t.Fatalf("expected resume input in prompt, got %s", model.lastRequest.PromptBundle.Context)
+	}
+}
+
+func TestResumeRunFallsBackToRunInput(t *testing.T) {
+	ctx, coordinator, _, taskID, runID, model := setupResumeRunTest(t, "original run input")
+	result, err := coordinator.ResumeRun(ctx, contracts.AgentEnvelope{
+		EnvelopeID: "env_resume_fallback",
+		TraceID:    "trace_resume_fallback",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "system", CallerType: "system", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", TaskID: taskID},
+	}, runID, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("unexpected resume result: %#v", result)
+	}
+	if !strings.Contains(model.lastRequest.PromptBundle.Context, "<user input>\noriginal run input\n</user input>") {
+		t.Fatalf("expected run input fallback in prompt, got %s", model.lastRequest.PromptBundle.Context)
+	}
+}
+
+func TestResumeRunDoesNotFallbackToTaskObjective(t *testing.T) {
+	ctx, coordinator, _, taskID, runID, _ := setupResumeRunTest(t, "")
+	_, err := coordinator.ResumeRun(ctx, contracts.AgentEnvelope{
+		EnvelopeID: "env_resume_no_input",
+		TraceID:    "trace_resume_no_input",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "system", CallerType: "system", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", TaskID: taskID},
+	}, runID, taskID)
+	if err == nil || !strings.Contains(err.Error(), "run.input") {
+		t.Fatalf("expected missing run.input error, got %v", err)
 	}
 }
 
@@ -837,6 +1102,62 @@ func hasTraceType(events []contracts.TraceEvent, eventType string) bool {
 
 func nowForTest() time.Time {
 	return time.Unix(1, 0).UTC()
+}
+
+func setupResumeRunTest(t *testing.T, runInput string) (context.Context, Coordinator, *runrepo.InMemoryRepository, contracts.TaskID, contracts.AgentRunID, *capturingModel) {
+	t.Helper()
+	ctx := context.Background()
+	now := nowForTest()
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	runRepo := runrepo.NewInMemoryRepository()
+	model := &capturingModel{}
+	coordinator := NewCoordinator(
+		loader.NewStaticLoader(loader.TestAgentDefinition()),
+		runRepo,
+		taskService,
+		taskRepo,
+		trace.NewInMemoryRecorder(),
+		model,
+	)
+	coordinator.Now = func() time.Time { return now.Add(time.Second) }
+	task := taskrepo.NewTask("task_resume", "tenant_1", "test-agent", "v1", "policy_default", "resume", "task objective must not be used as input", now)
+	if _, err := taskService.CreateTask(ctx, task, "user_1", "user"); err != nil {
+		t.Fatal(err)
+	}
+	run := contracts.AgentRun{
+		RunID:        "run_resume",
+		TraceID:      "trace_resume",
+		TenantID:     "tenant_1",
+		AgentID:      "test-agent",
+		AgentVersion: "v1",
+		TaskID:       task.TaskID,
+		Input:        runInput,
+		Status:       contracts.RunCreated,
+		PolicySetID:  "policy_default",
+		VersionSnapshot: contracts.VersionSnapshot{
+			AgentDefinition:  "v1",
+			PolicySet:        "policy_default",
+			PolicySetVersion: "v1",
+		},
+		StartedAt: now,
+	}
+	if err := runRepo.Create(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []contracts.TaskCommand{contracts.CmdAccept, contracts.CmdPlanStarted, contracts.CmdRunStarted} {
+		if _, _, _, err := taskService.ApplyCommand(ctx, taskruntime.CommandInput{
+			TaskID:    task.TaskID,
+			Command:   command,
+			ActorID:   "test-agent",
+			ActorType: "agent",
+			RunID:     run.RunID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return ctx, coordinator, runRepo, task.TaskID, run.RunID, model
 }
 
 type flakyModelClient struct {

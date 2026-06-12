@@ -445,9 +445,9 @@ function ConvertFrom-OriginEvalYaml {
             if ($parentKey -ne "") {
                 $key = $Matches[1]
                 $value = $Matches[2]
-                if ($key -eq "collaboration" -and $value.Trim() -eq "") {
+                if ($key -eq "conversation" -and $value.Trim() -eq "") {
                     $case[$parentKey][$key] = [ordered]@{}
-                    $listKey = "context.collaboration"
+                    $listKey = "context.conversation"
                     $nestedListItem = $null
                 } else {
                     $case[$parentKey][$key] = ConvertFrom-SimpleYamlScalar $value
@@ -458,25 +458,33 @@ function ConvertFrom-OriginEvalYaml {
             }
         }
         if ($section -eq "cases" -and $null -ne $case -and $line -match "^\s{8}([A-Za-z0-9_]+):\s*(.*)$") {
-            if ($case.Contains("context") -and $case.context -is [System.Collections.IDictionary] -and $case.context.Contains("collaboration") -and $case.context.collaboration -is [System.Collections.IDictionary]) {
+            if ($case.Contains("context") -and $case.context -is [System.Collections.IDictionary] -and $case.context.Contains("conversation") -and $case.context.conversation -is [System.Collections.IDictionary]) {
                 $key = $Matches[1]
                 $value = $Matches[2]
                 if ($value.Trim() -eq "" -and @("recent_messages", "participants").Contains($key)) {
-                    $case.context.collaboration[$key] = @()
-                    $listKey = "context.collaboration.$key"
+                    $case.context.conversation[$key] = @()
+                    $listKey = "context.conversation.$key"
+                    $nestedListItem = $null
+                } elseif ($key -eq "current_message" -and $value.Trim() -eq "") {
+                    $case.context.conversation[$key] = [ordered]@{}
+                    $listKey = "context.conversation.current_message"
                     $nestedListItem = $null
                 } else {
-                    $case.context.collaboration[$key] = ConvertFrom-SimpleYamlScalar $value
+                    $case.context.conversation[$key] = ConvertFrom-SimpleYamlScalar $value
                     $nestedListItem = $null
                 }
                 continue
             }
         }
-        if ($section -eq "cases" -and $null -ne $case -and $listKey -match "^context\.collaboration\.(recent_messages|participants)$" -and $line -match "^\s{10}-\s+([A-Za-z0-9_]+):\s*(.*)$") {
+        if ($section -eq "cases" -and $null -ne $case -and $listKey -eq "context.conversation.current_message" -and $line -match "^\s{10}([A-Za-z0-9_]+):\s*(.*)$") {
+            $case.context.conversation.current_message[$Matches[1]] = ConvertFrom-SimpleYamlScalar $Matches[2]
+            continue
+        }
+        if ($section -eq "cases" -and $null -ne $case -and $listKey -match "^context\.conversation\.(recent_messages|participants)$" -and $line -match "^\s{10}-\s+([A-Za-z0-9_]+):\s*(.*)$") {
             $item = [ordered]@{}
             $item[$Matches[1]] = ConvertFrom-SimpleYamlScalar $Matches[2]
             $listName = ($listKey -split "\.")[-1]
-            $case.context.collaboration[$listName] = @($case.context.collaboration[$listName]) + @($item)
+            $case.context.conversation[$listName] = @($case.context.conversation[$listName]) + @($item)
             $nestedListItem = $item
             continue
         }

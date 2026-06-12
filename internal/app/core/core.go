@@ -16,6 +16,7 @@ import (
 	"znt/internal/bridge/array"
 	contextconversation "znt/internal/context/conversation"
 	"znt/internal/contracts"
+	conversationstore "znt/internal/conversation"
 	"znt/internal/crossgroup"
 	tooldiscovery "znt/internal/discovery/tool"
 	"znt/internal/eval"
@@ -84,6 +85,7 @@ type Core struct {
 	ToolRepo           toolrepo.Repository
 	ToolRuntime        toolruntime.Runtime
 	ExternalTools      toolinvoke.Service
+	Conversations      conversationstore.Store
 	Artifacts          artifact.Store
 	Memory             artifact.MemoryStore
 	ContextPackages    artifact.ContextPackageStore
@@ -144,6 +146,7 @@ func New(cfg config.Config) (*Core, error) {
 	var memory artifact.MemoryStore = artifact.NewInMemoryMemoryStore(auditLogger)
 	var contextPackages artifact.ContextPackageStore = artifact.NewInMemoryContextPackageStore()
 	var toolRepo toolrepo.Repository = toolrepo.NewInMemoryRepository()
+	var conversationStore conversationstore.Store = conversationstore.NewInMemoryStore()
 	var packageStore agentpackage.Store
 	var identityStore identity.Store
 	var permissionStore grouppermission.Store
@@ -172,6 +175,7 @@ func New(cfg config.Config) (*Core, error) {
 		memory = pg.Memory
 		contextPackages = pg.ContextPackages
 		toolRepo = pg.Tools
+		conversationStore = pg.Conversations
 		packageStore = pg.Packages
 		identityStore = pg.GroupMembers
 		permissionStore = pg.GroupPermissions
@@ -253,6 +257,7 @@ func New(cfg config.Config) (*Core, error) {
 		Registry:     tools,
 	}
 	coordinator.ToolRepo = toolRepo
+	coordinator.ConversationStore = conversationStore
 	coordinator.ToolRuntime = toolRuntime
 	coordinator.Policies = policies
 	coordinator.PolicyEngine = &policyEngine
@@ -438,6 +443,7 @@ func New(cfg config.Config) (*Core, error) {
 		ToolRepo:            toolRepo,
 		ToolRuntime:         toolRuntime,
 		ExternalTools:       externalTools,
+		Conversations:       conversationStore,
 		Artifacts:           artifacts,
 		Memory:              memory,
 		ContextPackages:     contextPackages,

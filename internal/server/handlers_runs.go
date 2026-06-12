@@ -1,0 +1,1067 @@
+package server
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"znt/internal/app/auth"
+	"znt/internal/app/core"
+	"znt/internal/contracts"
+	auditlog "znt/internal/governance/audit"
+	"znt/internal/governance/replay"
+	runtimehook "znt/internal/runtime/hook"
+	runrepo "znt/internal/runtime/run"
+	storagerepo "znt/internal/storage/repository"
+	"znt/pkg/idgen"
+)
+
+type runTimelineEvent struct {
+	EventID    string         `json:"event_id"`
+	Title      string         `json:"title"`
+	Status     string         `json:"status,omitempty"`
+	Category   string         `json:"category"`
+	OccurredAt time.Time      `json:"occurred_at"`
+	DurationMS int            `json:"duration_ms,omitempty"`
+	Actor      string         `json:"actor,omitempty"`
+	Payload    map[string]any `json:"payload,omitempty"`
+}
+
+type runDiagnosticsResponse struct {
+	Run            contracts.AgentRun      `json:"run"`
+	Summary        runDiagnosticsSummary   `json:"summary"`
+	Routing        []runRouteDiagnostic    `json:"routing"`
+	Prompt         runPromptDiagnostic     `json:"prompt"`
+	Model          runModelDiagnostic      `json:"model"`
+	Decisions      []runDecisionDiagnostic `json:"decisions"`
+	Tools          []runToolDiagnostic     `json:"tools"`
+	RuntimeHooks   []runtimehook.HookEvent `json:"runtime_hooks"`
+	AuditEvents    []contracts.AuditEvent  `json:"audit_events"`
+	Replay         replay.Report           `json:"replay"`
+	UsageEvidence  usageEvidenceResponse   `json:"usage_evidence"`
+	Timeline       []runTimelineEvent      `json:"timeline"`
+	Artifacts      []contracts.ArtifactID  `json:"artifacts"`
+	TraceEndpoints map[string]string       `json:"trace_endpoints"`
+	Meta           map[string]any          `json:"meta"`
+}
+
+type traceDiagnosticsResponse struct {
+	TraceID       contracts.TraceID       `json:"trace_id"`
+	TenantID      contracts.TenantID      `json:"tenant_id,omitempty"`
+	Runs          []contracts.AgentRun    `json:"runs"`
+	Summary       runDiagnosticsSummary   `json:"summary"`
+	Routing       []runRouteDiagnostic    `json:"routing"`
+	Prompt        runPromptDiagnostic     `json:"prompt"`
+	Model         runModelDiagnostic      `json:"model"`
+	Decisions     []runDecisionDiagnostic `json:"decisions"`
+	Replay        replay.Report           `json:"replay"`
+	UsageEvidence usageEvidenceResponse   `json:"usage_evidence"`
+	Timeline      []runTimelineEvent      `json:"timeline"`
+	Meta          map[string]any          `json:"meta"`
+}
+
+type runDiagnosticsSummary struct {
+	Status                 contracts.RunStatus    `json:"status,omitempty"`
+	DurationMS             int64                  `json:"duration_ms,omitempty"`
+	TraceEventsTotal       int                    `json:"trace_events_total"`
+	TaskEventsTotal        int                    `json:"task_events_total"`
+	ToolCallsTotal         int                    `json:"tool_calls_total"`
+	ToolFailuresTotal      int                    `json:"tool_failures_total"`
+	RuntimeHookEventsTotal int                    `json:"runtime_hook_events_total"`
+	AuditEventsTotal       int                    `json:"audit_events_total"`
+	ModelCallsTotal        int                    `json:"model_calls_total"`
+	ModelFailuresTotal     int                    `json:"model_failures_total"`
+	PromptTokensTotal      int                    `json:"prompt_tokens_total"`
+	CompletionTokensTotal  int                    `json:"completion_tokens_total"`
+	PromptBundleHashes     []string               `json:"prompt_bundle_hashes"`
+	PolicyVersions         []string               `json:"policy_versions"`
+	Problems               []string               `json:"problems,omitempty"`
+	FirstAt                *time.Time             `json:"first_at,omitempty"`
+	LastAt                 *time.Time             `json:"last_at,omitempty"`
+	RunIDs                 []contracts.AgentRunID `json:"run_ids,omitempty"`
+}
+
+type runRouteDiagnostic struct {
+	AgentID           contracts.AgentID          `json:"agent_id,omitempty"`
+	RequestedVersion  contracts.AgentVersion     `json:"requested_version,omitempty"`
+	ResolvedVersion   contracts.AgentVersion     `json:"resolved_version,omitempty"`
+	ReleaseStatus     contracts.ReleaseStatus    `json:"release_status,omitempty"`
+	PackageVersionID  contracts.PackageVersionID `json:"package_version_id,omitempty"`
+	RouteReason       string                     `json:"route_reason,omitempty"`
+	Canary            bool                       `json:"canary"`
+	CanaryPercent     int                        `json:"canary_percent,omitempty"`
+	AssignmentKeyHash string                     `json:"assignment_key_hash,omitempty"`
+	CreatedAt         time.Time                  `json:"created_at"`
+}
+
+type runPromptDiagnostic struct {
+	PromptBundleHash   string                    `json:"prompt_bundle_hash,omitempty"`
+	PromptBundleHashes []string                  `json:"prompt_bundle_hashes,omitempty"`
+	PolicySetID        contracts.PolicySetID     `json:"policy_set_id,omitempty"`
+	PolicyVersionID    contracts.PolicyVersionID `json:"policy_version_id,omitempty"`
+	PolicyVersion      string                    `json:"policy_version,omitempty"`
+	PromptRecorded     bool                      `json:"prompt_recorded"`
+	PreviewCommand     map[string]any            `json:"preview_command,omitempty"`
+	RedactionPolicy    string                    `json:"redaction_policy"`
+}
+
+type runModelDiagnostic struct {
+	Provider              string                   `json:"provider,omitempty"`
+	Name                  string                   `json:"name,omitempty"`
+	PromptTokensTotal     int                      `json:"prompt_tokens_total"`
+	CompletionTokensTotal int                      `json:"completion_tokens_total"`
+	Calls                 []runModelCallDiagnostic `json:"calls"`
+}
+
+type runModelCallDiagnostic struct {
+	EventType        string    `json:"event_type"`
+	ModelProvider    string    `json:"model_provider,omitempty"`
+	ModelName        string    `json:"model_name,omitempty"`
+	PromptTokens     int       `json:"prompt_tokens,omitempty"`
+	CompletionTokens int       `json:"completion_tokens,omitempty"`
+	RepairAttempt    int       `json:"repair_attempt,omitempty"`
+	Error            string    `json:"error,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type runDecisionDiagnostic struct {
+	DecisionID    string         `json:"decision_id,omitempty"`
+	Type          string         `json:"type,omitempty"`
+	EventType     string         `json:"event_type"`
+	RepairAttempt int            `json:"repair_attempt,omitempty"`
+	Warnings      any            `json:"warnings,omitempty"`
+	Error         string         `json:"error,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	Payload       map[string]any `json:"payload,omitempty"`
+}
+
+type runToolDiagnostic struct {
+	Call      contracts.ToolCall    `json:"call"`
+	Result    *contracts.ToolResult `json:"result,omitempty"`
+	HasResult bool                  `json:"has_result"`
+}
+
+func handleRuns(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity) {
+	switch r.Method {
+	case http.MethodGet:
+		handleRunList(w, r, appCore, caller)
+	default:
+		writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported runs method", nil), http.StatusMethodNotAllowed)
+	}
+}
+
+func handleRunResource(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, path string) {
+	runIDRaw, suffix, _ := strings.Cut(strings.Trim(path, "/"), "/")
+	if runIDRaw == "" {
+		writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "run_id is required", nil), http.StatusBadRequest)
+		return
+	}
+	run, ok := runForCaller(w, r, appCore, caller, contracts.AgentRunID(runIDRaw))
+	if !ok {
+		return
+	}
+	switch suffix {
+	case "":
+		if r.Method != http.MethodGet {
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported run method", nil), http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, map[string]any{"run": run, "meta": runResponseMeta(caller, run.TraceID)}, http.StatusOK)
+	case "timeline":
+		if r.Method != http.MethodGet {
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported run timeline method", nil), http.StatusMethodNotAllowed)
+			return
+		}
+		timeline, err := buildRunTimeline(r, appCore, caller, run)
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"run_id": run.RunID, "timeline": timeline, "meta": runResponseMeta(caller, run.TraceID)}, http.StatusOK)
+	case "diagnostics":
+		if r.Method != http.MethodGet {
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported run diagnostics method", nil), http.StatusMethodNotAllowed)
+			return
+		}
+		diagnostics, err := buildRunDiagnostics(r, appCore, caller, run)
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		writeJSON(w, diagnostics, http.StatusOK)
+	case "final-response":
+		if r.Method != http.MethodGet {
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported run final-response method", nil), http.StatusMethodNotAllowed)
+			return
+		}
+		response, artifacts, err := runFinalResponse(r, appCore, caller, run)
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"run_id": run.RunID, "response": response, "artifacts": artifacts, "meta": runResponseMeta(caller, run.TraceID)}, http.StatusOK)
+	case "replay":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported run replay method", nil), http.StatusMethodNotAllowed)
+			return
+		}
+		events, err := traceEventsForRun(r, appCore, caller, run)
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		writeJSON(w, replay.Build(events), http.StatusOK)
+	default:
+		writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unknown run resource path", map[string]any{"path": path}), http.StatusNotFound)
+	}
+}
+
+func handleRunList(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity) {
+	query := r.URL.Query()
+	limit := queryInt(query.Get("limit"), 50, 200)
+	offset := queryInt(query.Get("offset"), 0, 0)
+	if offset == 0 {
+		offset = queryInt(query.Get("cursor"), 0, 0)
+	}
+	filter := runrepo.ListFilter{
+		TenantID: caller.TenantID,
+		AgentID:  contracts.AgentID(strings.TrimSpace(query.Get("agent_id"))),
+		Status:   contracts.RunStatus(strings.TrimSpace(query.Get("status"))),
+		TraceID:  contracts.TraceID(strings.TrimSpace(query.Get("trace_id"))),
+		TaskID:   contracts.TaskID(strings.TrimSpace(query.Get("task_id"))),
+		Limit:    limit,
+		Offset:   offset,
+	}
+	if filter.Status != "" {
+		if err := filter.Status.Validate(); err != nil {
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, err.Error(), nil), http.StatusBadRequest)
+			return
+		}
+	}
+	runs, err := appCore.Runs.List(r.Context(), filter)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	meta := runResponseMeta(caller, filter.TraceID)
+	meta["limit"] = limit
+	meta["offset"] = offset
+	meta["count"] = len(runs)
+	if len(runs) == limit {
+		meta["next_cursor"] = strconv.Itoa(offset + limit)
+	}
+	writeJSON(w, map[string]any{"runs": runs, "meta": meta}, http.StatusOK)
+}
+
+func runForCaller(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, runID contracts.AgentRunID) (contracts.AgentRun, bool) {
+	run, err := appCore.Runs.Get(r.Context(), runID)
+	if err != nil {
+		if errors.Is(err, storagerepo.ErrNotFound) {
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "run not found", map[string]any{"run_id": runID}), http.StatusNotFound)
+			return contracts.AgentRun{}, false
+		}
+		writeRuntimeError(w, err)
+		return contracts.AgentRun{}, false
+	}
+	if !sameTenant(run.TenantID, caller.TenantID) {
+		writeError(w, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "run tenant does not match caller tenant", nil), http.StatusForbidden)
+		return contracts.AgentRun{}, false
+	}
+	return run, true
+}
+
+func buildRunDiagnostics(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) (runDiagnosticsResponse, error) {
+	traceEvents, err := traceEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return runDiagnosticsResponse{}, err
+	}
+	taskEvents, err := taskEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return runDiagnosticsResponse{}, err
+	}
+	toolCalls, toolResults, err := toolsForRun(r, appCore, run)
+	if err != nil {
+		return runDiagnosticsResponse{}, err
+	}
+	auditEvents, err := auditEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return runDiagnosticsResponse{}, err
+	}
+	hookEvents, err := hookEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return runDiagnosticsResponse{}, err
+	}
+	timeline := buildTimeline(run, traceEvents, taskEvents, toolCalls, toolResults, auditEvents, hookEvents)
+	report := replay.Build(traceEvents)
+	usage := buildUsageEvidence(run.TraceID, caller.TenantID, traceEvents)
+	diagnostics := runDiagnosticsResponse{
+		Run:            run,
+		Summary:        diagnosticsSummary(run, traceEvents, taskEvents, toolCalls, toolResults, auditEvents, hookEvents, report),
+		Routing:        routeDiagnostics(traceEvents),
+		Prompt:         promptDiagnostics(run, traceEvents),
+		Model:          modelDiagnostics(run, traceEvents),
+		Decisions:      decisionDiagnostics(traceEvents),
+		Tools:          toolDiagnostics(toolCalls, toolResults),
+		RuntimeHooks:   hookEvents,
+		AuditEvents:    auditEvents,
+		Replay:         report,
+		UsageEvidence:  usage,
+		Timeline:       timeline,
+		Artifacts:      usage.ArtifactRefs,
+		TraceEndpoints: map[string]string{"trace": "/v1/traces/" + string(run.TraceID), "replay": "/v1/traces/" + string(run.TraceID) + "/replay"},
+		Meta:           runResponseMeta(caller, run.TraceID),
+	}
+	return diagnostics, nil
+}
+
+func buildTraceDiagnostics(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, traceID contracts.TraceID, events []contracts.TraceEvent) (traceDiagnosticsResponse, error) {
+	if events == nil {
+		var err error
+		events, err = appCore.Trace.ListByTrace(r.Context(), traceID)
+		if err != nil {
+			return traceDiagnosticsResponse{}, err
+		}
+		filtered, ok := traceEventsForTenant(events, caller.TenantID)
+		if !ok {
+			return traceDiagnosticsResponse{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "trace tenant does not match caller tenant", nil)
+		}
+		events = filtered
+	}
+	runs, err := appCore.Runs.List(r.Context(), runrepo.ListFilter{TenantID: caller.TenantID, TraceID: traceID})
+	if err != nil {
+		return traceDiagnosticsResponse{}, err
+	}
+	var taskEvents []contracts.TaskEvent
+	var toolCalls []contracts.ToolCall
+	var toolResults []contracts.ToolResult
+	var auditEvents []contracts.AuditEvent
+	var hookEvents []runtimehook.HookEvent
+	for _, run := range runs {
+		runTaskEvents, err := taskEventsForRun(r, appCore, caller, run)
+		if err != nil {
+			return traceDiagnosticsResponse{}, err
+		}
+		taskEvents = append(taskEvents, runTaskEvents...)
+		runToolCalls, runToolResults, err := toolsForRun(r, appCore, run)
+		if err != nil {
+			return traceDiagnosticsResponse{}, err
+		}
+		toolCalls = append(toolCalls, runToolCalls...)
+		toolResults = append(toolResults, runToolResults...)
+		runAuditEvents, err := auditEventsForRun(r, appCore, caller, run)
+		if err != nil {
+			return traceDiagnosticsResponse{}, err
+		}
+		auditEvents = append(auditEvents, runAuditEvents...)
+		runHookEvents, err := hookEventsForRun(r, appCore, caller, run)
+		if err != nil {
+			return traceDiagnosticsResponse{}, err
+		}
+		hookEvents = append(hookEvents, runHookEvents...)
+	}
+	var baseRun contracts.AgentRun
+	if len(runs) > 0 {
+		baseRun = runs[0]
+	}
+	report := replay.Build(events)
+	return traceDiagnosticsResponse{
+		TraceID:       traceID,
+		TenantID:      caller.TenantID,
+		Runs:          runs,
+		Summary:       diagnosticsSummary(baseRun, events, taskEvents, toolCalls, toolResults, auditEvents, hookEvents, report),
+		Routing:       routeDiagnostics(events),
+		Prompt:        promptDiagnostics(baseRun, events),
+		Model:         modelDiagnostics(baseRun, events),
+		Decisions:     decisionDiagnostics(events),
+		Replay:        report,
+		UsageEvidence: buildUsageEvidence(traceID, caller.TenantID, events),
+		Timeline:      buildTimeline(baseRun, events, taskEvents, toolCalls, toolResults, auditEvents, hookEvents),
+		Meta:          runResponseMeta(caller, traceID),
+	}, nil
+}
+
+func buildRunTimeline(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) ([]runTimelineEvent, error) {
+	traceEvents, err := traceEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return nil, err
+	}
+	taskEvents, err := taskEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return nil, err
+	}
+	toolCalls, toolResults, err := toolsForRun(r, appCore, run)
+	if err != nil {
+		return nil, err
+	}
+	auditEvents, err := auditEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return nil, err
+	}
+	hookEvents, err := hookEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return nil, err
+	}
+	return buildTimeline(run, traceEvents, taskEvents, toolCalls, toolResults, auditEvents, hookEvents), nil
+}
+
+func traceEventsForRun(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) ([]contracts.TraceEvent, error) {
+	if appCore.Trace == nil || run.TraceID == "" {
+		return []contracts.TraceEvent{}, nil
+	}
+	events, err := appCore.Trace.ListByTrace(r.Context(), run.TraceID)
+	if err != nil {
+		return nil, err
+	}
+	events, ok := traceEventsForTenant(events, caller.TenantID)
+	if !ok {
+		return nil, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "trace tenant does not match caller tenant", nil)
+	}
+	out := make([]contracts.TraceEvent, 0, len(events))
+	for _, event := range events {
+		if event.RunID == "" || event.RunID == run.RunID {
+			out = append(out, event)
+		}
+	}
+	return out, nil
+}
+
+func taskEventsForRun(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) ([]contracts.TaskEvent, error) {
+	if appCore.TaskEvents == nil || run.TaskID == "" {
+		return []contracts.TaskEvent{}, nil
+	}
+	taskEvents, err := appCore.TaskEvents.ListByTask(r.Context(), run.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]contracts.TaskEvent, 0, len(taskEvents))
+	for _, event := range taskEvents {
+		if event.TenantID != "" && event.TenantID != caller.TenantID {
+			return nil, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "task event tenant does not match caller tenant", nil)
+		}
+		if event.RunID == "" || event.RunID == run.RunID {
+			out = append(out, event)
+		}
+	}
+	return out, nil
+}
+
+func toolsForRun(r *http.Request, appCore *core.Core, run contracts.AgentRun) ([]contracts.ToolCall, []contracts.ToolResult, error) {
+	if appCore.ToolRepo == nil {
+		return []contracts.ToolCall{}, []contracts.ToolResult{}, nil
+	}
+	calls, err := appCore.ToolRepo.ListCallsByRun(r.Context(), run.RunID)
+	if err != nil {
+		return nil, nil, err
+	}
+	results, err := appCore.ToolRepo.ListResultsByRun(r.Context(), run.RunID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return calls, results, nil
+}
+
+func auditEventsForRun(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) ([]contracts.AuditEvent, error) {
+	if appCore.Audit == nil {
+		return []contracts.AuditEvent{}, nil
+	}
+	merged := make([]contracts.AuditEvent, 0)
+	seen := make(map[string]struct{})
+	addEvents := func(events []contracts.AuditEvent) {
+		for _, event := range events {
+			key := auditEventKey(event)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, event)
+		}
+	}
+
+	runEvents, err := appCore.Audit.Search(r.Context(), auditlog.Filter{TenantID: caller.TenantID, RunID: run.RunID})
+	if err != nil {
+		return nil, err
+	}
+	addEvents(runEvents)
+	if run.TaskID != "" {
+		taskEvents, err := appCore.Audit.Search(r.Context(), auditlog.Filter{TenantID: caller.TenantID, TaskID: run.TaskID})
+		if err != nil {
+			return nil, err
+		}
+		addEvents(taskEvents)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].CreatedAt.Equal(merged[j].CreatedAt) {
+			return merged[i].AuditID < merged[j].AuditID
+		}
+		return merged[i].CreatedAt.Before(merged[j].CreatedAt)
+	})
+	return merged, nil
+}
+
+func auditEventKey(event contracts.AuditEvent) string {
+	if event.AuditID != "" {
+		return string(event.AuditID)
+	}
+	return fmt.Sprintf("%s:%s:%s:%s:%s:%s", event.CreatedAt.Format(time.RFC3339Nano), event.Action, event.ResourceType, event.ResourceID, event.RunID, event.TaskID)
+}
+
+func hookEventsForRun(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) ([]runtimehook.HookEvent, error) {
+	if appCore.RuntimeHooks == nil {
+		return []runtimehook.HookEvent{}, nil
+	}
+	events, err := appCore.RuntimeHooks.ListEvents(r.Context(), caller.TenantID, run.TraceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]runtimehook.HookEvent, 0, len(events))
+	for _, event := range events {
+		if event.RunID == "" || event.RunID == run.RunID {
+			out = append(out, event)
+		}
+	}
+	return out, nil
+}
+
+func buildTimeline(run contracts.AgentRun, traceEvents []contracts.TraceEvent, taskEvents []contracts.TaskEvent, toolCalls []contracts.ToolCall, toolResults []contracts.ToolResult, auditEvents []contracts.AuditEvent, hookEvents []runtimehook.HookEvent) []runTimelineEvent {
+	out := make([]runTimelineEvent, 0, 2+len(traceEvents)+len(taskEvents)+len(toolCalls)+len(toolResults)+len(auditEvents)+len(hookEvents))
+	if run.RunID != "" {
+		out = append(out, runTimelineEvent{
+			EventID:    "run:" + string(run.RunID) + ":created",
+			Title:      "run.created",
+			Status:     string(run.Status),
+			Category:   "run",
+			OccurredAt: run.StartedAt,
+			Payload: safePayload(map[string]any{
+				"run_id":        run.RunID,
+				"trace_id":      run.TraceID,
+				"task_id":       run.TaskID,
+				"agent_id":      run.AgentID,
+				"agent_version": run.AgentVersion,
+				"policy_set_id": run.PolicySetID,
+			}),
+		})
+		if run.CompletedAt != nil {
+			out = append(out, runTimelineEvent{
+				EventID:    "run:" + string(run.RunID) + ":completed",
+				Title:      "run." + string(run.Status),
+				Status:     string(run.Status),
+				Category:   "run",
+				OccurredAt: *run.CompletedAt,
+				DurationMS: int(run.CompletedAt.Sub(run.StartedAt).Milliseconds()),
+				Payload: safePayload(map[string]any{
+					"error_code":    run.ErrorCode,
+					"error_message": run.ErrorMessage,
+				}),
+			})
+		}
+	}
+	for _, event := range traceEvents {
+		out = append(out, runTimelineEvent{
+			EventID:    fmt.Sprintf("trace:%s:%s:%d", event.SpanID, event.Type, event.CreatedAt.UnixNano()),
+			Title:      event.Type,
+			Status:     timelineStatus(event.Payload),
+			Category:   "trace",
+			OccurredAt: event.CreatedAt,
+			Payload:    safePayload(event.Payload),
+		})
+	}
+	for _, event := range taskEvents {
+		out = append(out, runTimelineEvent{
+			EventID:    string(event.EventID),
+			Title:      event.Type,
+			Status:     stringFromMap(event.Payload, "to_status"),
+			Category:   "task",
+			OccurredAt: event.CreatedAt,
+			Actor:      strings.Trim(event.ActorType+":"+event.ActorID, ":"),
+			Payload:    safePayload(event.Payload),
+		})
+	}
+	for _, call := range toolCalls {
+		out = append(out, runTimelineEvent{
+			EventID:    "tool_call:" + string(call.ToolCallID),
+			Title:      "tool.call " + call.ToolID,
+			Category:   "tool",
+			OccurredAt: call.CreatedAt,
+			Payload: safePayload(map[string]any{
+				"tool_call_id":      call.ToolCallID,
+				"tool_id":           call.ToolID,
+				"name":              call.Name,
+				"tool_version":      call.ToolVersion,
+				"execution_profile": call.ExecutionProfile,
+				"arguments":         call.Arguments,
+				"plan_step_id":      call.PlanStepID,
+			}),
+		})
+	}
+	for _, result := range toolResults {
+		out = append(out, runTimelineEvent{
+			EventID:    "tool_result:" + string(result.ToolResultID),
+			Title:      "tool.result " + string(result.Status),
+			Status:     string(result.Status),
+			Category:   "tool",
+			OccurredAt: result.CompletedAt,
+			DurationMS: int(result.CompletedAt.Sub(result.StartedAt).Milliseconds()),
+			Payload: safePayload(map[string]any{
+				"tool_result_id": result.ToolResultID,
+				"tool_call_id":   result.ToolCallID,
+				"status":         result.Status,
+				"output":         result.Output,
+				"error":          result.Error,
+				"artifact_refs":  result.ArtifactRefs,
+			}),
+		})
+	}
+	for _, event := range auditEvents {
+		out = append(out, runTimelineEvent{
+			EventID:    "audit:" + event.AuditID,
+			Title:      event.Action,
+			Status:     event.Decision,
+			Category:   "audit",
+			OccurredAt: event.CreatedAt,
+			Actor:      strings.Trim(event.ActorType+":"+event.ActorID, ":"),
+			Payload: safePayload(map[string]any{
+				"resource_type": event.ResourceType,
+				"resource_id":   event.ResourceID,
+				"reason":        event.Reason,
+			}),
+		})
+	}
+	for _, event := range hookEvents {
+		out = append(out, runTimelineEvent{
+			EventID:    "runtime_hook:" + event.EventID,
+			Title:      "runtime_hook." + string(event.Phase),
+			Status:     event.Status,
+			Category:   "runtime_hook",
+			OccurredAt: event.CreatedAt,
+			DurationMS: event.LatencyMS,
+			Payload: safePayload(map[string]any{
+				"hook_id":       event.HookID,
+				"provider_id":   event.ProviderID,
+				"provider_type": event.ProviderType,
+				"phase":         event.Phase,
+				"reason":        event.Reason,
+				"patch":         event.Patch,
+			}),
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].OccurredAt.Equal(out[j].OccurredAt) {
+			if out[i].Category == out[j].Category {
+				return out[i].EventID < out[j].EventID
+			}
+			return out[i].Category < out[j].Category
+		}
+		return out[i].OccurredAt.Before(out[j].OccurredAt)
+	})
+	return out
+}
+
+func diagnosticsSummary(run contracts.AgentRun, traceEvents []contracts.TraceEvent, taskEvents []contracts.TaskEvent, toolCalls []contracts.ToolCall, toolResults []contracts.ToolResult, auditEvents []contracts.AuditEvent, hookEvents []runtimehook.HookEvent, report replay.Report) runDiagnosticsSummary {
+	usage := buildUsageEvidence(run.TraceID, run.TenantID, traceEvents)
+	summary := runDiagnosticsSummary{
+		Status:                 run.Status,
+		TraceEventsTotal:       len(traceEvents),
+		TaskEventsTotal:        len(taskEvents),
+		ToolCallsTotal:         len(toolCalls),
+		RuntimeHookEventsTotal: len(hookEvents),
+		AuditEventsTotal:       len(auditEvents),
+		ModelCallsTotal:        usage.ModelCalls,
+		ModelFailuresTotal:     usage.ModelFailures,
+		PromptTokensTotal:      usage.PromptTokens,
+		CompletionTokensTotal:  usage.CompletionTokens,
+		PromptBundleHashes:     report.PromptBundleHashes,
+		PolicyVersions:         report.PolicyVersions,
+		Problems:               report.Problems,
+		FirstAt:                report.FirstAt,
+		LastAt:                 report.LastAt,
+		RunIDs:                 report.RunIDs,
+	}
+	if run.RunID != "" {
+		summary.RunIDs = appendUniqueRunID(summary.RunIDs, run.RunID)
+	}
+	if run.CompletedAt != nil {
+		summary.DurationMS = run.CompletedAt.Sub(run.StartedAt).Milliseconds()
+	}
+	for _, result := range toolResults {
+		if result.Status == contracts.ToolResultFailed || result.Status == contracts.ToolResultDenied {
+			summary.ToolFailuresTotal++
+		}
+	}
+	return summary
+}
+
+func routeDiagnostics(events []contracts.TraceEvent) []runRouteDiagnostic {
+	out := []runRouteDiagnostic{}
+	for _, event := range events {
+		switch event.Type {
+		case contracts.TraceAgentRouteResolved:
+			out = append(out, runRouteDiagnostic{
+				AgentID:           contracts.AgentID(stringFromMap(event.Payload, "agent_id")),
+				RequestedVersion:  contracts.AgentVersion(stringFromMap(event.Payload, "requested_version")),
+				ResolvedVersion:   contracts.AgentVersion(stringFromMap(event.Payload, "resolved_version")),
+				ReleaseStatus:     contracts.ReleaseStatus(stringFromMap(event.Payload, "release_status")),
+				PackageVersionID:  contracts.PackageVersionID(stringFromMap(event.Payload, "package_version_id")),
+				RouteReason:       stringFromMap(event.Payload, "route_reason"),
+				Canary:            boolFromMap(event.Payload, "canary"),
+				CanaryPercent:     intFromMap(event.Payload, "canary_percent"),
+				AssignmentKeyHash: stringFromMap(event.Payload, "assignment_key_hash"),
+				CreatedAt:         event.CreatedAt,
+			})
+		case contracts.TraceCanaryRouted:
+			out = append(out, runRouteDiagnostic{
+				AgentID:          contracts.AgentID(stringFromMap(event.Payload, "agent_id")),
+				ResolvedVersion:  contracts.AgentVersion(firstNonEmpty(stringFromMap(event.Payload, "resolved_version"), stringFromMap(event.Payload, "agent_version"))),
+				ReleaseStatus:    contracts.ReleaseCanary,
+				PackageVersionID: contracts.PackageVersionID(stringFromMap(event.Payload, "package_version_id")),
+				RouteReason:      "default_version_canary_route",
+				Canary:           true,
+				CanaryPercent:    intFromMap(event.Payload, "canary_percent"),
+				CreatedAt:        event.CreatedAt,
+			})
+		}
+	}
+	return out
+}
+
+func promptDiagnostics(run contracts.AgentRun, events []contracts.TraceEvent) runPromptDiagnostic {
+	hashes := uniqueStrings(promptHashes(events))
+	if run.VersionSnapshot.PromptBundleHash != "" {
+		hashes = uniqueStrings(append([]string{run.VersionSnapshot.PromptBundleHash}, hashes...))
+	}
+	preview := map[string]any{}
+	if run.AgentID != "" {
+		preview = map[string]any{
+			"command": "prompt.preview",
+			"target":  map[string]any{"agent_id": run.AgentID, "version": run.AgentVersion},
+			"payload": map[string]any{"input": run.Input},
+			"context": map[string]any{"tenant_id": run.TenantID},
+		}
+	}
+	return runPromptDiagnostic{
+		PromptBundleHash:   firstString(hashes),
+		PromptBundleHashes: hashes,
+		PolicySetID:        run.VersionSnapshot.PolicySet,
+		PolicyVersionID:    run.VersionSnapshot.PolicyVersionID,
+		PolicyVersion:      run.VersionSnapshot.PolicySetVersion,
+		PromptRecorded:     false,
+		PreviewCommand:     preview,
+		RedactionPolicy:    "raw PromptBundle is not stored in run logs; use prompt.preview with optimizer/admin roles to reconstruct a sanitized preview",
+	}
+}
+
+func modelDiagnostics(run contracts.AgentRun, events []contracts.TraceEvent) runModelDiagnostic {
+	out := runModelDiagnostic{Provider: run.VersionSnapshot.ModelProvider, Name: run.VersionSnapshot.ModelName}
+	for _, event := range events {
+		if event.Type != contracts.TraceModelCalled && event.Type != contracts.TraceModelCompleted {
+			continue
+		}
+		row := runModelCallDiagnostic{
+			EventType:        event.Type,
+			ModelProvider:    stringFromMap(event.Payload, "model_provider"),
+			ModelName:        stringFromMap(event.Payload, "model_name"),
+			PromptTokens:     intFromMap(event.Payload, "prompt_tokens"),
+			CompletionTokens: intFromMap(event.Payload, "completion_tokens"),
+			RepairAttempt:    intFromMap(event.Payload, "repair_attempt"),
+			Error:            stringFromMap(event.Payload, "error"),
+			CreatedAt:        event.CreatedAt,
+		}
+		if out.Provider == "" {
+			out.Provider = row.ModelProvider
+		}
+		if out.Name == "" {
+			out.Name = row.ModelName
+		}
+		out.PromptTokensTotal += row.PromptTokens
+		out.CompletionTokensTotal += row.CompletionTokens
+		out.Calls = append(out.Calls, row)
+	}
+	return out
+}
+
+func decisionDiagnostics(events []contracts.TraceEvent) []runDecisionDiagnostic {
+	out := []runDecisionDiagnostic{}
+	for _, event := range events {
+		switch event.Type {
+		case contracts.TraceDecisionCreated, contracts.TraceDecisionValidated, contracts.TraceDecisionCompleted, contracts.TraceDecisionRepairRequested:
+			out = append(out, runDecisionDiagnostic{
+				DecisionID:    stringFromMap(event.Payload, "decision_id"),
+				Type:          stringFromMap(event.Payload, "type"),
+				EventType:     event.Type,
+				RepairAttempt: intFromMap(event.Payload, "repair_attempt"),
+				Warnings:      event.Payload["warnings"],
+				Error:         stringFromMap(event.Payload, "error"),
+				CreatedAt:     event.CreatedAt,
+				Payload:       safePayload(event.Payload),
+			})
+		}
+	}
+	return out
+}
+
+func toolDiagnostics(calls []contracts.ToolCall, results []contracts.ToolResult) []runToolDiagnostic {
+	byCall := map[contracts.ToolCallID]contracts.ToolResult{}
+	for _, result := range results {
+		byCall[result.ToolCallID] = result
+	}
+	out := make([]runToolDiagnostic, 0, len(calls))
+	for _, call := range calls {
+		call.Arguments = safePayload(call.Arguments)
+		row := runToolDiagnostic{Call: call}
+		if result, ok := byCall[call.ToolCallID]; ok {
+			resultCopy := result
+			resultCopy.Output = safePayload(resultCopy.Output)
+			if resultCopy.Error != nil {
+				resultCopy.Error = &contracts.ToolExecutionError{
+					Code:    resultCopy.Error.Code,
+					Message: resultCopy.Error.Message,
+					Details: safePayload(resultCopy.Error.Details),
+				}
+			}
+			row.Result = &resultCopy
+			row.HasResult = true
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func runFinalResponse(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) (map[string]any, []contracts.ArtifactID, error) {
+	traceEvents, err := traceEventsForRun(r, appCore, caller, run)
+	if err != nil {
+		return nil, nil, err
+	}
+	response := map[string]any{"available": false, "reason": "final response body is not stored in run logs"}
+	for i := len(traceEvents) - 1; i >= 0; i-- {
+		event := traceEvents[i]
+		if event.Type == contracts.TraceResponseSent {
+			response = safePayload(event.Payload)
+			response["available"] = true
+			response["trace_event_type"] = event.Type
+			response["created_at"] = event.CreatedAt
+			break
+		}
+	}
+	usage := buildUsageEvidence(run.TraceID, caller.TenantID, traceEvents)
+	return response, usage.ArtifactRefs, nil
+}
+
+func runResponseMeta(caller auth.CallerIdentity, traceID contracts.TraceID) map[string]any {
+	return map[string]any{
+		"request_id": idgen.New("req"),
+		"trace_id":   traceID,
+		"tenant_id":  caller.TenantID,
+	}
+}
+
+func queryInt(raw string, fallback int, max int) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	if max > 0 && value > max {
+		return max
+	}
+	return value
+}
+
+func promptHashes(events []contracts.TraceEvent) []string {
+	out := []string{}
+	for _, event := range events {
+		if value, ok := event.Payload["prompt_bundle_hash"].(string); ok && value != "" {
+			out = append(out, value)
+		}
+		if event.Type == contracts.TracePromptBundleBuilt {
+			if value, ok := event.Payload["hash"].(string); ok && value != "" {
+				out = append(out, value)
+			}
+		}
+	}
+	return out
+}
+
+func appendUniqueRunID(values []contracts.AgentRunID, value contracts.AgentRunID) []contracts.AgentRunID {
+	for _, current := range values {
+		if current == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func firstString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func timelineStatus(payload map[string]any) string {
+	for _, key := range []string{"status", "run_status", "to_status", "decision"} {
+		if value := stringFromMap(payload, key); value != "" {
+			return value
+		}
+	}
+	if stringFromMap(payload, "error") != "" {
+		return "error"
+	}
+	return ""
+}
+
+func stringFromMap(payload map[string]any, key string) string {
+	if payload == nil {
+		return ""
+	}
+	switch value := payload[key].(type) {
+	case string:
+		return value
+	case contracts.AgentID:
+		return string(value)
+	case contracts.AgentVersion:
+		return string(value)
+	case contracts.PackageVersionID:
+		return string(value)
+	case contracts.ReleaseStatus:
+		return string(value)
+	case contracts.PolicySetID:
+		return string(value)
+	case contracts.PolicyVersionID:
+		return string(value)
+	case contracts.TraceID:
+		return string(value)
+	case contracts.AgentRunID:
+		return string(value)
+	case contracts.TaskID:
+		return string(value)
+	case contracts.ErrorCode:
+		return string(value)
+	case contracts.RunStatus:
+		return string(value)
+	case fmt.Stringer:
+		return value.String()
+	default:
+		return ""
+	}
+}
+
+func intFromMap(payload map[string]any, key string) int {
+	if payload == nil {
+		return 0
+	}
+	return intValue(payload[key], 0)
+}
+
+func boolFromMap(payload map[string]any, key string) bool {
+	if payload == nil {
+		return false
+	}
+	return boolFromAny(payload[key])
+}
+
+func safePayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	out := make(map[string]any, len(payload))
+	for key, value := range payload {
+		if sensitiveLogKey(key) {
+			out[key] = "[redacted]"
+			continue
+		}
+		out[key] = safeValue(value)
+	}
+	return out
+}
+
+func safeValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return safePayload(typed)
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, safeValue(item))
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(typed))
+		for key, item := range typed {
+			if sensitiveLogKey(key) || looksSensitiveLogValue(item) {
+				out[key] = "[redacted]"
+				continue
+			}
+			out[key] = item
+		}
+		return out
+	case *contracts.ToolExecutionError:
+		if typed == nil {
+			return nil
+		}
+		return contracts.ToolExecutionError{
+			Code:    typed.Code,
+			Message: typed.Message,
+			Details: safePayload(typed.Details),
+		}
+	case contracts.ToolExecutionError:
+		typed.Details = safePayload(typed.Details)
+		return typed
+	case string:
+		if looksSensitiveLogValue(typed) {
+			return "[redacted]"
+		}
+		return typed
+	default:
+		return value
+	}
+}
+
+func sensitiveLogKey(key string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	normalized = strings.ReplaceAll(normalized, "_", "")
+	normalized = strings.ReplaceAll(normalized, "-", "")
+	switch normalized {
+	case "apikey", "authorization", "password", "passwd", "secret", "clientsecret", "accesstoken", "refreshtoken", "sessiontoken", "privatekey":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksSensitiveLogValue(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	if len(trimmed) >= 12 && (strings.HasPrefix(trimmed, "sk-") || strings.HasPrefix(trimmed, "sk_")) {
+		return true
+	}
+	if strings.HasPrefix(lower, "bearer ") && len(trimmed) > len("bearer ")+8 {
+		return true
+	}
+	if strings.Contains(lower, "-----begin private key-----") {
+		return true
+	}
+	return false
+}

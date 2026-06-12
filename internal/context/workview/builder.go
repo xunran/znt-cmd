@@ -14,6 +14,7 @@ type BuildInput struct {
 	TaskEvents        []contracts.TaskEvent
 	Agent             contracts.AgentDefinition
 	UserInput         string
+	TaskHistory       []contracts.RetrievedContext
 	Plan              *contracts.TaskPlan
 	CurrentStep       *contracts.PlanStep
 	ToolResults       []contracts.ToolResultSummary
@@ -50,6 +51,7 @@ func (Builder) Build(_ context.Context, input BuildInput) (contracts.WorkView, e
 			Title:     input.Task.Title,
 			Objective: input.Task.Objective,
 		},
+		TaskHistory:                input.TaskHistory,
 		HandoffContext:             input.Handoff,
 		MemorySummaries:            input.Memory,
 		ArtifactRefs:               input.Artifacts,

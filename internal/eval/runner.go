@@ -177,14 +177,6 @@ func (r Runner) Run(ctx context.Context, tc Case) Result {
 
 func evalCaller(runtimeContext contracts.RuntimeContext) contracts.AgentCaller {
 	caller := contracts.AgentCaller{CallerID: "eval", CallerType: "system", TenantID: runtimeContext.TenantID}
-	if runtimeContext.Collaboration != nil {
-		if runtimeContext.Collaboration.CallerID != "" {
-			caller.CallerID = runtimeContext.Collaboration.CallerID
-		}
-		if runtimeContext.Collaboration.CallerType != "" {
-			caller.CallerType = runtimeContext.Collaboration.CallerType
-		}
-	}
 	if caller.CallerID == "" && runtimeContext.UserID != "" {
 		caller.CallerID = string(runtimeContext.UserID)
 		caller.CallerType = "user"

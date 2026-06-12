@@ -303,7 +303,17 @@ rollback 应带 reason。
   "context": {
     "tenant_id": "tenant_1",
     "user_id": "user_1",
-    "session_id": "s1",
+    "conversation": {
+      "provider": "web",
+      "kind": "thread",
+      "conversation_id": "conv_1",
+      "thread_id": "thread_1",
+      "current_message": {
+        "message_id": "msg_1",
+        "speaker_id": "user_1",
+        "speaker_type": "user"
+      }
+    },
     "timezone": "Asia/Hong_Kong"
   }
 }

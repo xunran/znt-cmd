@@ -182,11 +182,18 @@ func TestCoordinatorBuildsConversationContextWithRetrieval(t *testing.T) {
 		Context: contracts.RuntimeContext{
 			TenantID: "tenant_1",
 			UserID:   "user_1",
-			Collaboration: &contracts.CollaborationContext{
-				Provider:           "test",
-				ConversationKind:   contextconversation.KindGroup,
-				ExternalMessageID:  "msg_now",
-				CurrentSpeakerName: "张三",
+			Conversation: &contracts.RuntimeConversation{
+				Provider:       "test",
+				Kind:           contextconversation.KindGroup,
+				ConversationID: "conv_1",
+				ThreadID:       "thread_1",
+				CurrentMessage: &contracts.RuntimeMessage{
+					MessageID:         "msg_now",
+					ExternalMessageID: "msg_now",
+					SpeakerID:         "user_1",
+					SpeakerType:       "user",
+					SpeakerName:       "张三",
+				},
 				RecentMessages: []contracts.ConversationMessage{{
 					MessageID:   "msg_old",
 					SpeakerID:   "user_1",
@@ -249,10 +256,17 @@ func TestCoordinatorUsesInjectedConversationEngines(t *testing.T) {
 		Context: contracts.RuntimeContext{
 			TenantID: "tenant_1",
 			UserID:   "user_1",
-			Collaboration: &contracts.CollaborationContext{
-				Provider:          "test",
-				ConversationKind:  contextconversation.KindGroup,
-				ExternalMessageID: "msg_now",
+			Conversation: &contracts.RuntimeConversation{
+				Provider:       "test",
+				Kind:           contextconversation.KindGroup,
+				ConversationID: "conv_1",
+				ThreadID:       "thread_1",
+				CurrentMessage: &contracts.RuntimeMessage{
+					MessageID:         "msg_now",
+					ExternalMessageID: "msg_now",
+					SpeakerID:         "user_1",
+					SpeakerType:       "user",
+				},
 			},
 		},
 		CreatedAt: now,
@@ -309,9 +323,16 @@ func TestCoordinatorHonorsConversationRetrievalDisabled(t *testing.T) {
 		Context: contracts.RuntimeContext{
 			TenantID: "tenant_1",
 			UserID:   "user_1",
-			Collaboration: &contracts.CollaborationContext{
-				Provider:         "test",
-				ConversationKind: contextconversation.KindGroup,
+			Conversation: &contracts.RuntimeConversation{
+				Provider:       "test",
+				Kind:           contextconversation.KindGroup,
+				ConversationID: "conv_1",
+				ThreadID:       "thread_1",
+				CurrentMessage: &contracts.RuntimeMessage{
+					MessageID:   "msg_now",
+					SpeakerID:   "user_1",
+					SpeakerType: "user",
+				},
 			},
 		},
 		CreatedAt: now,
@@ -407,9 +428,16 @@ func TestCoordinatorLimitsRetrievedContext(t *testing.T) {
 		Context: contracts.RuntimeContext{
 			TenantID: "tenant_1",
 			UserID:   "user_1",
-			Collaboration: &contracts.CollaborationContext{
-				Provider:         "test",
-				ConversationKind: contextconversation.KindGroup,
+			Conversation: &contracts.RuntimeConversation{
+				Provider:       "test",
+				Kind:           contextconversation.KindGroup,
+				ConversationID: "conv_1",
+				ThreadID:       "thread_1",
+				CurrentMessage: &contracts.RuntimeMessage{
+					MessageID:   "msg_now",
+					SpeakerID:   "user_1",
+					SpeakerType: "user",
+				},
 			},
 		},
 		CreatedAt: now,
@@ -442,10 +470,17 @@ func TestCoordinatorRecordsConversationInputTaskEvent(t *testing.T) {
 		Context: contracts.RuntimeContext{
 			TenantID: "tenant_1",
 			UserID:   "user_1",
-			Collaboration: &contracts.CollaborationContext{
-				Provider:          "test",
-				ConversationKind:  contextconversation.KindGroup,
-				ExternalMessageID: "msg_1",
+			Conversation: &contracts.RuntimeConversation{
+				Provider:       "test",
+				Kind:           contextconversation.KindGroup,
+				ConversationID: "conv_1",
+				ThreadID:       "thread_1",
+				CurrentMessage: &contracts.RuntimeMessage{
+					MessageID:         "msg_1",
+					ExternalMessageID: "msg_1",
+					SpeakerID:         "user_1",
+					SpeakerType:       "user",
+				},
 			},
 		},
 	}

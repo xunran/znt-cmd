@@ -299,6 +299,10 @@ CREATE TABLE agent_runs (
   agent_id TEXT NOT NULL,
   agent_version TEXT NOT NULL,
   task_id TEXT,
+  input TEXT NOT NULL DEFAULT '',
+  conversation_id TEXT,
+  thread_id TEXT,
+  message_id TEXT,
   status TEXT NOT NULL,
   step_count INT NOT NULL DEFAULT 0,
   tool_call_count INT NOT NULL DEFAULT 0,
@@ -309,6 +313,39 @@ CREATE TABLE agent_runs (
   error_code TEXT,
   error_message TEXT
 );
+
+CREATE TABLE conversation_threads (
+  tenant_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  kind TEXT,
+  provider TEXT,
+  external_refs JSONB,
+  last_message_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (tenant_id, conversation_id, thread_id)
+);
+
+CREATE TABLE conversation_messages (
+  tenant_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  external_message_id TEXT,
+  speaker_id TEXT NOT NULL,
+  speaker_type TEXT NOT NULL,
+  speaker_name TEXT,
+  text TEXT NOT NULL,
+  reply_to_message_id TEXT,
+  mentions JSONB,
+  metadata JSONB,
+  created_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (tenant_id, conversation_id, message_id)
+);
+
+CREATE INDEX idx_conversation_messages_thread_time ON conversation_messages (tenant_id, conversation_id, thread_id, created_at DESC);
+CREATE INDEX idx_conversation_messages_speaker_time ON conversation_messages (tenant_id, conversation_id, thread_id, speaker_id, created_at DESC);
 
 CREATE TABLE task_plans (
   plan_id TEXT PRIMARY KEY,
