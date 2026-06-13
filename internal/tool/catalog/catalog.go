@@ -4030,11 +4030,19 @@ func decodeJSONResponse(resp *http.Response, target any) (bool, error) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return false, nil
 	}
+	if response, ok := target.(*toolInvokeResponse); ok {
+		decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(response); err != nil {
+			return false, contracts.NewRuntimeError(contracts.CodeToolExecutionFailed, "tool provider returned invalid invoke response: "+err.Error(), nil)
+		}
+		if response.Error != nil {
+			return false, contracts.NewRuntimeError(response.Error.Code, response.Error.Message, response.Error.Details)
+		}
+		return false, nil
+	}
 	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
 		return false, err
-	}
-	if response, ok := target.(*toolInvokeResponse); ok && response.Error != nil {
-		return false, contracts.NewRuntimeError(response.Error.Code, response.Error.Message, response.Error.Details)
 	}
 	return false, nil
 }

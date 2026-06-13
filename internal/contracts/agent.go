@@ -12,6 +12,12 @@ type AgentPackageVersion struct {
 
 	SourceHash   string `json:"source_hash"`
 	CompiledHash string `json:"compiled_hash"`
+	StrategyHash string `json:"strategy_hash,omitempty"`
+
+	SourceKind       AgentSourceKind `json:"source_kind,omitempty"`
+	SourceProviderID string          `json:"source_provider_id,omitempty"`
+	ManifestVersion  string          `json:"manifest_version,omitempty"`
+	ManifestHash     string          `json:"manifest_hash,omitempty"`
 
 	CanaryPercent int      `json:"canary_percent,omitempty"`
 	CanaryScope   []string `json:"canary_scope,omitempty"`
@@ -43,6 +49,10 @@ type AgentDefinition struct {
 	Version AgentVersion `json:"version"`
 
 	PackageVersionID PackageVersionID `json:"package_version_id,omitempty"`
+	SourceKind       AgentSourceKind  `json:"source_kind,omitempty"`
+	SourceProviderID string           `json:"source_provider_id,omitempty"`
+	ManifestVersion  string           `json:"manifest_version,omitempty"`
+	ManifestHash     string           `json:"manifest_hash,omitempty"`
 
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -61,6 +71,7 @@ type AgentDefinition struct {
 	SkillDefinitions []SkillDefinition `json:"skill_definitions,omitempty"`
 
 	PolicyRefs AgentPolicyRefs `json:"policy_refs"`
+	Strategies AgentStrategies `json:"strategies,omitempty"`
 
 	Runtime RuntimeLimits `json:"runtime"`
 

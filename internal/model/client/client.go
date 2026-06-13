@@ -39,10 +39,17 @@ type ModelCapabilityDescriptor struct {
 }
 
 type ModelRequest struct {
-	RunID          contracts.AgentRunID   `json:"run_id"`
-	PromptBundle   contracts.PromptBundle `json:"prompt_bundle"`
-	OutputContract string                 `json:"output_contract,omitempty"`
-	Timeout        time.Duration          `json:"timeout,omitempty"`
+	RunID           contracts.AgentRunID   `json:"run_id"`
+	PromptBundle    contracts.PromptBundle `json:"prompt_bundle"`
+	OutputContract  string                 `json:"output_contract,omitempty"`
+	Timeout         time.Duration          `json:"timeout,omitempty"`
+	ModelProvider   string                 `json:"model_provider,omitempty"`
+	ModelBaseURL    string                 `json:"model_base_url,omitempty"`
+	ModelName       string                 `json:"model_name,omitempty"`
+	MaxOutputTokens int                    `json:"max_output_tokens,omitempty"`
+	Temperature     *float64               `json:"temperature,omitempty"`
+	Thinking        string                 `json:"thinking,omitempty"`
+	ReasoningEffort string                 `json:"reasoning_effort,omitempty"`
 }
 
 type ModelResponse struct {
@@ -269,7 +276,8 @@ func (c OpenAICompatibleClient) Capabilities() ModelCapabilityDescriptor {
 }
 
 func (c OpenAICompatibleClient) Complete(ctx context.Context, request ModelRequest) (ModelResponse, error) {
-	if strings.TrimSpace(c.BaseURL) == "" || strings.TrimSpace(c.Model) == "" {
+	baseURL := effectiveRequestString(c.BaseURL, request.ModelBaseURL)
+	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(effectiveRequestModel(c.Model, request.ModelName)) == "" {
 		return ModelResponse{}, modelRuntimeError(contracts.CodeModelError, ModelErrorInvalidConfig, "openai-compatible client requires base_url and model", false, nil)
 	}
 	if request.Timeout > 0 {
@@ -282,7 +290,7 @@ func (c OpenAICompatibleClient) Complete(ctx context.Context, request ModelReque
 	if err != nil {
 		return ModelResponse{}, modelRuntimeError(contracts.CodeModelError, ModelErrorInvalidRequest, err.Error(), false, nil)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.chatCompletionsURL(), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL(baseURL), bytes.NewReader(body))
 	if err != nil {
 		return ModelResponse{}, modelRuntimeError(contracts.CodeModelError, ModelErrorInvalidConfig, err.Error(), false, nil)
 	}
@@ -328,7 +336,9 @@ func (c OpenAICompatibleClient) Complete(ctx context.Context, request ModelReque
 }
 
 func (c OpenAICompatibleClient) Stream(ctx context.Context, request ModelRequest) (<-chan ModelStreamEvent, error) {
-	if strings.TrimSpace(c.BaseURL) == "" || strings.TrimSpace(c.Model) == "" {
+	modelName := effectiveRequestModel(c.Model, request.ModelName)
+	baseURL := effectiveRequestString(c.BaseURL, request.ModelBaseURL)
+	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(modelName) == "" {
 		return nil, modelRuntimeError(contracts.CodeModelError, ModelErrorInvalidConfig, "openai-compatible client requires base_url and model", false, nil)
 	}
 	var cancel context.CancelFunc
@@ -343,7 +353,7 @@ func (c OpenAICompatibleClient) Stream(ctx context.Context, request ModelRequest
 		}
 		return nil, modelRuntimeError(contracts.CodeModelError, ModelErrorInvalidRequest, err.Error(), false, nil)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.chatCompletionsURL(), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL(baseURL), bytes.NewReader(body))
 	if err != nil {
 		if cancel != nil {
 			cancel()
@@ -383,14 +393,14 @@ func (c OpenAICompatibleClient) Stream(ctx context.Context, request ModelRequest
 			ch <- ModelStreamEvent{Type: ModelStreamError, Err: classifyHTTPStatus(resp.StatusCode, data)}
 			return
 		}
-		readOpenAICompatibleStream(resp.Body, c.Model, ch)
+		readOpenAICompatibleStream(resp.Body, modelName, ch)
 	}()
 	return ch, nil
 }
 
 func (c OpenAICompatibleClient) chatCompletionPayload(request ModelRequest, stream bool) chatCompletionRequest {
 	payload := chatCompletionRequest{
-		Model:          c.Model,
+		Model:          effectiveRequestModel(c.Model, request.ModelName),
 		Messages:       promptBundleMessages(request.PromptBundle, request.OutputContract),
 		ResponseFormat: map[string]string{"type": "json_object"},
 		Stream:         stream,
@@ -398,23 +408,51 @@ func (c OpenAICompatibleClient) chatCompletionPayload(request ModelRequest, stre
 	if stream {
 		payload.StreamOptions = &chatCompletionStreamOptions{IncludeUsage: true}
 	}
-	if c.MaxTokens > 0 {
-		payload.MaxTokens = c.MaxTokens
+	if maxTokens := effectiveRequestMaxTokens(c.MaxTokens, request.MaxOutputTokens); maxTokens > 0 {
+		payload.MaxTokens = maxTokens
 	}
-	if c.Temperature != nil {
-		payload.Temperature = c.Temperature
+	if temperature := effectiveRequestTemperature(c.Temperature, request.Temperature); temperature != nil {
+		payload.Temperature = temperature
 	}
-	if strings.TrimSpace(c.Thinking) != "" {
-		payload.Thinking = map[string]string{"type": strings.TrimSpace(c.Thinking)}
+	if thinking := effectiveRequestString(c.Thinking, request.Thinking); thinking != "" {
+		payload.Thinking = map[string]string{"type": thinking}
 	}
-	if strings.TrimSpace(c.ReasoningEffort) != "" {
-		payload.ReasoningEffort = strings.TrimSpace(c.ReasoningEffort)
+	if effort := effectiveRequestString(c.ReasoningEffort, request.ReasoningEffort); effort != "" {
+		payload.ReasoningEffort = effort
 	}
 	return payload
 }
 
-func (c OpenAICompatibleClient) chatCompletionsURL() string {
-	base := strings.TrimRight(c.BaseURL, "/")
+func effectiveRequestModel(fallback string, requested string) string {
+	if strings.TrimSpace(requested) != "" {
+		return strings.TrimSpace(requested)
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func effectiveRequestMaxTokens(fallback int, requested int) int {
+	if requested > 0 {
+		return requested
+	}
+	return fallback
+}
+
+func effectiveRequestTemperature(fallback *float64, requested *float64) *float64 {
+	if requested != nil {
+		return requested
+	}
+	return fallback
+}
+
+func effectiveRequestString(fallback string, requested string) string {
+	if strings.TrimSpace(requested) != "" {
+		return strings.TrimSpace(requested)
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func chatCompletionsURL(baseURL string) string {
+	base := strings.TrimRight(baseURL, "/")
 	if strings.HasSuffix(base, "/chat/completions") {
 		return base
 	}

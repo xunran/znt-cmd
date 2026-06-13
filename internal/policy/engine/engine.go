@@ -164,9 +164,13 @@ func DefaultPolicySet() contracts.PolicySet {
 		PromptPolicy: contracts.PromptPolicy{
 			MaxPromptTokens: 4000,
 		},
-		CompressionPolicy: contracts.ContextCompressionPolicy{
-			Enabled:         true,
-			MaxContextItems: 20,
+		ContextGovernancePolicy: contracts.ContextGovernancePolicy{
+			MaxContextTokenBudget: 4000,
+			MaxRecentMessageLimit: 20,
+			MaxRetrievalResults:   8,
+			MaxTaskHistoryItems:   30,
+			AllowFullDebugMode:    false,
+			AllowLLMCompression:   true,
 		},
 		RecoveryPolicy: contracts.TaskRecoveryPolicy{
 			AllowResumeFromEvents: true,

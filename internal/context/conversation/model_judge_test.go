@@ -36,7 +36,7 @@ func TestModelJudgeParsesAddressingAssessment(t *testing.T) {
 }
 
 func TestModelJudgeParsesSufficiencyAssessment(t *testing.T) {
-	model := &capturingJudgeModel{responses: []string{`{"phase":"pre_addressing","sufficient":false,"confidence":0.81,"reason":"缺少第二个问题定义","missing_facts":["第二个问题定义"],"retrieval_needed":true,"queries":[{"query":"第二个问题","max_results":8}],"suggested_action":"retrieve_context"}`}}
+	model := &capturingJudgeModel{responses: []string{`{"phase":"pre_addressing","sufficient":false,"confidence":0.81,"reason":"缺少第二个问题定义","missing_facts":["第二个问题定义"],"retrieval_needed":true,"queries":[{"query":"第二个问题","max_results":0}],"suggested_action":"retrieve_context"}`}}
 	result, err := (ModelJudge{Model: model}).JudgeSufficiency(context.Background(), contracts.ConversationContext{
 		Kind: KindGroup,
 		CurrentMessage: contracts.ConversationMessage{
@@ -53,6 +53,9 @@ func TestModelJudgeParsesSufficiencyAssessment(t *testing.T) {
 	}
 	if len(model.requests) != 1 || !strings.Contains(model.requests[0].OutputContract, "retrieval_needed") {
 		t.Fatalf("expected sufficiency output contract, got %#v", model.requests)
+	}
+	if strings.Contains(model.requests[0].OutputContract, `"max_results":8`) || !strings.Contains(model.requests[0].OutputContract, `"max_results":0`) {
+		t.Fatalf("expected sufficiency output contract to avoid hard-coded retrieval window, got %s", model.requests[0].OutputContract)
 	}
 }
 

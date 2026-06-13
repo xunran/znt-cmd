@@ -29,3 +29,10 @@ data:
   CLEAN_CORE_MODEL_TEMPERATURE: {{ .Values.config.modelTemperature | quote }}
   CLEAN_CORE_MODEL_THINKING: {{ .Values.config.modelThinking | quote }}
   CLEAN_CORE_MODEL_REASONING_EFFORT: {{ .Values.config.modelReasoningEffort | quote }}
+  CLEAN_CORE_CONTEXT_DEFAULT_MODE: {{ .Values.config.contextDefaultMode | quote }}
+  CLEAN_CORE_CONTEXT_DEFAULT_RECENT_MESSAGE_LIMIT: {{ .Values.config.contextDefaultRecentMessageLimit | quote }}
+  CLEAN_CORE_CONTEXT_DEFAULT_RETRIEVAL_MAX_RESULTS: {{ .Values.config.contextDefaultRetrievalMaxResults | quote }}
+  CLEAN_CORE_CONTEXT_DEFAULT_TASK_HISTORY_MAX_ITEMS: {{ .Values.config.contextDefaultTaskHistoryMaxItems | quote }}
+  CLEAN_CORE_CONTEXT_DEFAULT_TOKEN_BUDGET: {{ .Values.config.contextDefaultTokenBudget | quote }}
+  CLEAN_CORE_CONTEXT_COMPRESSION_DEFAULT_ENABLED: {{ .Values.config.contextCompressionDefaultEnabled | quote }}
+  CLEAN_CORE_CONTEXT_COMPRESSION_DEFAULT_MODE: {{ .Values.config.contextCompressionDefaultMode | quote }}

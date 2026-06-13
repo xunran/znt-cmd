@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -25,6 +26,23 @@ type Case struct {
 	FinalReplyNotContains []string                 `json:"final_reply_not_contains,omitempty"`
 	MaxToolCalls          int                      `json:"max_tool_calls,omitempty"`
 	ShouldEndStatus       contracts.RunStatus      `json:"should_end_status,omitempty"`
+	StrategyAssertions    StrategyAssertions       `json:"strategy_assertions,omitempty"`
+}
+
+type StrategyAssertions struct {
+	StrategyHash       string   `json:"strategy_hash,omitempty"`
+	ContextMode        string   `json:"context_mode,omitempty"`
+	ContextSources     []string `json:"context_sources,omitempty"`
+	CompressionApplied *bool    `json:"compression_applied,omitempty"`
+	CompressionMode    string   `json:"compression_mode,omitempty"`
+}
+
+type StrategyEvidence struct {
+	StrategyHash       string   `json:"strategy_hash,omitempty"`
+	ContextMode        string   `json:"context_mode,omitempty"`
+	ContextSources     []string `json:"context_sources,omitempty"`
+	CompressionApplied *bool    `json:"compression_applied,omitempty"`
+	CompressionMode    string   `json:"compression_mode,omitempty"`
 }
 
 type Result struct {
@@ -42,6 +60,7 @@ type Result struct {
 	ToolCalls      []contracts.ToolCall    `json:"tool_calls,omitempty"`
 	ToolResults    []contracts.ToolResult  `json:"tool_results,omitempty"`
 	ArtifactRefs   []contracts.ArtifactRef `json:"artifact_refs,omitempty"`
+	Strategy       StrategyEvidence        `json:"strategy,omitempty"`
 	ToolCallsTotal int                     `json:"tool_calls_total"`
 	ToolMisuse     int                     `json:"tool_misuse_total"`
 	EndStatus      contracts.RunStatus     `json:"end_status,omitempty"`
@@ -137,6 +156,8 @@ func (r Runner) Run(ctx context.Context, tc Case) Result {
 			artifactRefs = append(artifactRefs, toolResult.ArtifactRefs...)
 		}
 	}
+	strategyEvidence := r.strategyEvidence(ctx, traceID)
+	failures = append(failures, strategyAssertionFailures(tc.StrategyAssertions, strategyEvidence)...)
 	out := Result{
 		EvalRunID:      evalRunID,
 		SuiteID:        tc.SuiteID,
@@ -152,6 +173,7 @@ func (r Runner) Run(ctx context.Context, tc Case) Result {
 		ToolCalls:      toolCalls,
 		ToolResults:    toolResults,
 		ArtifactRefs:   artifactRefs,
+		Strategy:       strategyEvidence,
 		ToolCallsTotal: toolCallsTotal,
 		ToolMisuse:     toolMisuse,
 		EndStatus:      result.Status,
@@ -171,8 +193,86 @@ func (r Runner) Run(ctx context.Context, tc Case) Result {
 		"tool_calls_total":   out.ToolCallsTotal,
 		"tool_misuse_total":  out.ToolMisuse,
 		"artifact_ref_count": len(out.ArtifactRefs),
+		"strategy":           out.Strategy,
 	})
 	return out
+}
+
+func (r Runner) strategyEvidence(ctx context.Context, traceID contracts.TraceID) StrategyEvidence {
+	out := StrategyEvidence{}
+	if r.Coordinator.Trace == nil || traceID == "" {
+		return out
+	}
+	events, err := r.Coordinator.Trace.ListByTrace(ctx, traceID)
+	if err != nil {
+		return out
+	}
+	for _, event := range events {
+		switch event.Type {
+		case contracts.TraceStrategyResolved:
+			if value, ok := event.Payload["strategy_hash"].(string); ok && value != "" {
+				out.StrategyHash = value
+			}
+			if value, ok := event.Payload["context_mode"].(string); ok && value != "" {
+				out.ContextMode = value
+			}
+			out.ContextSources = uniqueStrings(append(out.ContextSources, stringsFromAny(event.Payload["context_sources"])...))
+		case contracts.TraceContextCompressionCompleted:
+			applied, ok := event.Payload["applied"].(bool)
+			if ok {
+				out.CompressionApplied = &applied
+			}
+			if value, ok := event.Payload["mode"].(string); ok && value != "" {
+				out.CompressionMode = value
+			}
+		case contracts.TracePromptBundleBuilt:
+			report, ok := contextAssemblyReportFromAny(event.Payload["context_assembly_report"])
+			if !ok {
+				continue
+			}
+			if report.StrategyHash != "" {
+				out.StrategyHash = report.StrategyHash
+			}
+			if report.Mode != "" {
+				out.ContextMode = report.Mode
+			}
+			for _, source := range report.Sources {
+				if source.SourceType != "" {
+					out.ContextSources = uniqueStrings(append(out.ContextSources, source.SourceType))
+				}
+			}
+			if report.Compression != nil {
+				applied := report.Compression.Applied
+				out.CompressionApplied = &applied
+				out.CompressionMode = report.Compression.Mode
+			}
+		}
+	}
+	return out
+}
+
+func strategyAssertionFailures(assertions StrategyAssertions, evidence StrategyEvidence) []string {
+	failures := make([]string, 0)
+	if assertions.StrategyHash != "" && evidence.StrategyHash != assertions.StrategyHash {
+		failures = append(failures, "strategy hash mismatch")
+	}
+	if assertions.ContextMode != "" && evidence.ContextMode != assertions.ContextMode {
+		failures = append(failures, "context mode mismatch")
+	}
+	for _, source := range assertions.ContextSources {
+		if source != "" && !containsString(evidence.ContextSources, source) {
+			failures = append(failures, "context source missing: "+source)
+		}
+	}
+	if assertions.CompressionApplied != nil {
+		if evidence.CompressionApplied == nil || *evidence.CompressionApplied != *assertions.CompressionApplied {
+			failures = append(failures, "compression applied mismatch")
+		}
+	}
+	if assertions.CompressionMode != "" && evidence.CompressionMode != assertions.CompressionMode {
+		failures = append(failures, "compression mode mismatch")
+	}
+	return failures
 }
 
 func evalCaller(runtimeContext contracts.RuntimeContext) contracts.AgentCaller {
@@ -212,4 +312,71 @@ func (r Runner) trace(ctx context.Context, traceID contracts.TraceID, tenantID c
 		Payload:   payload,
 		CreatedAt: r.Now(),
 	})
+}
+
+func contextAssemblyReportFromAny(value any) (contracts.ContextAssemblyReport, bool) {
+	if value == nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	if report, ok := value.(contracts.ContextAssemblyReport); ok {
+		return report, true
+	}
+	if report, ok := value.(*contracts.ContextAssemblyReport); ok && report != nil {
+		return *report, true
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	var report contracts.ContextAssemblyReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	if report.StrategyHash == "" && report.Mode == "" && len(report.Sources) == 0 && report.Compression == nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	return report, true
+}
+
+func stringsFromAny(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok && text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }

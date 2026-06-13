@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"znt/internal/agentdef/loader"
+	agentstrategy "znt/internal/agentdef/strategy"
 	contextconversation "znt/internal/context/conversation"
 	"znt/internal/contracts"
 	"znt/internal/governance/trace"
@@ -206,7 +207,7 @@ func TestCoordinatorBuildsConversationContextWithRetrieval(t *testing.T) {
 		},
 		CreatedAt: now,
 	}
-	conversation := coordinator.conversationContext(context.Background(), envelope, agent, "run_1", "task_1", nil, []contracts.MemorySummary{{
+	conversation := coordinator.conversationContext(context.Background(), envelope, agent, agentstrategy.DefaultContextStrategy(), "run_1", "task_1", nil, []contracts.MemorySummary{{
 		MemoryID: "mem_1",
 		Summary:  "第二个问题是上下文主动召回。",
 	}}, nil, nil, "第二个问题呢？")
@@ -271,7 +272,7 @@ func TestCoordinatorUsesInjectedConversationEngines(t *testing.T) {
 		},
 		CreatedAt: now,
 	}
-	conversation := coordinator.conversationContext(context.Background(), envelope, agent, "run_1", "task_1", nil, nil, nil, nil, "第二个问题呢？")
+	conversation := coordinator.conversationContext(context.Background(), envelope, agent, agentstrategy.DefaultContextStrategy(), "run_1", "task_1", nil, nil, nil, nil, "第二个问题呢？")
 	if conversation == nil {
 		t.Fatal("expected conversation context")
 	}
@@ -337,7 +338,7 @@ func TestCoordinatorHonorsConversationRetrievalDisabled(t *testing.T) {
 		},
 		CreatedAt: now,
 	}
-	conversation := coordinator.conversationContext(context.Background(), envelope, agent, "run_1", "task_1", nil, nil, nil, nil, "old context?")
+	conversation := coordinator.conversationContext(context.Background(), envelope, agent, agentstrategy.DefaultContextStrategy(), "run_1", "task_1", nil, nil, nil, nil, "old context?")
 	if conversation == nil {
 		t.Fatal("expected conversation context")
 	}
@@ -363,7 +364,7 @@ func TestCoordinatorSkipsDirectConversationByDefault(t *testing.T) {
 		},
 		CreatedAt: now,
 	}
-	if conversation := coordinator.conversationContext(context.Background(), envelope, agent, "run_1", "task_1", nil, nil, nil, nil, "hello"); conversation != nil {
+	if conversation := coordinator.conversationContext(context.Background(), envelope, agent, agentstrategy.DefaultContextStrategy(), "run_1", "task_1", nil, nil, nil, nil, "hello"); conversation != nil {
 		t.Fatalf("ordinary API run should not build direct conversation by default, got %#v", conversation)
 	}
 }
@@ -385,15 +386,58 @@ func TestCoordinatorAllowsDirectConversationWhenEnabled(t *testing.T) {
 		},
 		CreatedAt: now,
 	}
-	conversation := coordinator.conversationContext(context.Background(), envelope, agent, "run_1", "task_1", nil, nil, nil, nil, "hello")
+	conversation := coordinator.conversationContext(context.Background(), envelope, agent, agentstrategy.DefaultContextStrategy(), "run_1", "task_1", nil, nil, nil, nil, "hello")
 	if conversation == nil || conversation.Kind != contextconversation.KindDirect || conversation.CurrentMessage.SpeakerID != "user_1" {
 		t.Fatalf("expected opt-in direct conversation context, got %#v", conversation)
 	}
 }
 
-func TestCoordinatorLimitsRetrievedContext(t *testing.T) {
+func TestCoordinatorHonorsContextStrategyRecentLimit(t *testing.T) {
 	agent := loader.TestAgentDefinition()
 	now := time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC)
+	coordinator := Coordinator{Now: func() time.Time { return now }}
+	envelope := contracts.AgentEnvelope{
+		EnvelopeID: "env_recent_limit",
+		TraceID:    "trace_recent_limit",
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Context: contracts.RuntimeContext{
+			TenantID: "tenant_1",
+			UserID:   "user_1",
+			Conversation: &contracts.RuntimeConversation{
+				Provider:       "test",
+				Kind:           contextconversation.KindGroup,
+				ConversationID: "conv_1",
+				ThreadID:       "thread_1",
+				CurrentMessage: &contracts.RuntimeMessage{MessageID: "msg_now", SpeakerID: "user_1", SpeakerType: "user"},
+				RecentMessages: []contracts.ConversationMessage{{
+					MessageID: "msg_old",
+					Text:      "old",
+					CreatedAt: now.Add(-2 * time.Minute),
+				}, {
+					MessageID: "msg_new",
+					Text:      "new",
+					CreatedAt: now.Add(-time.Minute),
+				}},
+			},
+		},
+		CreatedAt: now,
+	}
+	strategy := agentstrategy.DefaultContextStrategy()
+	strategy.RecentMessageLimit = contracts.IntPtr(1)
+	conversation := coordinator.conversationContext(context.Background(), envelope, agent, strategy, "run_1", "task_1", nil, nil, nil, nil, "hello")
+	if conversation == nil || len(conversation.RecentMessages) != 1 || conversation.RecentMessages[0].MessageID != "msg_new" {
+		t.Fatalf("expected recent messages to be limited by context strategy, got %#v", conversation)
+	}
+}
+
+func TestCoordinatorHonorsContextStrategyDisabledConversationSources(t *testing.T) {
+	agent := loader.TestAgentDefinition()
+	now := time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC)
+	retriever := &stubContextRetriever{result: []contracts.RetrievedContext{{
+		SourceType: "memory",
+		SourceID:   "mem_1",
+		Summary:    "should not be retrieved",
+	}}}
 	coordinator := Coordinator{
 		AddressingJudge: &stubAddressingJudge{result: contracts.AddressingAssessment{
 			AddressedToAgent: true,
@@ -409,18 +453,74 @@ func TestCoordinatorLimitsRetrievedContext(t *testing.T) {
 			Queries:         []contracts.ContextRetrievalQuery{{Query: "old context", MaxResults: 5}},
 			SuggestedAction: contextconversation.ActionRetrieve,
 		}},
-		ContextRetriever: &stubContextRetriever{result: []contracts.RetrievedContext{{
-			SourceType: "memory",
-			SourceID:   "mem_1",
-			Summary:    "first",
-		}, {
-			SourceType: "memory",
-			SourceID:   "mem_2",
-			Summary:    "second",
-		}}},
-		ConversationMaxRetrieved: 1,
-		Now:                      func() time.Time { return now },
+		ContextRetriever: retriever,
+		Now:              func() time.Time { return now },
 	}
+	envelope := contracts.AgentEnvelope{
+		EnvelopeID: "env_sources",
+		TraceID:    "trace_sources",
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Context: contracts.RuntimeContext{
+			TenantID: "tenant_1",
+			UserID:   "user_1",
+			Conversation: &contracts.RuntimeConversation{
+				Provider:       "test",
+				Kind:           contextconversation.KindGroup,
+				ConversationID: "conv_1",
+				ThreadID:       "thread_1",
+				CurrentMessage: &contracts.RuntimeMessage{MessageID: "msg_now", SpeakerID: "user_1", SpeakerType: "user"},
+				RecentMessages: []contracts.ConversationMessage{{
+					MessageID: "msg_old",
+					Text:      "old",
+					CreatedAt: now.Add(-time.Minute),
+				}},
+			},
+		},
+		CreatedAt: now,
+	}
+	strategy := agentstrategy.DefaultContextStrategy()
+	strategy.EnabledSources = []string{contextSourceTaskHistory}
+	conversation := coordinator.conversationContext(context.Background(), envelope, agent, strategy, "run_1", "task_1", nil, nil, nil, nil, "old context?")
+	if conversation == nil {
+		t.Fatal("expected conversation context")
+	}
+	if len(conversation.RecentMessages) != 0 || len(conversation.Retrieved) != 0 || retriever.calls != 0 {
+		t.Fatalf("expected conversation recent and retrieval sources to be disabled, calls=%d conversation=%#v", retriever.calls, conversation)
+	}
+}
+
+func TestCoordinatorLimitsRetrievedContext(t *testing.T) {
+	agent := loader.TestAgentDefinition()
+	now := time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC)
+	retriever := &stubContextRetriever{result: []contracts.RetrievedContext{{
+		SourceType: "memory",
+		SourceID:   "mem_1",
+		Summary:    "first",
+	}, {
+		SourceType: "memory",
+		SourceID:   "mem_2",
+		Summary:    "second",
+	}}}
+	coordinator := Coordinator{
+		AddressingJudge: &stubAddressingJudge{result: contracts.AddressingAssessment{
+			AddressedToAgent: true,
+			Confidence:       0.91,
+			DecisionSource:   "test",
+			SuggestedAction:  contextconversation.ActionEnterMainAgent,
+		}},
+		SufficiencyJudge: &stubSufficiencyJudge{result: contracts.ContextSufficiencyAssessment{
+			Phase:           contextconversation.PhasePreDecision,
+			Sufficient:      false,
+			Confidence:      0.8,
+			RetrievalNeeded: true,
+			Queries:         []contracts.ContextRetrievalQuery{{Query: "old context", MaxResults: 5}},
+			SuggestedAction: contextconversation.ActionRetrieve,
+		}},
+		ContextRetriever: retriever,
+		Now: func() time.Time { return now },
+	}
+	strategy := agentstrategy.DefaultContextStrategy()
+	strategy.RetrievalMaxResults = contracts.IntPtr(1)
 	envelope := contracts.AgentEnvelope{
 		EnvelopeID: "env_1",
 		TraceID:    "trace_1",
@@ -442,9 +542,12 @@ func TestCoordinatorLimitsRetrievedContext(t *testing.T) {
 		},
 		CreatedAt: now,
 	}
-	conversation := coordinator.conversationContext(context.Background(), envelope, agent, "run_1", "task_1", nil, nil, nil, nil, "old context?")
+	conversation := coordinator.conversationContext(context.Background(), envelope, agent, strategy, "run_1", "task_1", nil, nil, nil, nil, "old context?")
 	if conversation == nil || len(conversation.Retrieved) != 1 || conversation.Retrieved[0].SourceID != "mem_1" {
 		t.Fatalf("expected retrieved context to be limited to first item, got %#v", conversation)
+	}
+	if len(retriever.queries) != 1 || retriever.queries[0].MaxResults != 1 {
+		t.Fatalf("expected retrieval query max results to come from context strategy, got %#v", retriever.queries)
 	}
 }
 
@@ -524,11 +627,13 @@ func (s *stubSufficiencyJudge) JudgeSufficiency(context.Context, contracts.Conve
 }
 
 type stubContextRetriever struct {
-	result []contracts.RetrievedContext
-	calls  int
+	result  []contracts.RetrievedContext
+	queries []contracts.ContextRetrievalQuery
+	calls   int
 }
 
-func (s *stubContextRetriever) Retrieve(context.Context, []contracts.ContextRetrievalQuery, contextconversation.RetrievalInput) ([]contracts.RetrievedContext, error) {
+func (s *stubContextRetriever) Retrieve(_ context.Context, queries []contracts.ContextRetrievalQuery, _ contextconversation.RetrievalInput) ([]contracts.RetrievedContext, error) {
 	s.calls++
+	s.queries = append([]contracts.ContextRetrievalQuery(nil), queries...)
 	return s.result, nil
 }

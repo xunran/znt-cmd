@@ -15,13 +15,52 @@ import (
 )
 
 type AgentPackageSource struct {
-	AgentsMD      string                           `json:"agents_md"`
-	Prompt        string                           `json:"prompt"`
-	ToolBindings  contracts.AgentToolsConfig       `json:"tool_bindings"`
-	Collaborators []contracts.AgentCollaboratorRef `json:"collaborators,omitempty"`
-	Exports       contracts.AgentExports           `json:"exports,omitempty"`
-	RuntimeHooks  contracts.AgentRuntimeHooks      `json:"runtime_hooks,omitempty"`
-	Metadata      map[string]any                   `json:"metadata,omitempty"`
+	SourceKind     contracts.AgentSourceKind      `json:"source_kind,omitempty"`
+	ProviderID      string                         `json:"provider_id,omitempty"`
+	ManifestVersion string                         `json:"manifest_version,omitempty"`
+	AgentsMD        string                         `json:"agents_md"`
+	Prompt          string                         `json:"prompt"`
+	Strategies      contracts.AgentStrategies      `json:"strategies,omitempty"`
+	ToolBindings    contracts.AgentToolsConfig     `json:"tool_bindings"`
+	Skills          []contracts.SkillDefinitionRef `json:"skills,omitempty"`
+	SkillDefinitions []contracts.SkillDefinition   `json:"skill_definitions,omitempty"`
+	Collaborators   []contracts.AgentCollaboratorRef `json:"collaborators,omitempty"`
+	Exports         contracts.AgentExports         `json:"exports,omitempty"`
+	RuntimeHooks    contracts.AgentRuntimeHooks    `json:"runtime_hooks,omitempty"`
+	Metadata        map[string]any                 `json:"metadata,omitempty"`
+}
+
+type AgentPluginSource struct {
+	ProviderID      string                           `json:"provider_id"`
+	ManifestVersion string                           `json:"manifest_version,omitempty"`
+	AgentsMD        string                           `json:"agents_md,omitempty"`
+	Prompt          string                           `json:"prompt,omitempty"`
+	Strategies      contracts.AgentStrategies        `json:"strategies,omitempty"`
+	ToolBindings    contracts.AgentToolsConfig       `json:"tool_bindings,omitempty"`
+	Skills          []contracts.SkillDefinitionRef   `json:"skills,omitempty"`
+	SkillDefinitions []contracts.SkillDefinition     `json:"skill_definitions,omitempty"`
+	Collaborators   []contracts.AgentCollaboratorRef `json:"collaborators,omitempty"`
+	Exports         contracts.AgentExports           `json:"exports,omitempty"`
+	RuntimeHooks    contracts.AgentRuntimeHooks      `json:"runtime_hooks,omitempty"`
+	Metadata        map[string]any                   `json:"metadata,omitempty"`
+}
+
+func PackageSourceFromPlugin(plugin AgentPluginSource) AgentPackageSource {
+	return AgentPackageSource{
+		SourceKind:      contracts.AgentSourceKindPlugin,
+		ProviderID:       plugin.ProviderID,
+		ManifestVersion:  plugin.ManifestVersion,
+		AgentsMD:         plugin.AgentsMD,
+		Prompt:           plugin.Prompt,
+		Strategies:       plugin.Strategies,
+		ToolBindings:     plugin.ToolBindings,
+		Skills:           plugin.Skills,
+		SkillDefinitions: plugin.SkillDefinitions,
+		Collaborators:    plugin.Collaborators,
+		Exports:          plugin.Exports,
+		RuntimeHooks:     plugin.RuntimeHooks,
+		Metadata:         plugin.Metadata,
+	}
 }
 
 const (
@@ -475,51 +514,18 @@ func (s *Service) CreateDraft(ctx context.Context, tenantID contracts.TenantID, 
 	return draft, nil
 }
 
-func (s *Service) PatchPrompt(ctx context.Context, draftID string, prompt string, actorID string) (Draft, error) {
-	return s.patch(ctx, draftID, actorID, func(draft *Draft) {
-		draft.Source.Prompt = prompt
-	})
-}
-
-func (s *Service) PatchPromptForTenant(ctx context.Context, tenantID contracts.TenantID, draftID string, prompt string, actorID string) (Draft, error) {
+func (s *Service) PatchSourceForTenant(ctx context.Context, tenantID contracts.TenantID, draftID string, source AgentPackageSource, actorID string) (Draft, error) {
+	if err := ValidateSourceMetadata(source.Metadata); err != nil {
+		return Draft{}, err
+	}
 	return s.patchForTenant(ctx, tenantID, draftID, actorID, func(draft *Draft) {
-		draft.Source.Prompt = prompt
+		draft.Source = source
 	})
 }
 
-func (s *Service) PatchDeveloperPromptForTenant(ctx context.Context, tenantID contracts.TenantID, draftID string, developerPrompt string, actorID string) (Draft, error) {
+func (s *Service) PatchStrategiesForTenant(ctx context.Context, tenantID contracts.TenantID, draftID string, strategies contracts.AgentStrategies, actorID string) (Draft, error) {
 	return s.patchForTenant(ctx, tenantID, draftID, actorID, func(draft *Draft) {
-		setMetadataString(&draft.Source, "developer_prompt", developerPrompt)
-	})
-}
-
-func (s *Service) PatchSystemPromptForTenant(ctx context.Context, tenantID contracts.TenantID, draftID string, systemPrompt string, actorID string) (Draft, error) {
-	return s.patchForTenant(ctx, tenantID, draftID, actorID, func(draft *Draft) {
-		setMetadataString(&draft.Source, "system_prompt", systemPrompt)
-	})
-}
-
-func (s *Service) PatchAgentsMDForTenant(ctx context.Context, tenantID contracts.TenantID, draftID string, agentsMD string, actorID string) (Draft, error) {
-	return s.patchForTenant(ctx, tenantID, draftID, actorID, func(draft *Draft) {
-		draft.Source.AgentsMD = agentsMD
-	})
-}
-
-func (s *Service) UpdateToolBinding(ctx context.Context, draftID string, tools contracts.AgentToolsConfig, actorID string) (Draft, error) {
-	return s.patch(ctx, draftID, actorID, func(draft *Draft) {
-		draft.Source.ToolBindings = tools
-	})
-}
-
-func (s *Service) UpdateToolBindingForTenant(ctx context.Context, tenantID contracts.TenantID, draftID string, tools contracts.AgentToolsConfig, actorID string) (Draft, error) {
-	return s.patchForTenant(ctx, tenantID, draftID, actorID, func(draft *Draft) {
-		draft.Source.ToolBindings = tools
-	})
-}
-
-func (s *Service) PatchRuntimeHooksForTenant(ctx context.Context, tenantID contracts.TenantID, draftID string, runtimeHooks contracts.AgentRuntimeHooks, actorID string) (Draft, error) {
-	return s.patchForTenant(ctx, tenantID, draftID, actorID, func(draft *Draft) {
-		draft.Source.RuntimeHooks = runtimeHooks
+		draft.Source.Strategies = strategies
 	})
 }
 
@@ -594,11 +600,11 @@ func (s *Service) UpsertSkillForTenant(ctx context.Context, tenantID contracts.T
 		return Draft{}, err
 	}
 	return s.patchForTenant(ctx, tenantID, draftID, actorID, func(draft *Draft) {
-		definitions := skillDefinitionsFromMetadata(draft.Source.Metadata)
-		replacement := skillMetadataRow(skill)
+		definitions := append([]contracts.SkillDefinition(nil), draft.Source.SkillDefinitions...)
+		replacement := skillDefinitionFromInput(skill)
 		replaced := false
-		for i, row := range definitions {
-			if rowString(row, "skill_id") == skill.SkillID && rowString(row, "version") == skill.Version {
+		for i, current := range definitions {
+			if current.Card.SkillID == skill.SkillID && current.Card.Version == skill.Version {
 				definitions[i] = replacement
 				replaced = true
 				break
@@ -607,7 +613,8 @@ func (s *Service) UpsertSkillForTenant(ctx context.Context, tenantID contracts.T
 		if !replaced {
 			definitions = append(definitions, replacement)
 		}
-		setSkillDefinitions(&draft.Source, definitions)
+		draft.Source.SkillDefinitions = definitions
+		draft.Source.Skills = upsertSkillRef(draft.Source.Skills, contracts.SkillDefinitionRef{SkillID: skill.SkillID, Version: skill.Version})
 	})
 }
 
@@ -616,15 +623,15 @@ func (s *Service) RemoveSkillForTenant(ctx context.Context, tenantID contracts.T
 		return Draft{}, fmt.Errorf("skill_id is required")
 	}
 	return s.patchForTenant(ctx, tenantID, draftID, actorID, func(draft *Draft) {
-		definitions := skillDefinitionsFromMetadata(draft.Source.Metadata)
-		next := make([]map[string]any, 0, len(definitions))
-		for _, row := range definitions {
-			if rowString(row, "skill_id") == skillID && (version == "" || rowString(row, "version") == version) {
+		next := make([]contracts.SkillDefinition, 0, len(draft.Source.SkillDefinitions))
+		for _, current := range draft.Source.SkillDefinitions {
+			if current.Card.SkillID == skillID && (version == "" || current.Card.Version == version) {
 				continue
 			}
-			next = append(next, row)
+			next = append(next, current)
 		}
-		setSkillDefinitions(&draft.Source, next)
+		draft.Source.SkillDefinitions = next
+		draft.Source.Skills = removeSkillRef(draft.Source.Skills, skillID, version)
 	})
 }
 
@@ -844,6 +851,10 @@ func (s *Service) PublishDraft(ctx context.Context, draftID string, actorID stri
 	compiled.TenantID = draft.TenantID
 	packageVersionID := contracts.PackageVersionID(idgen.New("pkgver"))
 	compiled.PackageVersionID = packageVersionID
+	strategyHash, err := hash.StableJSON(compiled.Strategies)
+	if err != nil {
+		return contracts.AgentPackageVersion{}, err
+	}
 	compiledHash, err := hash.StableJSON(compiled)
 	if err != nil {
 		return contracts.AgentPackageVersion{}, err
@@ -857,6 +868,11 @@ func (s *Service) PublishDraft(ctx context.Context, draftID string, actorID stri
 		Status:           contracts.ReleasePublished,
 		SourceHash:       sourceHash,
 		CompiledHash:     compiledHash,
+		StrategyHash:     strategyHash,
+		SourceKind:       compiled.SourceKind,
+		SourceProviderID: compiled.SourceProviderID,
+		ManifestVersion:  compiled.ManifestVersion,
+		ManifestHash:     compiled.ManifestHash,
 		CreatedBy:        draft.CreatedBy,
 		CreatedAt:        draft.CreatedAt,
 		PublishedAt:      &now,
@@ -1570,29 +1586,6 @@ func (s *Service) patchForTenant(ctx context.Context, tenantID contracts.TenantI
 	return draft, nil
 }
 
-func skillDefinitionsFromMetadata(metadata map[string]any) []map[string]any {
-	if metadata == nil {
-		return nil
-	}
-	raw, ok := metadata["skill_definitions"].([]any)
-	if !ok {
-		raw, _ = metadata["skills"].([]any)
-	}
-	out := make([]map[string]any, 0, len(raw))
-	for _, item := range raw {
-		row, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		copied := map[string]any{}
-		for key, value := range row {
-			copied[key] = value
-		}
-		out = append(out, copied)
-	}
-	return out
-}
-
 func upsertCollaborator(collaborators []contracts.AgentCollaboratorRef, collaborator contracts.AgentCollaboratorRef) []contracts.AgentCollaboratorRef {
 	out := make([]contracts.AgentCollaboratorRef, 0, len(collaborators)+1)
 	replaced := false
@@ -1627,92 +1620,86 @@ func upsertExportedTool(tools []contracts.AgentExportedTool, tool contracts.Agen
 	return out
 }
 
-func setSkillDefinitions(source *AgentPackageSource, definitions []map[string]any) {
-	if source.Metadata == nil {
-		source.Metadata = map[string]any{}
-	}
-	out := make([]any, 0, len(definitions))
-	for _, row := range definitions {
-		out = append(out, row)
-	}
-	source.Metadata["skill_definitions"] = out
-	delete(source.Metadata, "skills")
-}
-
-func setMetadataString(source *AgentPackageSource, key string, value string) {
-	if source.Metadata == nil {
-		source.Metadata = map[string]any{}
-	}
-	source.Metadata[key] = value
-}
-
-func skillMetadataRow(skill SkillDraftInput) map[string]any {
-	row := map[string]any{
-		"skill_id":   skill.SkillID,
-		"version":    skill.Version,
-		"risk_level": string(skill.RiskLevel),
-	}
-	if skill.Name != "" {
-		row["name"] = skill.Name
-	}
-	if skill.Description != "" {
-		row["description"] = skill.Description
-	}
-	if skill.Instruction != "" {
-		row["instruction"] = skill.Instruction
-	}
-	if len(skill.Tags) > 0 {
-		row["tags"] = stringsAsAny(skill.Tags)
-	}
-	if len(skill.WhenToUse) > 0 {
-		row["when_to_use"] = stringsAsAny(skill.WhenToUse)
-	}
-	if len(skill.OutputRequirements) > 0 {
-		row["output_requirements"] = stringsAsAny(skill.OutputRequirements)
-	}
-	if len(skill.Constraints) > 0 {
-		row["constraints"] = stringsAsAny(skill.Constraints)
-	}
-	if len(skill.Resources) > 0 {
-		resources := make([]any, 0, len(skill.Resources))
-		for _, resource := range skill.Resources {
-			resources = append(resources, map[string]any{
-				"resource_id": resource.ResourceID,
-				"type":        resource.Type,
-				"uri":         resource.URI,
-				"load_policy": resource.LoadPolicy,
-			})
+func upsertSkillRef(refs []contracts.SkillDefinitionRef, ref contracts.SkillDefinitionRef) []contracts.SkillDefinitionRef {
+	out := make([]contracts.SkillDefinitionRef, 0, len(refs)+1)
+	replaced := false
+	for _, current := range refs {
+		if current.SkillID == ref.SkillID {
+			out = append(out, ref)
+			replaced = true
+			continue
 		}
-		row["resources"] = resources
+		out = append(out, current)
 	}
-	if len(skill.RecommendedTools) > 0 {
-		row["recommended_tools"] = stringsAsAny(skill.RecommendedTools)
+	if !replaced {
+		out = append(out, ref)
 	}
-	if len(skill.AllowedTools) > 0 {
-		row["allowed_tools"] = stringsAsAny(skill.AllowedTools)
-	}
-	if len(skill.RecommendedMemoryReads) > 0 {
-		row["recommended_memory_reads"] = stringsAsAny(skill.RecommendedMemoryReads)
-	}
-	if len(skill.RecommendedMemoryWrites) > 0 {
-		row["recommended_memory_writes"] = stringsAsAny(skill.RecommendedMemoryWrites)
-	}
-	if len(skill.RecommendedHandoffs) > 0 {
-		row["recommended_handoffs"] = stringsAsAny(skill.RecommendedHandoffs)
-	}
-	if len(skill.CompletionCriteria) > 0 {
-		row["completion_criteria"] = stringsAsAny(skill.CompletionCriteria)
-	}
-	if len(skill.OutputSchema) > 0 {
-		row["output_schema"] = skill.OutputSchema
-	}
-	return row
+	return out
 }
 
-func stringsAsAny(values []string) []any {
-	out := make([]any, 0, len(values))
-	for _, value := range values {
-		out = append(out, value)
+func removeSkillRef(refs []contracts.SkillDefinitionRef, skillID string, version string) []contracts.SkillDefinitionRef {
+	out := make([]contracts.SkillDefinitionRef, 0, len(refs))
+	for _, current := range refs {
+		if current.SkillID == skillID && (version == "" || current.Version == version) {
+			continue
+		}
+		out = append(out, current)
+	}
+	return out
+}
+
+func skillDefinitionFromInput(skill SkillDraftInput) contracts.SkillDefinition {
+	name := skill.Name
+	if skill.Name != "" {
+		name = skill.Name
+	}
+	if name == "" {
+		name = skill.SkillID
+	}
+	description := skill.Description
+	if description == "" {
+		description = name
+	}
+	riskLevel := skill.RiskLevel
+	if riskLevel == "" {
+		riskLevel = contracts.RiskLow
+	}
+	resources := append([]contracts.SkillResourceRef(nil), skill.Resources...)
+	return contracts.SkillDefinition{
+		Card: contracts.SkillCard{
+			SkillID:      skill.SkillID,
+			Version:      skill.Version,
+			Name:         name,
+			Description:  description,
+			Tags:         append([]string(nil), skill.Tags...),
+			WhenToUse:    append([]string(nil), skill.WhenToUse...),
+			RiskLevel:    riskLevel,
+			ResourceRefs: skillResourceIDs(resources),
+		},
+		Instruction: contracts.SkillInstruction{
+			SkillID:            skill.SkillID,
+			Content:            skill.Instruction,
+			OutputRequirements: append([]string(nil), skill.OutputRequirements...),
+			Constraints:        append([]string(nil), skill.Constraints...),
+		},
+		Resources:               resources,
+		RecommendedTools:        append([]string(nil), skill.RecommendedTools...),
+		AllowedTools:            append([]string(nil), skill.AllowedTools...),
+		RecommendedMemoryReads:  append([]string(nil), skill.RecommendedMemoryReads...),
+		RecommendedMemoryWrites: append([]string(nil), skill.RecommendedMemoryWrites...),
+		RecommendedHandoffs:     append([]string(nil), skill.RecommendedHandoffs...),
+		CompletionCriteria:      append([]string(nil), skill.CompletionCriteria...),
+		OutputSchema:            cloneAnyMap(skill.OutputSchema),
+	}
+}
+
+func cloneAnyMap(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	out := make(map[string]any, len(value))
+	for key, item := range value {
+		out[key] = item
 	}
 	return out
 }
@@ -1731,11 +1718,6 @@ func cleanScope(values []string) []string {
 		out = append(out, value)
 	}
 	return out
-}
-
-func rowString(row map[string]any, key string) string {
-	value, _ := row[key].(string)
-	return value
 }
 
 func clonePatch(patch map[string]any) map[string]any {

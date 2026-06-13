@@ -682,22 +682,11 @@ function Invoke-ServerPromptPreview {
         agent_id = $package.AgentID
         version = $package.Version
         prompt = $package.Prompt
+        agents_md = $package.AgentsMD
         tool_bindings = $package.ToolBindings
         metadata = $package.Metadata
     }
     $draftID = $draft.draft_id
-    Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.draft.patch_system_prompt" -Roles "optimizer" -Payload @{
-        draft_id = $draftID
-        system_prompt = $package.System
-    } | Out-Null
-    Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.draft.patch_developer_prompt" -Roles "optimizer" -Payload @{
-        draft_id = $draftID
-        developer_prompt = $package.Developer
-    } | Out-Null
-    Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.draft.patch_agents_md" -Roles "optimizer" -Payload @{
-        draft_id = $draftID
-        agents_md = $package.AgentsMD
-    } | Out-Null
     return Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "prompt.preview" -Roles "optimizer" -Payload @{
         draft_id = $draftID
         input = $Input
@@ -1225,22 +1214,11 @@ function Publish-OriginCoordinatorPackage {
         agent_id = $AgentID
         version = $Version
         prompt = $prompt
+        agents_md = $agentsMD
         tool_bindings = $toolBindings
         metadata = $metadata
     }
     $draftID = $draft.draft_id
-    Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.draft.patch_system_prompt" -Roles "optimizer" -Payload @{
-        draft_id = $draftID
-        system_prompt = $systemPrompt
-    } | Out-Null
-    Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.draft.patch_developer_prompt" -Roles "optimizer" -Payload @{
-        draft_id = $draftID
-        developer_prompt = $developerPrompt
-    } | Out-Null
-    Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.draft.patch_agents_md" -Roles "optimizer" -Payload @{
-        draft_id = $draftID
-        agents_md = $agentsMD
-    } | Out-Null
     Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.draft.validate" -Roles "optimizer" -Payload @{ draft_id = $draftID } | Out-Null
     $release = Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.publish" -Roles "optimizer" -Payload @{ draft_id = $draftID }
     return [pscustomobject]@{

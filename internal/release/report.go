@@ -141,10 +141,14 @@ func capabilityGates(path string) []Gate {
 	if !ok {
 		return []Gate{
 			{Name: "runtime.policy_version_pinning", Status: "fail", Details: "e2e matrix not found"},
-			{Name: "agent_package.skill_draft", Status: "fail", Details: "e2e matrix not found"},
+			{Name: "agent_package.strategy_draft", Status: "fail", Details: "e2e matrix not found"},
+			{Name: "prompt.preview_hook_effects", Status: "fail", Details: "e2e matrix not found"},
 			{Name: "management.approval_flow", Status: "fail", Details: "e2e matrix not found"},
 			{Name: "release.canary_hits", Status: "fail", Details: "e2e matrix not found"},
 			{Name: "eval.result_evidence", Status: "fail", Details: "e2e matrix not found"},
+			{Name: "eval.strategy_assertions", Status: "fail", Details: "e2e matrix not found"},
+			{Name: "context.compression_strategy", Status: "fail", Details: "e2e matrix not found"},
+			{Name: "run.diagnostics_strategy_limits", Status: "fail", Details: "e2e matrix not found"},
 			{Name: "execution.credential_data_boundary", Status: "fail", Details: "e2e matrix not found"},
 			{Name: "model.streaming", Status: "fail", Details: "e2e matrix not found"},
 			{Name: "agent_package.proposal_flow", Status: "fail", Details: "e2e matrix not found"},
@@ -156,14 +160,18 @@ func capabilityGates(path string) []Gate {
 		tokens []string
 	}{
 		{"runtime.policy_version_pinning", []string{"TestCoordinatorPinsPolicyVersionAcrossRunSteps", "policy_version_id"}},
-		{"agent_package.skill_draft", []string{"TestDraftPatchAgentsMDAndSkillLifecycle", "patch_agents_md"}},
+		{"agent_package.strategy_draft", []string{"TestPackageDraftPatchStrategiesAffectsPromptPreview", "agent.package.draft.patch_strategies"}},
+		{"prompt.preview_hook_effects", []string{"TestRuntimeHooksMutatePromptPreview", "hook_effects"}},
 		{"management.approval_flow", []string{"TestPolicyStableRequiresConcreteApprovalRequest", "approval_required"}},
-		{"release.canary_hits", []string{"TestPackageCanaryRoutesDefaultTrafficAndRecordsHit", "canary.routed"}},
+		{"release.canary_hits", []string{"TestPackageCanaryRoutesDefaultTrafficAndRecordsHit", "canary.routed", "strategy_hash", "manifest_hash"}},
 		{"eval.result_evidence", []string{"TestRunnerToolAssertions", "eval.case.completed", "TestRunnerRecordsFailedCaseTrace", "eval.case.failed", "TestEvalSuiteRunRecordsSummaryTrace", "eval.summary.created"}},
+		{"eval.strategy_assertions", []string{"TestRunnerSupportsStrategyAssertions", "strategy_assertions"}},
+		{"context.compression_strategy", []string{"TestRunnerSupportsCompressionModeStrategyAssertions", "TestOpenAICompatibleClientUsesRequestBaseURL", "model_base_url"}},
+		{"run.diagnostics_strategy_limits", []string{"TestDiagnosticsSummaryClassifiesStrategyLimitFailures", "strategy_limit_reason"}},
 		{"execution.credential_data_boundary", []string{"TestLocalDomainRejectsCredentialScopeAndDataBoundary", "credential_scope"}},
 		{"model.streaming", []string{"TestStubModelClientStream", "model.delta", "decision.completed"}},
 		{"agent_package.proposal_flow", []string{"TestProposalLifecyclePublishesApprovedDraft", "agent.package.proposal"}},
-		{"openapi.final_alignment", []string{"openapi.clean-core.v1.json", "ModelStreamEvent"}},
+		{"openapi.final_alignment", []string{"openapi.clean-core.v1.json", "ModelStreamEvent", "hook_effects", "RunDiagnosticsResponse", "AgentPluginManifest", "additionalProperties=false"}},
 	}
 	gates := make([]Gate, 0, len(requirements))
 	lower := strings.ToLower(content)

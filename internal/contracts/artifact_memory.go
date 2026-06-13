@@ -8,6 +8,7 @@ type ArtifactRef struct {
 	URI        string     `json:"uri,omitempty"`
 	Summary    string     `json:"summary,omitempty"`
 	Hash       string     `json:"hash,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 type Artifact struct {
@@ -48,4 +49,5 @@ type MemoryEvent struct {
 type MemorySummary struct {
 	MemoryID MemoryID `json:"memory_id"`
 	Summary  string   `json:"summary"`
+	Scope    string   `json:"scope,omitempty"`
 }

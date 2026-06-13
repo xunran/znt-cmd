@@ -178,6 +178,44 @@ func TestStaticCandidateProviderUsesSkillToolGuidance(t *testing.T) {
 	}
 }
 
+func TestStaticCandidateProviderAppliesSkillStrategyBeforeToolGuidance(t *testing.T) {
+	agent := loader.TestAgentDefinition()
+	agent.Tools = contracts.AgentToolsConfig{}
+	agent.Skills = []contracts.SkillDefinitionRef{{SkillID: "pkg.customer", Version: "v1"}}
+	agent.Strategies.Skills.DisabledSkillIDs = []string{"pkg.customer"}
+	agent.SkillDefinitions = []contracts.SkillDefinition{{
+		Card: contracts.SkillCard{
+			SkillID:     "pkg.customer",
+			Version:     "v1",
+			Name:        "Customer summary",
+			Description: "Summarize customer records",
+			WhenToUse:   []string{"customer summary"},
+		},
+		Instruction:  contracts.SkillInstruction{SkillID: "pkg.customer", Content: "Use CRM context."},
+		AllowedTools: []string{"crm.lookup"},
+	}}
+	provider := StaticCandidateProvider{Cards: []contracts.ToolCard{
+		{ToolID: "crm.lookup", Name: "CRM lookup", Description: "Lookup customer records", RiskLevel: contracts.RiskLow, Visibility: contracts.ToolProtected, Version: "v1"},
+		{ToolID: "web.search", Name: "Web search", Description: "Search customer records on the web", RiskLevel: contracts.RiskLow, Visibility: contracts.ToolProtected, Version: "v1"},
+	}}
+	set, err := provider.Candidates(context.Background(), agent, contracts.PolicySet{}, "search customer records on the web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Skills) != 0 || len(set.SkillInstructions) != 0 {
+		t.Fatalf("expected disabled skill to be removed before instructions, got skills=%#v instructions=%#v", set.Skills, set.SkillInstructions)
+	}
+	foundWeb := false
+	for _, tool := range set.Tools {
+		if tool.ToolID == "web.search" {
+			foundWeb = true
+		}
+	}
+	if !foundWeb {
+		t.Fatalf("expected disabled skill allowed-tools guidance not to filter web search, got %#v", set.Tools)
+	}
+}
+
 func TestStaticCandidateProviderMatchesSkillInstructionVersion(t *testing.T) {
 	agent := loader.TestAgentDefinition()
 	agent.Skills = []contracts.SkillDefinitionRef{{SkillID: "pkg.report", Version: "v1"}}

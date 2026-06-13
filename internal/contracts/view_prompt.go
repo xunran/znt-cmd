@@ -46,6 +46,8 @@ type WorkView struct {
 	ArtifactRefs        []ArtifactRef       `json:"artifact_refs,omitempty"`
 	ToolResultSummaries []ToolResultSummary `json:"tool_result_summaries,omitempty"`
 
+	ContextAssemblyReport *ContextAssemblyReport `json:"context_assembly_report,omitempty"`
+
 	CandidateCapabilities      []CapabilityCard   `json:"candidate_capabilities,omitempty"`
 	CandidateSkills            []SkillCard        `json:"candidate_skills,omitempty"`
 	CandidateSkillInstructions []SkillInstruction `json:"candidate_skill_instructions,omitempty"`
@@ -140,7 +142,7 @@ type RetrievedContext struct {
 
 	Relevance    float64 `json:"relevance,omitempty"`
 	RecencyScore float64 `json:"recency_score,omitempty"`
-	TrustLevel   string  `json:"trust_level,omitempty"` // untrusted_user_text, system_record, tool_result
+	TrustLevel   string  `json:"trust_level,omitempty"` // untrusted_user_text, untrusted_external_context, system_record, tool_result
 	Visibility   string  `json:"visibility,omitempty"`
 }
 
@@ -160,6 +162,8 @@ type PromptBundle struct {
 	OutputSchema map[string]any `json:"output_schema,omitempty"`
 
 	Constraints []string `json:"constraints,omitempty"`
+
+	ContextAssemblyReport *ContextAssemblyReport `json:"context_assembly_report,omitempty"`
 
 	Hash string `json:"hash"`
 

@@ -41,6 +41,7 @@ func TestRepositoryTypesImplementRuntimeInterfaces(t *testing.T) {
 	var _ trace.Recorder = (*TraceRecorder)(nil)
 	var _ audit.Logger = (*AuditLogger)(nil)
 	var _ artifact.Store = (*ArtifactStore)(nil)
+	var _ artifact.MemoryStore = (*MemoryStore)(nil)
 	var _ artifact.ContextPackageStore = (*ContextPackageStore)(nil)
 	var _ taskhandoff.Repository = (*HandoffRepository)(nil)
 	var _ processgovernance.Store = (*GovernanceProcessStore)(nil)

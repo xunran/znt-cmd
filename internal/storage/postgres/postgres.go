@@ -24,6 +24,7 @@ import (
 	"znt/internal/storage/migration"
 	storagerepo "znt/internal/storage/repository"
 	toolcatalog "znt/internal/tool/catalog"
+	"znt/pkg/hash"
 	"znt/pkg/idgen"
 )
 
@@ -577,11 +578,34 @@ func (s *TaskStore) Append(ctx context.Context, event contracts.TaskEvent) error
 }
 
 func (s *TaskStore) ListByTask(ctx context.Context, taskID contracts.TaskID) ([]contracts.TaskEvent, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return s.listByTask(ctx, taskID, 0)
+}
+
+func (s *TaskStore) ListByTaskLimit(ctx context.Context, taskID contracts.TaskID, limit int) ([]contracts.TaskEvent, error) {
+	return s.listByTask(ctx, taskID, limit)
+}
+
+func (s *TaskStore) listByTask(ctx context.Context, taskID contracts.TaskID, limit int) ([]contracts.TaskEvent, error) {
+	query := `
 SELECT event_id, task_id, tenant_id, type, actor_id, actor_type, payload, run_id, step_id, created_at
 FROM task_events
 WHERE task_id = $1
-ORDER BY created_at ASC, event_id ASC`, taskID)
+ORDER BY created_at ASC, event_id ASC`
+	args := []any{taskID}
+	if limit > 0 {
+		query = `
+SELECT event_id, task_id, tenant_id, type, actor_id, actor_type, payload, run_id, step_id, created_at
+FROM (
+  SELECT event_id, task_id, tenant_id, type, actor_id, actor_type, payload, run_id, step_id, created_at
+  FROM task_events
+  WHERE task_id = $1
+  ORDER BY created_at DESC, event_id DESC
+  LIMIT $2
+) limited_task_events
+ORDER BY created_at ASC, event_id ASC`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1230,9 +1254,29 @@ func (r *ToolRepository) ListCallsByRun(ctx context.Context, runID contracts.Age
 }
 
 func (r *ToolRepository) ListResultsByRun(ctx context.Context, runID contracts.AgentRunID) ([]contracts.ToolResult, error) {
-	rows, err := r.db.QueryContext(ctx, toolResultSelectSQL()+`
+	return r.listResultsByRun(ctx, runID, 0)
+}
+
+func (r *ToolRepository) ListResultsByRunLimit(ctx context.Context, runID contracts.AgentRunID, limit int) ([]contracts.ToolResult, error) {
+	return r.listResultsByRun(ctx, runID, limit)
+}
+
+func (r *ToolRepository) listResultsByRun(ctx context.Context, runID contracts.AgentRunID, limit int) ([]contracts.ToolResult, error) {
+	query := toolResultSelectSQL() + `
  WHERE tool_call_id IN (SELECT tool_call_id FROM tool_calls WHERE run_id=$1)
- ORDER BY completed_at ASC`, runID)
+ ORDER BY completed_at ASC`
+	args := []any{runID}
+	if limit > 0 {
+		query = `SELECT tool_result_id, tool_call_id, status, output_json, error_json, artifact_refs, started_at, completed_at
+FROM (` + toolResultSelectSQL() + `
+  WHERE tool_call_id IN (SELECT tool_call_id FROM tool_calls WHERE run_id=$1)
+  ORDER BY completed_at DESC, tool_result_id DESC
+  LIMIT $2
+) limited_tool_results
+ORDER BY completed_at ASC, tool_result_id ASC`
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1244,6 +1288,62 @@ func (r *ToolRepository) ListResultsByRun(ctx context.Context, runID contracts.A
 			return nil, err
 		}
 		out = append(out, result)
+	}
+	return out, rows.Err()
+}
+
+func (r *ToolRepository) ListArtifactRefsByRunLimit(ctx context.Context, runID contracts.AgentRunID, limit int) ([]contracts.ArtifactRef, error) {
+	queryPrefix := `
+WITH refs AS (
+  SELECT
+    ref.value AS ref_json,
+    ref.value->>'artifact_id' AS artifact_id,
+    tr.completed_at,
+    tr.tool_result_id,
+    ref.ordinality
+  FROM tool_results tr
+  JOIN tool_calls tc ON tr.tool_call_id = tc.tool_call_id
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(tr.artifact_refs, '[]'::jsonb)) WITH ORDINALITY AS ref(value, ordinality)
+  WHERE tc.run_id = $1 AND ref.value->>'artifact_id' <> ''
+),
+latest AS (
+  SELECT DISTINCT ON (artifact_id) ref_json, completed_at, tool_result_id, ordinality
+  FROM refs
+  ORDER BY artifact_id, completed_at DESC, tool_result_id DESC, ordinality ASC
+)
+`
+	args := []any{runID}
+	query := queryPrefix + `SELECT ref_json
+FROM latest
+ORDER BY completed_at ASC, tool_result_id ASC, ordinality ASC`
+	if limit > 0 {
+		query = queryPrefix + `, selected AS (
+  SELECT ref_json, completed_at, tool_result_id, ordinality
+  FROM latest
+  ORDER BY completed_at DESC, tool_result_id DESC, ordinality DESC
+  LIMIT $2
+)
+SELECT ref_json
+FROM selected
+ORDER BY completed_at ASC, tool_result_id ASC, ordinality ASC`
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]contracts.ArtifactRef, 0)
+	for rows.Next() {
+		var refJSON []byte
+		if err := rows.Scan(&refJSON); err != nil {
+			return nil, err
+		}
+		var ref contracts.ArtifactRef
+		if err := json.Unmarshal(refJSON, &ref); err != nil {
+			return nil, err
+		}
+		out = append(out, ref)
 	}
 	return out, rows.Err()
 }
@@ -1266,9 +1366,29 @@ func (r *ToolRepository) ListCallsByTask(ctx context.Context, tenantID contracts
 }
 
 func (r *ToolRepository) ListResultsByTask(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID) ([]contracts.ToolResult, error) {
-	rows, err := r.db.QueryContext(ctx, toolResultSelectSQL()+`
+	return r.listResultsByTask(ctx, tenantID, taskID, 0)
+}
+
+func (r *ToolRepository) ListResultsByTaskLimit(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID, limit int) ([]contracts.ToolResult, error) {
+	return r.listResultsByTask(ctx, tenantID, taskID, limit)
+}
+
+func (r *ToolRepository) listResultsByTask(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID, limit int) ([]contracts.ToolResult, error) {
+	query := toolResultSelectSQL() + `
  WHERE tool_call_id IN (SELECT tool_call_id FROM tool_calls WHERE tenant_id=$1 AND task_id=$2)
- ORDER BY completed_at ASC`, tenantID, taskID)
+ ORDER BY completed_at ASC`
+	args := []any{tenantID, taskID}
+	if limit > 0 {
+		query = `SELECT tool_result_id, tool_call_id, status, output_json, error_json, artifact_refs, started_at, completed_at
+FROM (` + toolResultSelectSQL() + `
+  WHERE tool_call_id IN (SELECT tool_call_id FROM tool_calls WHERE tenant_id=$1 AND task_id=$2)
+  ORDER BY completed_at DESC, tool_result_id DESC
+  LIMIT $3
+) limited_tool_results
+ORDER BY completed_at ASC, tool_result_id ASC`
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2720,6 +2840,10 @@ FROM memory_events WHERE tenant_id=$1 AND memory_id=$2`, tenantID, memoryID))
 }
 
 func (s *MemoryStore) ListMemory(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, userID contracts.UserID) ([]contracts.MemorySummary, error) {
+	return s.ListMemoryLimit(ctx, tenantID, agentID, userID, nil, 0)
+}
+
+func (s *MemoryStore) ListMemoryLimit(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, userID contracts.UserID, scopes []string, limit int) ([]contracts.MemorySummary, error) {
 	where := []string{"tenant_id=$1"}
 	args := []any{tenantID}
 	if agentID != "" {
@@ -2730,8 +2854,33 @@ func (s *MemoryStore) ListMemory(ctx context.Context, tenantID contracts.TenantI
 		args = append(args, userID)
 		where = append(where, fmt.Sprintf("user_id=$%d", len(args)))
 	}
-	rows, err := s.db.QueryContext(ctx, `
-SELECT memory_id, summary FROM memory_events WHERE `+strings.Join(where, " AND ")+` ORDER BY created_at ASC`, args...)
+	if normalizedScopes := normalizedMemoryScopes(scopes); len(normalizedScopes) > 0 {
+		scopeWhere := make([]string, 0, len(normalizedScopes))
+		for _, scope := range normalizedScopes {
+			args = append(args, scope)
+			scopeWhere = append(scopeWhere, fmt.Sprintf("scope=$%d", len(args)))
+		}
+		where = append(where, "("+strings.Join(scopeWhere, " OR ")+")")
+	}
+	query := `
+SELECT memory_id, summary, scope
+FROM memory_events
+WHERE ` + strings.Join(where, " AND ") + `
+ORDER BY created_at ASC, memory_id ASC`
+	if limit > 0 {
+		args = append(args, limit)
+		query = `
+SELECT memory_id, summary, scope
+FROM (
+  SELECT memory_id, summary, scope, created_at
+  FROM memory_events
+  WHERE ` + strings.Join(where, " AND ") + `
+  ORDER BY created_at DESC, memory_id DESC
+  LIMIT $` + fmt.Sprint(len(args)) + `
+) limited_memory_events
+ORDER BY created_at ASC, memory_id ASC`
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2740,12 +2889,31 @@ SELECT memory_id, summary FROM memory_events WHERE `+strings.Join(where, " AND "
 	for rows.Next() {
 		var memoryID string
 		var summary sql.NullString
-		if err := rows.Scan(&memoryID, &summary); err != nil {
+		var scope string
+		if err := rows.Scan(&memoryID, &summary, &scope); err != nil {
 			return nil, err
 		}
-		out = append(out, contracts.MemorySummary{MemoryID: contracts.MemoryID(memoryID), Summary: summary.String})
+		out = append(out, contracts.MemorySummary{MemoryID: contracts.MemoryID(memoryID), Summary: summary.String, Scope: scope})
 	}
 	return out, rows.Err()
+}
+
+func normalizedMemoryScopes(scopes []string) []string {
+	out := make([]string, 0, len(scopes))
+	seen := map[string]struct{}{}
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if scope == "" {
+			continue
+		}
+		if _, ok := seen[scope]; ok {
+			continue
+		}
+		seen[scope] = struct{}{}
+		out = append(out, scope)
+	}
+	sort.Strings(out)
+	return out
 }
 
 type EvalStore struct {
@@ -4992,7 +5160,7 @@ func (s *PackageStore) ListReleases(ctx context.Context) ([]contracts.AgentPacka
 }
 
 func packageReleaseSelectSQL() string {
-	return `SELECT package_version_id, tenant_id, agent_id, version, status, source_hash, compiled_hash, created_by, created_at, published_at, canary_percent, canary_scope_json FROM agent_package_versions`
+	return `SELECT package_version_id, tenant_id, agent_id, version, status, source_hash, compiled_hash, compiled_json, created_by, created_at, published_at, canary_percent, canary_scope_json FROM agent_package_versions`
 }
 
 func scanPackageRelease(row interface {
@@ -5000,13 +5168,23 @@ func scanPackageRelease(row interface {
 }) (contracts.AgentPackageVersion, error) {
 	var packageID, tenantID, agentID, version, status string
 	var published sql.NullTime
-	var scopeJSON []byte
+	var compiledJSON, scopeJSON []byte
 	release := contracts.AgentPackageVersion{}
-	if err := row.Scan(&packageID, &tenantID, &agentID, &version, &status, &release.SourceHash, &release.CompiledHash,
+	if err := row.Scan(&packageID, &tenantID, &agentID, &version, &status, &release.SourceHash, &release.CompiledHash, &compiledJSON,
 		&release.CreatedBy, &release.CreatedAt, &published, &release.CanaryPercent, &scopeJSON); err != nil {
 		return contracts.AgentPackageVersion{}, mapSQLError(err)
 	}
 	_ = scanJSON(scopeJSON, &release.CanaryScope)
+	var compiled contracts.AgentDefinition
+	if err := scanJSON(compiledJSON, &compiled); err == nil {
+		release.SourceKind = compiled.SourceKind
+		release.SourceProviderID = compiled.SourceProviderID
+		release.ManifestVersion = compiled.ManifestVersion
+		release.ManifestHash = compiled.ManifestHash
+		if strategyHash, err := hash.StableJSON(compiled.Strategies); err == nil {
+			release.StrategyHash = strategyHash
+		}
+	}
 	release.PackageVersionID = contracts.PackageVersionID(packageID)
 	release.TenantID = contracts.TenantID(tenantID)
 	release.AgentID = contracts.AgentID(agentID)

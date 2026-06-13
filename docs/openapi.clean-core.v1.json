@@ -603,12 +603,376 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/ReplayReport"
                 }
               }
             }
           },
           "403": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/traces/{trace_id}/diagnostics": {
+      "get": {
+        "summary": "Trace diagnostics",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "trace diagnostics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceDiagnosticsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/runs": {
+      "get": {
+        "summary": "List agent runs",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Inclusive run started_at lower bound. Accepts RFC3339/RFC3339Nano or YYYY-MM-DD.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Inclusive run started_at upper bound. Accepts RFC3339/RFC3339Nano or YYYY-MM-DD.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Alias for offset.",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "agent runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}": {
+      "get": {
+        "summary": "Get an agent run",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "agent run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/timeline": {
+      "get": {
+        "summary": "Run timeline",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "run timeline",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunTimelineResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/diagnostics": {
+      "get": {
+        "summary": "Run diagnostics",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "run diagnostics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDiagnosticsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/final-response": {
+      "get": {
+        "summary": "Run final response evidence",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "run final response evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunFinalResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/runs/{run_id}/replay": {
+      "get": {
+        "summary": "Replay report by run id",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "replay report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayReport"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "post": {
+        "summary": "Replay report by run id",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "replay report",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayReport"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "404": {
             "$ref": "#/components/responses/APIError"
           }
         }
@@ -758,7 +1122,23 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "consistent": {
+                      "type": "boolean"
+                    },
+                    "expected": {
+                      "type": "string"
+                    },
+                    "actual": {
+                      "type": "string"
+                    },
+                    "problems": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -8387,6 +8767,10 @@
           },
           "hash": {
             "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
           }
         }
       },
@@ -8462,13 +8846,9 @@
               "artifact.delete",
               "origin.agent.delegate",
               "prompt.preview",
+              "agent.plugin.sync",
               "agent.package.draft.create",
-              "agent.package.draft.patch_prompt",
-              "agent.package.draft.patch_developer_prompt",
-              "agent.package.draft.patch_system_prompt",
-              "agent.package.draft.patch_agents_md",
-              "agent.package.tool_binding.update",
-              "agent.package.runtime_hooks.update",
+              "agent.package.draft.patch_strategies",
               "agent.package.collaborator.add",
               "agent.package.collaborator.update",
               "agent.package.collaborator.replace",
@@ -8544,19 +8924,13 @@
                 "$ref": "#/components/schemas/AgentPackageDraftCreatePayload"
               },
               {
+                "$ref": "#/components/schemas/AgentPluginSyncPayload"
+              },
+              {
                 "$ref": "#/components/schemas/PromptPreviewPayload"
               },
               {
-                "$ref": "#/components/schemas/AgentPackageDraftPatchPromptPayload"
-              },
-              {
-                "$ref": "#/components/schemas/AgentPackageDraftPatchAgentsMDPayload"
-              },
-              {
-                "$ref": "#/components/schemas/AgentPackageToolBindingUpdatePayload"
-              },
-              {
-                "$ref": "#/components/schemas/AgentPackageRuntimeHooksUpdatePayload"
+                "$ref": "#/components/schemas/AgentPackageDraftPatchStrategiesPayload"
               },
               {
                 "$ref": "#/components/schemas/RuntimeHookProviderPayload"
@@ -8889,6 +9263,9 @@
             "$ref": "#/components/schemas/EvalSuiteResult"
           },
           {
+            "$ref": "#/components/schemas/PromptPreviewResponse"
+          },
+          {
             "type": "object",
             "additionalProperties": true
           }
@@ -8922,6 +9299,878 @@
           },
           "error": {
             "$ref": "#/components/schemas/RuntimeError"
+          }
+        }
+      },
+      "AgentRun": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_version": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "step_count": {
+            "type": "integer"
+          },
+          "tool_call_count": {
+            "type": "integer"
+          },
+          "policy_set_id": {
+            "type": "string"
+          },
+          "version_snapshot": {
+            "$ref": "#/components/schemas/VersionSnapshot"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "error_message": {
+            "type": "string"
+          }
+        }
+      },
+      "VersionSnapshot": {
+        "type": "object",
+        "properties": {
+          "contract_version": {
+            "type": "string"
+          },
+          "agent_definition": {
+            "type": "string"
+          },
+          "agent_package": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "source_provider_id": {
+            "type": "string"
+          },
+          "manifest_version": {
+            "type": "string"
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
+          "strategy_hash": {
+            "type": "string"
+          },
+          "policy_set": {
+            "type": "string"
+          },
+          "policy_version_id": {
+            "type": "string"
+          },
+          "policy_set_version": {
+            "type": "string"
+          },
+          "tool_definitions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "skill_definitions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "model_provider": {
+            "type": "string"
+          },
+          "model_name": {
+            "type": "string"
+          },
+          "prompt_bundle_hash": {
+            "type": "string"
+          },
+          "additional_attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RunListResponse": {
+        "type": "object",
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRun"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "RunResponse": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/AgentRun"
+          },
+          "trace_summary": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "tool_summary": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "runtime_hook_summary": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "audit_summary": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "RunTimelineResponse": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunTimelineEvent"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "RunFinalResponse": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "response": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "RunTimelineEvent": {
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "ReplayReport": {
+        "type": "object",
+        "properties": {
+          "trace_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "event_count": {
+            "type": "integer"
+          },
+          "first_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event_types": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "run_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "task_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "prompt_bundle_hashes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "context_strategy_hashes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policy_versions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tool_result_count": {
+            "type": "integer"
+          },
+          "handoff_count": {
+            "type": "integer"
+          },
+          "context_compression_count": {
+            "type": "integer"
+          },
+          "context_compression_applied": {
+            "type": "integer"
+          },
+          "context_compression_failures": {
+            "type": "integer"
+          },
+          "redaction_violations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RunDiagnosticsSummary": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "error_code": {
+            "type": "string"
+          },
+          "error_message": {
+            "type": "string"
+          },
+          "strategy_limit_reason": {
+            "type": "string",
+            "enum": [
+              "runtime.max_steps",
+              "runtime.max_duration_seconds",
+              "prompt.max_prompt_tokens",
+              "tools.max_tool_calls",
+              "runtime.max_consecutive_tool_failures"
+            ]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "trace_events_total": {
+            "type": "integer"
+          },
+          "task_events_total": {
+            "type": "integer"
+          },
+          "tool_calls_total": {
+            "type": "integer"
+          },
+          "tool_failures_total": {
+            "type": "integer"
+          },
+          "runtime_hook_events_total": {
+            "type": "integer"
+          },
+          "audit_events_total": {
+            "type": "integer"
+          },
+          "model_calls_total": {
+            "type": "integer"
+          },
+          "model_failures_total": {
+            "type": "integer"
+          },
+          "prompt_tokens_total": {
+            "type": "integer"
+          },
+          "completion_tokens_total": {
+            "type": "integer"
+          },
+          "prompt_bundle_hashes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policy_versions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "first_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "run_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RunRouteDiagnostic": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "requested_version": {
+            "type": "string"
+          },
+          "resolved_version": {
+            "type": "string"
+          },
+          "release_status": {
+            "type": "string"
+          },
+          "package_version_id": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "source_provider_id": {
+            "type": "string"
+          },
+          "manifest_version": {
+            "type": "string"
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
+          "strategy_hash": {
+            "type": "string"
+          },
+          "route_reason": {
+            "type": "string"
+          },
+          "canary": {
+            "type": "boolean"
+          },
+          "canary_percent": {
+            "type": "integer"
+          },
+          "assignment_key_hash": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RunStrategyDiagnostic": {
+        "type": "object",
+        "properties": {
+          "source_kind": {
+            "type": "string"
+          },
+          "source_provider_id": {
+            "type": "string"
+          },
+          "service_connection_id": {
+            "type": "string"
+          },
+          "manifest_version": {
+            "type": "string"
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
+          "strategy_hash": {
+            "type": "string"
+          },
+          "context_mode": {
+            "type": "string"
+          },
+          "context_sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "model": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "runtime": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "tools": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "skills": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "collaboration": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "memory": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "knowledge": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "repair": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "output": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "guardrail_adjustments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "agent_package": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RunContextDiagnostic": {
+        "type": "object",
+        "properties": {
+          "strategy_hash": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "token_budget": {
+            "type": "integer"
+          },
+          "estimated_tokens_in": {
+            "type": "integer"
+          },
+          "estimated_tokens_out": {
+            "type": "integer"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextSourceReport"
+            }
+          },
+          "external_sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextSourceReport"
+            }
+          },
+          "compression": {
+            "$ref": "#/components/schemas/ContextCompressionReport"
+          },
+          "compression_events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextCompressionReport"
+            }
+          },
+          "prompt_bundle_hash": {
+            "type": "string"
+          }
+        }
+      },
+      "RunPromptDiagnostic": {
+        "type": "object",
+        "properties": {
+          "prompt_bundle_hash": {
+            "type": "string"
+          },
+          "prompt_bundle_hashes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "policy_set_id": {
+            "type": "string"
+          },
+          "policy_version_id": {
+            "type": "string"
+          },
+          "policy_version": {
+            "type": "string"
+          },
+          "prompt_recorded": {
+            "type": "boolean"
+          },
+          "preview_command": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "redaction_policy": {
+            "type": "string"
+          }
+        }
+      },
+      "RunModelDiagnostic": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prompt_tokens_total": {
+            "type": "integer"
+          },
+          "completion_tokens_total": {
+            "type": "integer"
+          },
+          "calls": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunModelCallDiagnostic"
+            }
+          }
+        }
+      },
+      "RunModelCallDiagnostic": {
+        "type": "object",
+        "properties": {
+          "event_type": {
+            "type": "string"
+          },
+          "model_provider": {
+            "type": "string"
+          },
+          "model_name": {
+            "type": "string"
+          },
+          "prompt_tokens": {
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "type": "integer"
+          },
+          "repair_attempt": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "RunDecisionDiagnostic": {
+        "type": "object",
+        "properties": {
+          "decision_id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "event_type": {
+            "type": "string"
+          },
+          "repair_attempt": {
+            "type": "integer"
+          },
+          "warnings": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "error": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "RunToolDiagnostic": {
+        "type": "object",
+        "properties": {
+          "call": {
+            "$ref": "#/components/schemas/ToolCall"
+          },
+          "result": {
+            "$ref": "#/components/schemas/ToolResult"
+          },
+          "has_result": {
+            "type": "boolean"
+          }
+        }
+      },
+      "RunDiagnosticsResponse": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/AgentRun"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/RunDiagnosticsSummary"
+          },
+          "routing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunRouteDiagnostic"
+            }
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/RunStrategyDiagnostic"
+          },
+          "context": {
+            "$ref": "#/components/schemas/RunContextDiagnostic"
+          },
+          "prompt": {
+            "$ref": "#/components/schemas/RunPromptDiagnostic"
+          },
+          "model": {
+            "$ref": "#/components/schemas/RunModelDiagnostic"
+          },
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunDecisionDiagnostic"
+            }
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunToolDiagnostic"
+            }
+          },
+          "runtime_hooks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeHookEvent"
+            }
+          },
+          "audit_events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            }
+          },
+          "replay": {
+            "$ref": "#/components/schemas/ReplayReport"
+          },
+          "usage_evidence": {
+            "$ref": "#/components/schemas/UsageEvidence"
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunTimelineEvent"
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "trace_endpoints": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "TraceDiagnosticsResponse": {
+        "type": "object",
+        "properties": {
+          "trace_id": {
+            "type": "string"
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRun"
+            }
+          },
+          "summary": {
+            "$ref": "#/components/schemas/RunDiagnosticsSummary"
+          },
+          "routing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunRouteDiagnostic"
+            }
+          },
+          "strategy": {
+            "$ref": "#/components/schemas/RunStrategyDiagnostic"
+          },
+          "context": {
+            "$ref": "#/components/schemas/RunContextDiagnostic"
+          },
+          "prompt": {
+            "$ref": "#/components/schemas/RunPromptDiagnostic"
+          },
+          "model": {
+            "$ref": "#/components/schemas/RunModelDiagnostic"
+          },
+          "decisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunDecisionDiagnostic"
+            }
+          },
+          "replay": {
+            "$ref": "#/components/schemas/ReplayReport"
+          },
+          "usage_evidence": {
+            "$ref": "#/components/schemas/UsageEvidence"
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunTimelineEvent"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": true
           }
         }
       },
@@ -9252,6 +10501,10 @@
           },
           "hash": {
             "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
           }
         }
       },
@@ -10403,7 +11656,8 @@
           },
           "output_schema": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": true,
+            "description": "Reserved for a future output strategy feature; current compiler rejects non-empty schemas."
           },
           "risk_level": {
             "type": "string",
@@ -11669,6 +12923,9 @@
           "runtime_hooks": {
             "$ref": "#/components/schemas/AgentRuntimeHooks"
           },
+          "strategies": {
+            "$ref": "#/components/schemas/AgentStrategies"
+          },
           "metadata": {
             "type": "object",
             "additionalProperties": true
@@ -12327,6 +13584,683 @@
           }
         }
       },
+      "AgentStrategies": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "$ref": "#/components/schemas/PromptStrategy"
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelStrategy"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ContextStrategy"
+          },
+          "tools": {
+            "$ref": "#/components/schemas/ToolUseStrategy"
+          },
+          "collaboration": {
+            "$ref": "#/components/schemas/CollaborationStrategy"
+          },
+          "memory": {
+            "$ref": "#/components/schemas/MemoryUseStrategy"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeStrategy"
+          },
+          "repair": {
+            "$ref": "#/components/schemas/RepairStrategy"
+          },
+          "skills": {
+            "$ref": "#/components/schemas/SkillUseStrategy"
+          },
+          "knowledge": {
+            "$ref": "#/components/schemas/KnowledgeUseStrategy"
+          },
+          "output": {
+            "$ref": "#/components/schemas/OutputStrategy"
+          }
+        }
+      },
+      "PromptStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "identity_prompt": {
+            "type": "string"
+          },
+          "system_prompt": {
+            "type": "string"
+          },
+          "developer_prompt": {
+            "type": "string"
+          }
+        }
+      },
+      "ModelStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "type": "integer"
+          },
+          "temperature": {
+            "type": "number"
+          },
+          "thinking": {
+            "type": "string"
+          },
+          "reasoning_effort": {
+            "type": "string"
+          },
+          "timeout_ms": {
+            "type": "integer"
+          },
+          "streaming": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ContextStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "concise",
+              "balanced",
+              "long_context",
+              "full_debug"
+            ]
+          },
+          "recent_message_limit": {
+            "type": "integer"
+          },
+          "retrieval_max_results": {
+            "type": "integer"
+          },
+          "task_history_max_items": {
+            "type": "integer"
+          },
+          "memory_max_items": {
+            "type": "integer"
+          },
+          "artifact_ref_max_items": {
+            "type": "integer"
+          },
+          "tool_result_max_items": {
+            "type": "integer"
+          },
+          "context_token_budget": {
+            "type": "integer"
+          },
+          "enabled_sources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "conversation_recent",
+                "conversation_retrieval",
+                "task_history",
+                "memory_summary",
+                "artifact_refs",
+                "tool_results",
+                "runtime_hook_context",
+                "agent_plugin_context"
+              ]
+            }
+          },
+          "source_budgets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            }
+          },
+          "compression": {
+            "$ref": "#/components/schemas/ContextCompressionStrategy"
+          }
+        }
+      },
+      "ContextCompressionStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "trigger_ratio": {
+            "type": "integer"
+          },
+          "target_tokens": {
+            "type": "integer"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "none",
+              "truncate",
+              "llm",
+              "llm_then_truncate"
+            ]
+          },
+          "failure_mode": {
+            "type": "string",
+            "enum": [
+              "continue",
+              "reject"
+            ]
+          },
+          "model_provider": {
+            "type": "string"
+          },
+          "model_base_url": {
+            "type": "string"
+          },
+          "model_name": {
+            "type": "string"
+          },
+          "max_tokens": {
+            "type": "integer"
+          },
+          "temperature": {
+            "type": "number"
+          },
+          "prompt_profile_id": {
+            "type": "string"
+          },
+          "inline_prompt": {
+            "$ref": "#/components/schemas/CompressionPromptProfile"
+          },
+          "preserve": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "forbid": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "write_summary_to_memory": {
+            "type": "boolean",
+            "description": "Reserved for a future memory summary feature; current compiler rejects true."
+          }
+        }
+      },
+      "CompressionPromptProfile": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "system_prompt": {
+            "type": "string"
+          },
+          "developer_prompt": {
+            "type": "string"
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "preserve": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "forbid": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ToolUseStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "allowed_tool_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowed_tool_group_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "denied_tool_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "denied_tool_group_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "preferred_tool_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tool_choice_mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "conservative",
+              "tool_first",
+              "no_tools"
+            ]
+          },
+          "max_tool_calls": {
+            "type": "integer"
+          },
+          "require_approval_at_risk_level": {
+            "type": "string"
+          }
+        }
+      },
+      "SkillUseStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled_skill_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "disabled_skill_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "selection_mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "explicit_only",
+              "all_enabled"
+            ]
+          },
+          "max_selected_skills": {
+            "type": "integer"
+          }
+        }
+      },
+      "KnowledgeUseStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "knowledge_base_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "search_mode": {
+            "type": "string",
+            "enum": [
+              "bm25",
+              "embedding",
+              "hybrid"
+            ]
+          },
+          "max_results": {
+            "type": "integer"
+          },
+          "allow_cross_group": {
+            "type": "boolean"
+          },
+          "inject_mode": {
+            "type": "string",
+            "enum": [
+              "tool_only"
+            ]
+          }
+        }
+      },
+      "CollaborationStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "delegation_mode": {
+            "type": "string"
+          },
+          "max_handoff_depth": {
+            "type": "integer"
+          },
+          "max_child_tasks": {
+            "type": "integer"
+          },
+          "default_handoff_mode": {
+            "type": "string"
+          },
+          "max_context_tokens": {
+            "type": "integer"
+          }
+        }
+      },
+      "MemoryUseStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "read_enabled": {
+            "type": "boolean"
+          },
+          "write_enabled": {
+            "type": "boolean"
+          },
+          "read_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "write_scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_memory_items": {
+            "type": "integer"
+          },
+          "auto_write_mode": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "explicit_intent"
+            ]
+          },
+          "write_prompt_profile_id": {
+            "type": "string"
+          }
+        }
+      },
+      "RuntimeStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "max_steps": {
+            "type": "integer"
+          },
+          "max_duration_seconds": {
+            "type": "integer"
+          },
+          "max_model_retries": {
+            "type": "integer"
+          },
+          "max_consecutive_tool_failures": {
+            "type": "integer"
+          },
+          "execution_mode": {
+            "type": "string"
+          }
+        }
+      },
+      "RepairStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "max_repair_attempts": {
+            "type": "integer"
+          },
+          "repairable_error_codes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_model_repair_on_fail": {
+            "type": "boolean"
+          },
+          "stop_on_denied": {
+            "type": "boolean"
+          },
+          "failure_mode": {
+            "type": "string"
+          }
+        }
+      },
+      "OutputStrategy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "output_mode": {
+            "type": "string",
+            "enum": [
+              "decision_json"
+            ]
+          },
+          "output_schema": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "strict_json": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ContextAssemblyReport": {
+        "type": "object",
+        "properties": {
+          "strategy_hash": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextSourceReport"
+            }
+          },
+          "token_budget": {
+            "type": "integer"
+          },
+          "estimated_tokens_in": {
+            "type": "integer"
+          },
+          "estimated_tokens_out": {
+            "type": "integer"
+          },
+          "compression": {
+            "$ref": "#/components/schemas/ContextCompressionReport"
+          }
+        }
+      },
+      "ContextSourceReport": {
+        "type": "object",
+        "properties": {
+          "source_type": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "hook_id": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "trust_level": {
+            "type": "string"
+          },
+          "candidate_count": {
+            "type": "integer"
+          },
+          "selected_count": {
+            "type": "integer"
+          },
+          "dropped_count": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "ContextCompressionReport": {
+        "type": "object",
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "model_provider": {
+            "type": "string"
+          },
+          "model_name": {
+            "type": "string"
+          },
+          "prompt_profile_id": {
+            "type": "string"
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "summary_hash": {
+            "type": "string"
+          },
+          "failure_reason": {
+            "type": "string"
+          },
+          "source_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PromptPreviewResponse": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "policy_set_id": {
+            "type": "string"
+          },
+          "policy_version": {
+            "type": "string"
+          },
+          "effective_strategies": {
+            "$ref": "#/components/schemas/AgentStrategies"
+          },
+          "strategy_hash": {
+            "type": "string"
+          },
+          "guardrail_adjustments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "hook_effects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "phase": {
+                  "type": "string"
+                },
+                "context_blocks_added": {
+                  "type": "integer"
+                },
+                "context_refs_dropped": {
+                  "type": "integer"
+                },
+                "tool_rank_adjustments": {
+                  "type": "integer"
+                },
+                "planner_hints": {
+                  "type": "integer"
+                },
+                "memory_write_intents": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "work_view": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "prompt_bundle": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "context_assembly_report": {
+            "$ref": "#/components/schemas/ContextAssemblyReport"
+          },
+          "compression_report": {
+            "$ref": "#/components/schemas/ContextCompressionReport"
+          },
+          "prompt_bundle_hash": {
+            "type": "string"
+          },
+          "token_estimate": {
+            "type": "integer"
+          },
+          "model_provider": {
+            "type": "string"
+          },
+          "model_name": {
+            "type": "string"
+          }
+        }
+      },
       "AgentPackageDraftCreatePayload": {
         "type": "object",
         "required": [
@@ -12360,9 +14294,196 @@
           "runtime_hooks": {
             "$ref": "#/components/schemas/AgentRuntimeHooks"
           },
+          "strategies": {
+            "$ref": "#/components/schemas/AgentStrategies"
+          },
           "metadata": {
             "type": "object",
             "additionalProperties": true
+          }
+        }
+      },
+      "AgentPluginSyncPayload": {
+        "type": "object",
+        "description": "Payload for syncing an AgentPlugin Service into a CleanCore draft and managed tool/runtime-hook facts. When manifest is omitted, provider_id is required and CleanCore fetches /.well-known/agent-plugin.json from the provider service connection.",
+        "properties": {
+          "provider_id": {
+            "type": "string"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/AgentPluginManifest"
+          },
+          "manifest_version": {
+            "type": "string"
+          },
+          "agents_md": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "tool_bindings": {
+            "$ref": "#/components/schemas/AgentToolsConfig"
+          },
+          "collaborators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentCollaboratorRef"
+            }
+          },
+          "exports": {
+            "$ref": "#/components/schemas/AgentExports"
+          },
+          "runtime_hooks": {
+            "$ref": "#/components/schemas/AgentRuntimeHooks"
+          },
+          "strategies": {
+            "$ref": "#/components/schemas/AgentStrategies"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "AgentPluginManifest": {
+        "type": "object",
+        "description": "Strict AgentPlugin Service manifest. CleanCore rejects unknown manifest fields and requires complete tool declarations before creating an AgentPluginSource draft.",
+        "required": [
+          "agent"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "manifest_version": {
+            "type": "string"
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "agent": {
+            "$ref": "#/components/schemas/AgentPluginAgentManifest"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentPluginToolManifest"
+            }
+          },
+          "hooks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RuntimeHookManifest"
+            }
+          },
+          "collaborators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentCollaboratorRef"
+            }
+          },
+          "exports": {
+            "$ref": "#/components/schemas/AgentExports"
+          },
+          "strategies": {
+            "$ref": "#/components/schemas/AgentStrategies"
+          }
+        }
+      },
+      "AgentPluginAgentManifest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "agents_md": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentPluginToolManifest": {
+        "type": "object",
+        "required": [
+          "tool_id",
+          "name",
+          "description",
+          "input_schema",
+          "output_schema"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "tool_id": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "group_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "when_to_use": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "input_schema": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "additionalProperties": true
+          },
+          "output_schema": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "additionalProperties": true
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "protected",
+              "exposed"
+            ]
+          },
+          "version": {
+            "type": "string"
           }
         }
       },
@@ -12386,45 +14507,19 @@
         },
         "additionalProperties": true
       },
-      "AgentPackageDraftPatchPromptPayload": {
+      "AgentPackageDraftPatchStrategiesPayload": {
         "type": "object",
         "required": [
-          "draft_id"
+          "draft_id",
+          "strategies"
         ],
+        "additionalProperties": false,
         "properties": {
           "draft_id": {
             "type": "string"
           },
-          "prompt": {
-            "type": "string"
-          }
-        }
-      },
-      "AgentPackageToolBindingUpdatePayload": {
-        "type": "object",
-        "required": [
-          "draft_id"
-        ],
-        "properties": {
-          "draft_id": {
-            "type": "string"
-          },
-          "tool_bindings": {
-            "$ref": "#/components/schemas/AgentToolsConfig"
-          }
-        }
-      },
-      "AgentPackageRuntimeHooksUpdatePayload": {
-        "type": "object",
-        "required": [
-          "draft_id"
-        ],
-        "properties": {
-          "draft_id": {
-            "type": "string"
-          },
-          "runtime_hooks": {
-            "$ref": "#/components/schemas/AgentRuntimeHooks"
+          "strategies": {
+            "$ref": "#/components/schemas/AgentStrategies"
           }
         }
       },
@@ -12735,6 +14830,9 @@
           "tool_policy": {
             "$ref": "#/components/schemas/ToolPolicy"
           },
+          "context_governance_policy": {
+            "$ref": "#/components/schemas/ContextGovernancePolicy"
+          },
           "release_policy": {
             "type": "object",
             "additionalProperties": true
@@ -12755,6 +14853,50 @@
           }
         },
         "additionalProperties": true
+      },
+      "ContextGovernancePolicy": {
+        "type": "object",
+        "properties": {
+          "max_context_token_budget": {
+            "type": "integer"
+          },
+          "max_recent_message_limit": {
+            "type": "integer"
+          },
+          "max_retrieval_results": {
+            "type": "integer"
+          },
+          "max_task_history_items": {
+            "type": "integer"
+          },
+          "max_memory_items": {
+            "type": "integer"
+          },
+          "max_artifact_ref_items": {
+            "type": "integer"
+          },
+          "max_tool_result_items": {
+            "type": "integer"
+          },
+          "allow_full_debug_mode": {
+            "type": "boolean"
+          },
+          "allow_llm_compression": {
+            "type": "boolean"
+          },
+          "allowed_compression_models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowed_compression_base_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       },
       "ToolPolicy": {
         "type": "object",
@@ -12934,6 +15076,9 @@
           },
           "should_end_status": {
             "type": "string"
+          },
+          "strategy_assertions": {
+            "$ref": "#/components/schemas/EvalStrategyAssertions"
           }
         }
       },
@@ -13016,6 +15161,32 @@
           },
           "should_end_status": {
             "type": "string"
+          },
+          "strategy_assertions": {
+            "$ref": "#/components/schemas/EvalStrategyAssertions"
+          }
+        }
+      },
+      "EvalStrategyAssertions": {
+        "type": "object",
+        "properties": {
+          "strategy_hash": {
+            "type": "string"
+          },
+          "context_mode": {
+            "type": "string"
+          },
+          "context_sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "compression_applied": {
+            "type": "boolean"
+          },
+          "compression_mode": {
+            "type": "string"
           }
         }
       },
@@ -13095,9 +15266,35 @@
           "tool_misuse": {
             "type": "integer"
           },
+          "strategy": {
+            "$ref": "#/components/schemas/EvalStrategyEvidence"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "EvalStrategyEvidence": {
+        "type": "object",
+        "properties": {
+          "strategy_hash": {
+            "type": "string"
+          },
+          "context_mode": {
+            "type": "string"
+          },
+          "context_sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "compression_applied": {
+            "type": "boolean"
+          },
+          "compression_mode": {
+            "type": "string"
           }
         }
       },
@@ -13230,20 +15427,6 @@
           }
         },
         "additionalProperties": true
-      },
-      "AgentPackageDraftPatchAgentsMDPayload": {
-        "type": "object",
-        "required": [
-          "draft_id"
-        ],
-        "properties": {
-          "draft_id": {
-            "type": "string"
-          },
-          "agents_md": {
-            "type": "string"
-          }
-        }
       },
       "SkillResourceRef": {
         "type": "object",

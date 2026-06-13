@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"znt/internal/contracts"
 	tooldiscovery "znt/internal/discovery/tool"
 	"znt/internal/governance/trace"
+	serviceconnection "znt/internal/serviceconnection"
 )
 
 func TestServiceAppliesAgentRuntimeHookConfigPatch(t *testing.T) {
@@ -136,6 +138,70 @@ func TestServiceRejectsSensitiveHookPatchContent(t *testing.T) {
 				t.Fatalf("sensitive hook patch leaked into event store: %#v", events)
 			}
 		}
+	}
+}
+
+func TestServiceAnnotatesPluginContextBlockSources(t *testing.T) {
+	store := NewInMemoryStore()
+	service := NewService(store, nil, nil)
+	if err := service.UpsertProvider(context.Background(), Provider{
+		TenantID:     "tenant_1",
+		ProviderID:   "crm-plugin",
+		Name:         "CRM Plugin",
+		ProviderType: ProviderTypeGo,
+		Status:       StatusEnabled,
+		HealthStatus: HealthHealthy,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := contracts.AgentDefinition{
+		AgentID:          "agent_1",
+		Version:          "v1",
+		SourceKind:       contracts.AgentSourceKindPlugin,
+		SourceProviderID: "crm-plugin",
+		RuntimeHooks: contracts.AgentRuntimeHooks{
+			Mode: "data_hooks",
+			Hooks: []contracts.AgentRuntimeHookBinding{{
+				HookID:       "crm-context",
+				ProviderType: string(ProviderTypeGo),
+				ProviderID:   "crm-plugin",
+				Phase:        string(BeforeModelCall),
+				Enabled:      true,
+				Config: map[string]any{
+					"patch": map[string]any{
+						"add_context_blocks": []any{map[string]any{
+							"id":      "account-42",
+							"title":   "account context",
+							"content": "ACME renewal is active.",
+						}},
+					},
+				},
+			}},
+		},
+	}
+	patch, err := service.Preview(context.Background(), InvokeRequest{
+		TenantID: "tenant_1",
+		TraceID:  "trace_1",
+		Agent:    agent,
+		Policy:   contracts.PolicySet{},
+		Phase:    BeforeModelCall,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(patch.AddContextBlocks) != 1 {
+		t.Fatalf("expected one context block, got %#v", patch.AddContextBlocks)
+	}
+	metadata := patch.AddContextBlocks[0].Metadata
+	if metadata["source_type"] != "agent_plugin_context" ||
+		metadata["provider_id"] != "crm-plugin" ||
+		metadata["hook_id"] != "crm-context" ||
+		metadata["trust_level"] != "untrusted_external_context" {
+		t.Fatalf("expected annotated plugin context metadata, got %#v", metadata)
+	}
+	sourceRef, ok := metadata["source_ref"].(string)
+	if !ok || sourceRef == "" {
+		t.Fatalf("expected source_ref metadata, got %#v", metadata)
 	}
 }
 
@@ -278,6 +344,189 @@ func TestStaticHookTimeoutRecordsTimeoutTrace(t *testing.T) {
 	}
 	if _, ok := timeoutEvent.Payload["latency_ms"].(int); !ok {
 		t.Fatalf("expected timeout latency evidence, got %#v", timeoutEvent.Payload)
+	}
+}
+
+func TestStaticHookProviderUsesServiceConnection(t *testing.T) {
+	authRefCh := make(chan string, 1)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime-hooks/invoke" {
+			http.Error(w, "unexpected hook path", http.StatusNotFound)
+			return
+		}
+		select {
+		case authRefCh <- r.Header.Get("X-Origin-Provider-Auth-Ref"):
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","patch":{"planner_hints":[{"content":"prefer account context"}]}}`))
+	}))
+	defer remote.Close()
+
+	connections := serviceconnection.NewServiceWithStore(nil)
+	if _, err := connections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+		TenantID:       "tenant_1",
+		ConnectionID:   "hook-connection",
+		Name:           "Hook Connection",
+		ConnectionType: serviceconnection.TypeHTTPAPI,
+		Status:         serviceconnection.StatusEnabled,
+		BaseURL:        remote.URL,
+		AuthType:       serviceconnection.AuthTypeAPIKey,
+		AuthRef:        "secret://tenant_1/hook",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewService(NewInMemoryStore(), nil, nil)
+	service.SetServiceConnections(connections)
+	if err := service.UpsertProvider(context.Background(), Provider{
+		TenantID:            "tenant_1",
+		ProviderID:          "service-hooks",
+		Name:                "Service Hooks",
+		ProviderType:        ProviderTypeStaticHookHost,
+		ServiceConnectionID: "hook-connection",
+		Status:              StatusEnabled,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.UpsertManifest(context.Background(), HookManifest{
+		TenantID:   "tenant_1",
+		HookID:     "service-before-model",
+		ProviderID: "service-hooks",
+		Name:       "Service before model",
+		Phase:      BeforeModelCall,
+		Status:     StatusEnabled,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.UpsertBinding(context.Background(), Binding{
+		TenantID:      "tenant_1",
+		AgentID:       "agent_1",
+		HookID:        "service-before-model",
+		ProviderType:  ProviderTypeStaticHookHost,
+		ProviderID:    "service-hooks",
+		Phase:         BeforeModelCall,
+		Enabled:       true,
+		FailurePolicy: "reject",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	patch, err := service.Preview(context.Background(), InvokeRequest{
+		TenantID: "tenant_1",
+		Agent:    contracts.AgentDefinition{AgentID: "agent_1", Version: "v1"},
+		Policy:   contracts.PolicySet{},
+		Phase:    BeforeModelCall,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(patch.PlannerHints) != 1 || patch.PlannerHints[0].Content != "prefer account context" {
+		t.Fatalf("expected service connection hook patch, got %#v", patch)
+	}
+	select {
+	case authRef := <-authRefCh:
+		if authRef != "secret://tenant_1/hook" {
+			t.Fatalf("expected service connection auth ref header, got %q", authRef)
+		}
+	default:
+		t.Fatalf("expected static hook invoke through service connection")
+	}
+}
+
+func TestStaticHookRejectsUnknownPatchFields(t *testing.T) {
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime-hooks/invoke" {
+			http.Error(w, "unexpected hook path", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","patch":{"planner_hints":[{"content":"prefer account context"}],"run_status":"completed"}}`))
+	}))
+	defer remote.Close()
+
+	service := NewService(NewInMemoryStore(), nil, nil)
+	if err := service.UpsertProvider(context.Background(), Provider{
+		TenantID:     "tenant_1",
+		ProviderID:   "strict-hooks",
+		Name:         "Strict Hooks",
+		ProviderType: ProviderTypeStaticHookHost,
+		Endpoint:     remote.URL,
+		Status:       StatusEnabled,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.UpsertManifest(context.Background(), HookManifest{
+		TenantID:   "tenant_1",
+		HookID:     "strict-before-model",
+		ProviderID: "strict-hooks",
+		Name:       "Strict before model",
+		Phase:      BeforeModelCall,
+		Status:     StatusEnabled,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.UpsertBinding(context.Background(), Binding{
+		TenantID:      "tenant_1",
+		AgentID:       "agent_1",
+		HookID:        "strict-before-model",
+		ProviderType:  ProviderTypeStaticHookHost,
+		ProviderID:    "strict-hooks",
+		Phase:         BeforeModelCall,
+		Enabled:       true,
+		FailurePolicy: "reject",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.Preview(context.Background(), InvokeRequest{
+		TenantID: "tenant_1",
+		Agent:    contracts.AgentDefinition{AgentID: "agent_1", Version: "v1"},
+		Policy:   contracts.PolicySet{},
+		Phase:    BeforeModelCall,
+	})
+	if err == nil || !strings.Contains(err.Error(), `unknown field "run_status"`) {
+		t.Fatalf("expected unknown patch field rejection, got %v", err)
+	}
+}
+
+func TestStaticHookProviderBlocksUnhealthyServiceConnection(t *testing.T) {
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	defer remote.Close()
+
+	connections := serviceconnection.NewServiceWithStore(nil)
+	if _, err := connections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+		TenantID:       "tenant_1",
+		ConnectionID:   "hook-connection",
+		Name:           "Hook Connection",
+		ConnectionType: serviceconnection.TypeHTTPAPI,
+		Status:         serviceconnection.StatusEnabled,
+		BaseURL:        remote.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	connection, _, err := connections.Test(context.Background(), "tenant_1", "hook-connection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connection.HealthStatus != serviceconnection.HealthUnhealthy {
+		t.Fatalf("expected unhealthy service connection, got %#v", connection)
+	}
+
+	service := NewService(NewInMemoryStore(), nil, nil)
+	service.SetServiceConnections(connections)
+	err = service.UpsertProvider(context.Background(), Provider{
+		TenantID:            "tenant_1",
+		ProviderID:          "service-hooks",
+		Name:                "Service Hooks",
+		ProviderType:        ProviderTypeStaticHookHost,
+		ServiceConnectionID: "hook-connection",
+		Status:              StatusEnabled,
+	})
+	if err == nil {
+		t.Fatal("expected unhealthy service connection to block hook provider")
 	}
 }
 
@@ -478,6 +727,71 @@ func TestStaticProviderCatalogIsReadAndValidated(t *testing.T) {
 	hook := catalog.Hooks[0]
 	if hook.HookID != "remote-rerank" || hook.Phase != AfterCandidateRetrieval || hook.TimeoutMS != 300 || hook.FailurePolicy != "ignore" {
 		t.Fatalf("unexpected hook catalog entry: %#v", hook)
+	}
+}
+
+func TestStaticProviderCatalogUsesServiceConnection(t *testing.T) {
+	authRefCh := make(chan string, 1)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime-hooks/catalog" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case authRefCh <- r.Header.Get("X-Origin-Provider-Auth-Ref"):
+		default:
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"provider_id": "service-hooks",
+			"hooks": []map[string]any{{
+				"hook_id": "remote-before-model",
+				"name":    "Remote before model",
+				"phase":   "before_model_call",
+			}},
+		})
+	}))
+	defer remote.Close()
+
+	connections := serviceconnection.NewServiceWithStore(nil)
+	if _, err := connections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+		TenantID:       "tenant_1",
+		ConnectionID:   "hook-connection",
+		Name:           "Hook Connection",
+		ConnectionType: serviceconnection.TypeHTTPAPI,
+		Status:         serviceconnection.StatusEnabled,
+		BaseURL:        remote.URL,
+		AuthType:       serviceconnection.AuthTypeAPIKey,
+		AuthRef:        "secret://tenant_1/hook",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := NewService(NewInMemoryStore(), nil, nil)
+	service.SetServiceConnections(connections)
+	if err := service.UpsertProvider(context.Background(), Provider{
+		TenantID:            "tenant_1",
+		ProviderID:          "service-hooks",
+		Name:                "Service Hooks",
+		ProviderType:        ProviderTypeStaticHookHost,
+		ServiceConnectionID: "hook-connection",
+		Status:              StatusEnabled,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, catalog, err := service.ReadProviderCatalog(context.Background(), "tenant_1", "service-hooks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Hooks) != 1 || catalog.Hooks[0].ProviderID != "service-hooks" {
+		t.Fatalf("expected service connection hook catalog, got %#v", catalog)
+	}
+	select {
+	case authRef := <-authRefCh:
+		if authRef != "secret://tenant_1/hook" {
+			t.Fatalf("expected service connection auth ref header, got %q", authRef)
+		}
+	default:
+		t.Fatalf("expected catalog fetch through service connection")
 	}
 }
 

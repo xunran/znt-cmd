@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,6 +36,8 @@ type runDiagnosticsResponse struct {
 	Run            contracts.AgentRun      `json:"run"`
 	Summary        runDiagnosticsSummary   `json:"summary"`
 	Routing        []runRouteDiagnostic    `json:"routing"`
+	Strategy       runStrategyDiagnostic   `json:"strategy"`
+	Context        runContextDiagnostic    `json:"context"`
 	Prompt         runPromptDiagnostic     `json:"prompt"`
 	Model          runModelDiagnostic      `json:"model"`
 	Decisions      []runDecisionDiagnostic `json:"decisions"`
@@ -55,6 +58,8 @@ type traceDiagnosticsResponse struct {
 	Runs          []contracts.AgentRun    `json:"runs"`
 	Summary       runDiagnosticsSummary   `json:"summary"`
 	Routing       []runRouteDiagnostic    `json:"routing"`
+	Strategy      runStrategyDiagnostic   `json:"strategy"`
+	Context       runContextDiagnostic    `json:"context"`
 	Prompt        runPromptDiagnostic     `json:"prompt"`
 	Model         runModelDiagnostic      `json:"model"`
 	Decisions     []runDecisionDiagnostic `json:"decisions"`
@@ -66,6 +71,9 @@ type traceDiagnosticsResponse struct {
 
 type runDiagnosticsSummary struct {
 	Status                 contracts.RunStatus    `json:"status,omitempty"`
+	ErrorCode              contracts.ErrorCode     `json:"error_code,omitempty"`
+	ErrorMessage           string                  `json:"error_message,omitempty"`
+	StrategyLimitReason    string                  `json:"strategy_limit_reason,omitempty"`
 	DurationMS             int64                  `json:"duration_ms,omitempty"`
 	TraceEventsTotal       int                    `json:"trace_events_total"`
 	TaskEventsTotal        int                    `json:"task_events_total"`
@@ -91,6 +99,11 @@ type runRouteDiagnostic struct {
 	ResolvedVersion   contracts.AgentVersion     `json:"resolved_version,omitempty"`
 	ReleaseStatus     contracts.ReleaseStatus    `json:"release_status,omitempty"`
 	PackageVersionID  contracts.PackageVersionID `json:"package_version_id,omitempty"`
+	SourceKind        contracts.AgentSourceKind  `json:"source_kind,omitempty"`
+	SourceProviderID  string                     `json:"source_provider_id,omitempty"`
+	ManifestVersion   string                     `json:"manifest_version,omitempty"`
+	ManifestHash      string                     `json:"manifest_hash,omitempty"`
+	StrategyHash      string                     `json:"strategy_hash,omitempty"`
 	RouteReason       string                     `json:"route_reason,omitempty"`
 	Canary            bool                       `json:"canary"`
 	CanaryPercent     int                        `json:"canary_percent,omitempty"`
@@ -115,6 +128,42 @@ type runModelDiagnostic struct {
 	PromptTokensTotal     int                      `json:"prompt_tokens_total"`
 	CompletionTokensTotal int                      `json:"completion_tokens_total"`
 	Calls                 []runModelCallDiagnostic `json:"calls"`
+}
+
+type runStrategyDiagnostic struct {
+	SourceKind          contracts.AgentSourceKind  `json:"source_kind,omitempty"`
+	SourceProviderID    string                     `json:"source_provider_id,omitempty"`
+	ServiceConnectionID string                     `json:"service_connection_id,omitempty"`
+	ManifestVersion     string                     `json:"manifest_version,omitempty"`
+	ManifestHash        string                     `json:"manifest_hash,omitempty"`
+	StrategyHash        string                     `json:"strategy_hash,omitempty"`
+	ContextMode         string                     `json:"context_mode,omitempty"`
+	ContextSources      []string                   `json:"context_sources,omitempty"`
+	Model               any                        `json:"model,omitempty"`
+	Runtime             any                        `json:"runtime,omitempty"`
+	Tools               any                        `json:"tools,omitempty"`
+	Skills              any                        `json:"skills,omitempty"`
+	Collaboration       any                        `json:"collaboration,omitempty"`
+	Memory              any                        `json:"memory,omitempty"`
+	Knowledge           any                        `json:"knowledge,omitempty"`
+	Repair              any                        `json:"repair,omitempty"`
+	Output              any                        `json:"output,omitempty"`
+	GuardrailAdjustments []any                      `json:"guardrail_adjustments,omitempty"`
+	AgentPackage        contracts.PackageVersionID `json:"agent_package,omitempty"`
+	ResolvedAt          *time.Time                 `json:"resolved_at,omitempty"`
+}
+
+type runContextDiagnostic struct {
+	StrategyHash       string                              `json:"strategy_hash,omitempty"`
+	Mode               string                              `json:"mode,omitempty"`
+	TokenBudget        int                                 `json:"token_budget,omitempty"`
+	EstimatedTokensIn  int                                 `json:"estimated_tokens_in,omitempty"`
+	EstimatedTokensOut int                                 `json:"estimated_tokens_out,omitempty"`
+	Sources            []contracts.ContextSourceReport     `json:"sources,omitempty"`
+	ExternalSources    []contracts.ContextSourceReport     `json:"external_sources,omitempty"`
+	Compression        *contracts.ContextCompressionReport `json:"compression,omitempty"`
+	CompressionEvents  []contracts.ContextCompressionReport `json:"compression_events,omitempty"`
+	PromptBundleHash   string                              `json:"prompt_bundle_hash,omitempty"`
 }
 
 type runModelCallDiagnostic struct {
@@ -441,6 +490,8 @@ func buildRunDiagnostics(r *http.Request, appCore *core.Core, caller auth.Caller
 		Run:            run,
 		Summary:        diagnosticsSummary(run, traceEvents, taskEvents, toolCalls, toolResults, auditEvents, hookEvents, report),
 		Routing:        routeDiagnostics(traceEvents),
+		Strategy:       strategyDiagnostics(run, traceEvents, appCore),
+		Context:        contextDiagnostics(traceEvents),
 		Prompt:         promptDiagnostics(run, traceEvents),
 		Model:          modelDiagnostics(run, traceEvents),
 		Decisions:      decisionDiagnostics(traceEvents),
@@ -513,6 +564,8 @@ func buildTraceDiagnostics(r *http.Request, appCore *core.Core, caller auth.Call
 		Runs:          runs,
 		Summary:       diagnosticsSummary(baseRun, events, taskEvents, toolCalls, toolResults, auditEvents, hookEvents, report),
 		Routing:       routeDiagnostics(events),
+		Strategy:      strategyDiagnostics(baseRun, events, appCore),
+		Context:       contextDiagnostics(events),
 		Prompt:        promptDiagnostics(baseRun, events),
 		Model:         modelDiagnostics(baseRun, events),
 		Decisions:     decisionDiagnostics(events),
@@ -803,6 +856,9 @@ func diagnosticsSummary(run contracts.AgentRun, traceEvents []contracts.TraceEve
 	usage := buildUsageEvidence(run.TraceID, run.TenantID, traceEvents)
 	summary := runDiagnosticsSummary{
 		Status:                 run.Status,
+		ErrorCode:              run.ErrorCode,
+		ErrorMessage:           run.ErrorMessage,
+		StrategyLimitReason:    strategyLimitReason(run),
 		TraceEventsTotal:       len(traceEvents),
 		TaskEventsTotal:        len(taskEvents),
 		ToolCallsTotal:         len(toolCalls),
@@ -833,6 +889,27 @@ func diagnosticsSummary(run contracts.AgentRun, traceEvents []contracts.TraceEve
 	return summary
 }
 
+func strategyLimitReason(run contracts.AgentRun) string {
+	if run.Status != contracts.RunFailed {
+		return ""
+	}
+	message := strings.ToLower(strings.TrimSpace(run.ErrorMessage))
+	switch {
+	case strings.Contains(message, "max steps exceeded"):
+		return "runtime.max_steps"
+	case strings.Contains(message, "max duration exceeded"):
+		return "runtime.max_duration_seconds"
+	case strings.Contains(message, "max prompt tokens exceeded"):
+		return "prompt.max_prompt_tokens"
+	case strings.Contains(message, "max tool calls exceeded"):
+		return "tools.max_tool_calls"
+	case strings.Contains(message, "max consecutive tool failures"):
+		return "runtime.max_consecutive_tool_failures"
+	default:
+		return ""
+	}
+}
+
 func routeDiagnostics(events []contracts.TraceEvent) []runRouteDiagnostic {
 	out := []runRouteDiagnostic{}
 	for _, event := range events {
@@ -844,6 +921,11 @@ func routeDiagnostics(events []contracts.TraceEvent) []runRouteDiagnostic {
 				ResolvedVersion:   contracts.AgentVersion(stringFromMap(event.Payload, "resolved_version")),
 				ReleaseStatus:     contracts.ReleaseStatus(stringFromMap(event.Payload, "release_status")),
 				PackageVersionID:  contracts.PackageVersionID(stringFromMap(event.Payload, "package_version_id")),
+				SourceKind:        contracts.AgentSourceKind(stringFromMap(event.Payload, "source_kind")),
+				SourceProviderID:  stringFromMap(event.Payload, "source_provider_id"),
+				ManifestVersion:   stringFromMap(event.Payload, "manifest_version"),
+				ManifestHash:      stringFromMap(event.Payload, "manifest_hash"),
+				StrategyHash:      stringFromMap(event.Payload, "strategy_hash"),
 				RouteReason:       stringFromMap(event.Payload, "route_reason"),
 				Canary:            boolFromMap(event.Payload, "canary"),
 				CanaryPercent:     intFromMap(event.Payload, "canary_percent"),
@@ -856,11 +938,207 @@ func routeDiagnostics(events []contracts.TraceEvent) []runRouteDiagnostic {
 				ResolvedVersion:  contracts.AgentVersion(firstNonEmpty(stringFromMap(event.Payload, "resolved_version"), stringFromMap(event.Payload, "agent_version"))),
 				ReleaseStatus:    contracts.ReleaseCanary,
 				PackageVersionID: contracts.PackageVersionID(stringFromMap(event.Payload, "package_version_id")),
+				SourceKind:       contracts.AgentSourceKind(stringFromMap(event.Payload, "source_kind")),
+				SourceProviderID: stringFromMap(event.Payload, "source_provider_id"),
+				ManifestVersion:  stringFromMap(event.Payload, "manifest_version"),
+				ManifestHash:     stringFromMap(event.Payload, "manifest_hash"),
+				StrategyHash:     stringFromMap(event.Payload, "strategy_hash"),
 				RouteReason:      "default_version_canary_route",
 				Canary:           true,
 				CanaryPercent:    intFromMap(event.Payload, "canary_percent"),
 				CreatedAt:        event.CreatedAt,
 			})
+		}
+	}
+	return out
+}
+
+func strategyDiagnostics(run contracts.AgentRun, events []contracts.TraceEvent, appCore *core.Core) runStrategyDiagnostic {
+	out := runStrategyDiagnostic{
+		SourceKind:       run.VersionSnapshot.SourceKind,
+		SourceProviderID: run.VersionSnapshot.SourceProviderID,
+		ManifestVersion:  run.VersionSnapshot.ManifestVersion,
+		ManifestHash:     run.VersionSnapshot.ManifestHash,
+		StrategyHash:     run.VersionSnapshot.StrategyHash,
+		AgentPackage:     run.VersionSnapshot.AgentPackage,
+	}
+	for _, event := range events {
+		if event.Type == contracts.TraceStrategyGuardrailApplied {
+			if len(out.GuardrailAdjustments) == 0 {
+				out.GuardrailAdjustments = safeSliceValue(event.Payload["adjustments"])
+			}
+			continue
+		}
+		if event.Type != contracts.TraceStrategyResolved {
+			continue
+		}
+		if out.StrategyHash == "" {
+			out.StrategyHash = stringFromMap(event.Payload, "strategy_hash")
+		}
+		if out.SourceKind == "" {
+			out.SourceKind = contracts.AgentSourceKind(stringFromMap(event.Payload, "source_kind"))
+		}
+		if out.SourceProviderID == "" {
+			out.SourceProviderID = stringFromMap(event.Payload, "source_provider_id")
+		}
+		if out.ManifestVersion == "" {
+			out.ManifestVersion = stringFromMap(event.Payload, "manifest_version")
+		}
+		if out.ManifestHash == "" {
+			out.ManifestHash = stringFromMap(event.Payload, "manifest_hash")
+		}
+		if out.AgentPackage == "" {
+			out.AgentPackage = contracts.PackageVersionID(stringFromMap(event.Payload, "agent_package"))
+		}
+		if out.ContextMode == "" {
+			out.ContextMode = stringFromMap(event.Payload, "context_mode")
+		}
+		if len(out.ContextSources) == 0 {
+			out.ContextSources = stringSliceFromMap(event.Payload, "context_sources")
+		}
+		if out.Model == nil {
+			out.Model = safeValue(event.Payload["model"])
+		}
+		if out.Runtime == nil {
+			out.Runtime = safeValue(event.Payload["runtime"])
+		}
+		if out.Tools == nil {
+			out.Tools = safeValue(event.Payload["tools"])
+		}
+		if out.Skills == nil {
+			out.Skills = safeValue(event.Payload["skills"])
+		}
+		if out.Collaboration == nil {
+			out.Collaboration = safeValue(event.Payload["collaboration"])
+		}
+		if out.Memory == nil {
+			out.Memory = safeValue(event.Payload["memory"])
+		}
+		if out.Knowledge == nil {
+			out.Knowledge = safeValue(event.Payload["knowledge"])
+		}
+		if out.Repair == nil {
+			out.Repair = safeValue(event.Payload["repair"])
+		}
+		if out.Output == nil {
+			out.Output = safeValue(event.Payload["output"])
+		}
+		if len(out.GuardrailAdjustments) == 0 {
+			out.GuardrailAdjustments = safeSliceValue(event.Payload["guardrail_adjustments"])
+		}
+		resolvedAt := event.CreatedAt
+		out.ResolvedAt = &resolvedAt
+	}
+	if appCore != nil && appCore.ToolCatalog != nil && run.TenantID != "" && out.SourceProviderID != "" {
+		if provider, ok := appCore.ToolCatalog.GetProvider(run.TenantID, out.SourceProviderID); ok {
+			out.ServiceConnectionID = provider.ServiceConnectionID
+		}
+	}
+	return out
+}
+
+func contextDiagnostics(events []contracts.TraceEvent) runContextDiagnostic {
+	out := runContextDiagnostic{}
+	for _, event := range events {
+		switch event.Type {
+		case contracts.TraceContextCollectionCompleted:
+			if report, ok := contextAssemblyReportFromAny(event.Payload["context_assembly_report"]); ok {
+				out.StrategyHash = report.StrategyHash
+				out.Mode = report.Mode
+				out.TokenBudget = report.TokenBudget
+				out.EstimatedTokensIn = report.EstimatedTokensIn
+				out.EstimatedTokensOut = report.EstimatedTokensOut
+				out.Sources = append([]contracts.ContextSourceReport(nil), report.Sources...)
+				out.ExternalSources = externalContextSources(report.Sources)
+				if report.Compression != nil {
+					compression := *report.Compression
+					out.Compression = &compression
+				}
+			}
+		case contracts.TracePromptBundleBuilt:
+			if hash := stringFromMap(event.Payload, "hash"); hash != "" {
+				out.PromptBundleHash = hash
+			}
+			if report, ok := contextAssemblyReportFromAny(event.Payload["context_assembly_report"]); ok {
+				out.StrategyHash = report.StrategyHash
+				out.Mode = report.Mode
+				out.TokenBudget = report.TokenBudget
+				out.EstimatedTokensIn = report.EstimatedTokensIn
+				out.EstimatedTokensOut = report.EstimatedTokensOut
+				out.Sources = append([]contracts.ContextSourceReport(nil), report.Sources...)
+				out.ExternalSources = externalContextSources(report.Sources)
+				if report.Compression != nil {
+					compression := *report.Compression
+					out.Compression = &compression
+				}
+			}
+			if report, ok := contextCompressionReportFromAny(event.Payload["compression_report"]); ok {
+				out.Compression = &report
+			}
+		case contracts.TraceContextCompressionCompleted:
+			if report, ok := contextCompressionReportFromAny(event.Payload); ok {
+				out.CompressionEvents = append(out.CompressionEvents, report)
+				out.Compression = &report
+			}
+		}
+	}
+	return out
+}
+
+func contextAssemblyReportFromAny(value any) (contracts.ContextAssemblyReport, bool) {
+	if value == nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	if report, ok := value.(contracts.ContextAssemblyReport); ok {
+		return report, true
+	}
+	if report, ok := value.(*contracts.ContextAssemblyReport); ok && report != nil {
+		return *report, true
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	var report contracts.ContextAssemblyReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	if report.StrategyHash == "" && report.Mode == "" && len(report.Sources) == 0 && report.TokenBudget == 0 && report.Compression == nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	return report, true
+}
+
+func contextCompressionReportFromAny(value any) (contracts.ContextCompressionReport, bool) {
+	if value == nil {
+		return contracts.ContextCompressionReport{}, false
+	}
+	if report, ok := value.(contracts.ContextCompressionReport); ok {
+		return report, true
+	}
+	if report, ok := value.(*contracts.ContextCompressionReport); ok && report != nil {
+		return *report, true
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return contracts.ContextCompressionReport{}, false
+	}
+	var report contracts.ContextCompressionReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return contracts.ContextCompressionReport{}, false
+	}
+	if report.Mode == "" && report.InputTokens == 0 && report.OutputTokens == 0 && report.SummaryHash == "" && report.FailureReason == "" && len(report.SourceRefs) == 0 && !report.Applied {
+		return contracts.ContextCompressionReport{}, false
+	}
+	return report, true
+}
+
+func externalContextSources(sources []contracts.ContextSourceReport) []contracts.ContextSourceReport {
+	out := make([]contracts.ContextSourceReport, 0)
+	for _, source := range sources {
+		switch source.SourceType {
+		case "runtime_hook_context", "agent_plugin_context":
+			out = append(out, source)
 		}
 	}
 	return out
@@ -1128,6 +1406,26 @@ func stringFromMap(payload map[string]any, key string) string {
 	}
 }
 
+func stringSliceFromMap(payload map[string]any, key string) []string {
+	if payload == nil {
+		return nil
+	}
+	switch values := payload[key].(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if item, ok := value.(string); ok && item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func intFromMap(payload map[string]any, key string) int {
 	if payload == nil {
 		return 0
@@ -1155,6 +1453,31 @@ func safePayload(payload map[string]any) map[string]any {
 		out[key] = safeValue(value)
 	}
 	return out
+}
+
+func safeSliceValue(value any) []any {
+	if value == nil {
+		return nil
+	}
+	if values, ok := value.([]any); ok {
+		out := make([]any, 0, len(values))
+		for _, item := range values {
+			out = append(out, safeValue(item))
+		}
+		return out
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var values []any
+	if err := json.Unmarshal(data, &values); err != nil {
+		return nil
+	}
+	for i := range values {
+		values[i] = safeValue(values[i])
+	}
+	return values
 }
 
 func safeValue(value any) any {

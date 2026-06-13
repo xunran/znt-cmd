@@ -2,21 +2,44 @@ package kernel
 
 import (
 	"context"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
+	agentstrategy "znt/internal/agentdef/strategy"
+	contextcollector "znt/internal/context/collector"
 	contextconversation "znt/internal/context/conversation"
 	"znt/internal/contracts"
 	conversationstore "znt/internal/conversation"
 	"znt/pkg/idgen"
 )
 
-func (c Coordinator) conversationContext(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, events []contracts.TaskEvent, memories []contracts.MemorySummary, artifacts []contracts.ArtifactRef, tools []contracts.ToolResultSummary, userInput string) *contracts.ConversationContext {
-	recentFromStore := c.storedConversationMessages(ctx, envelope)
-	conversation := buildConversationContext(envelope, definition, userInput, c.Now(), c.EnableDirectConversation, recentFromStore)
+const (
+	contextSourceConversationRecent    = contextcollector.SourceConversationRecent
+	contextSourceConversationRetrieval = contextcollector.SourceConversationRetrieval
+	contextSourceTaskHistory           = contextcollector.SourceTaskHistory
+	contextSourceMemorySummary         = contextcollector.SourceMemorySummary
+	contextSourceArtifactRefs          = contextcollector.SourceArtifactRefs
+	contextSourceToolResults           = contextcollector.SourceToolResults
+	contextSourceRuntimeHookContext    = contextcollector.SourceRuntimeHookContext
+	contextSourceAgentPluginContext    = contextcollector.SourceAgentPluginContext
+)
+
+func (c Coordinator) conversationContext(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, strategy contracts.ContextStrategy, runID contracts.AgentRunID, taskID contracts.TaskID, events []contracts.TaskEvent, memories []contracts.MemorySummary, artifacts []contracts.ArtifactRef, tools []contracts.ToolResultSummary, userInput string) *contracts.ConversationContext {
+	if reflect.DeepEqual(strategy, contracts.ContextStrategy{}) {
+		strategy = agentstrategy.DefaultContextStrategy()
+	}
+	var recentFromStore []contracts.ConversationMessage
+	if contextSourceEnabled(strategy, contextSourceConversationRecent) {
+		recentFromStore = c.storedConversationMessages(ctx, envelope, contracts.IntValue(strategy.RecentMessageLimit))
+	}
+	conversation := buildConversationContext(envelope, definition, userInput, c.Now(), c.EnableDirectConversation, recentFromStore, contracts.IntValue(strategy.RecentMessageLimit))
 	if conversation == nil {
 		return nil
+	}
+	if !contextSourceEnabled(strategy, contextSourceConversationRecent) {
+		conversation.RecentMessages = nil
 	}
 	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceConversationContextBuilt, map[string]any{
 		"conversation_kind":  conversation.Kind,
@@ -64,6 +87,8 @@ func (c Coordinator) conversationContext(ctx context.Context, envelope contracts
 		})
 		sufficiency, _ = (contextconversation.HeuristicSufficiencyJudge{}).JudgeSufficiency(ctx, *conversation, phase)
 	}
+	retrievalMaxResults := contracts.IntValue(strategy.RetrievalMaxResults)
+	sufficiency.Queries = contextQueriesWithMaxResults(sufficiency.Queries, retrievalMaxResults)
 	conversation.Sufficiency = &sufficiency
 	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceConversationSufficiencyJudged, map[string]any{
 		"phase":             sufficiency.Phase,
@@ -76,7 +101,7 @@ func (c Coordinator) conversationContext(ctx context.Context, envelope contracts
 		"suggested_action":  sufficiency.SuggestedAction,
 	})
 
-	if sufficiency.RetrievalNeeded && len(sufficiency.Queries) > 0 {
+	if sufficiency.RetrievalNeeded && len(sufficiency.Queries) > 0 && contextSourceEnabled(strategy, contextSourceConversationRetrieval) {
 		c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceConversationContextRetrievalRequested, map[string]any{
 			"queries": retrievalQueryStrings(sufficiency.Queries),
 			"phase":   sufficiency.Phase,
@@ -109,14 +134,14 @@ func (c Coordinator) conversationContext(ctx context.Context, envelope contracts
 			return conversation
 		}
 		originalRetrievedCount := len(retrieved)
-		if c.ConversationMaxRetrieved > 0 && len(retrieved) > c.ConversationMaxRetrieved {
-			retrieved = retrieved[:c.ConversationMaxRetrieved]
+		if retrievalMaxResults > 0 && len(retrieved) > retrievalMaxResults {
+			retrieved = retrieved[:retrievalMaxResults]
 		}
 		conversation.Retrieved = retrieved
 		c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceConversationContextRetrievalCompleted, map[string]any{
 			"retrieved_count":              len(retrieved),
 			"retrieved_count_before_limit": originalRetrievedCount,
-			"max_retrieved":                c.ConversationMaxRetrieved,
+			"max_retrieved":                retrievalMaxResults,
 			"sources":                      retrievedSources(retrieved),
 		})
 		if len(retrieved) > 0 {
@@ -125,7 +150,7 @@ func (c Coordinator) conversationContext(ctx context.Context, envelope contracts
 			updated.Confidence = contextconversation.MaxFloat(updated.Confidence, 0.82)
 			updated.RetrievalNeeded = false
 			updated.SuggestedAction = "continue"
-			updated.Reason = "历史上下文已召回，可基于 retrieved_context 继续判断。"
+			updated.Reason = "historical context retrieved; continue with retrieved_context"
 			conversation.Sufficiency = &updated
 			rejudged, err := addressingJudge.JudgeAddressing(ctx, *conversation, definition)
 			if err != nil {
@@ -151,7 +176,7 @@ func (c Coordinator) conversationContext(ctx context.Context, envelope contracts
 	return conversation
 }
 
-func buildConversationContext(envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, userInput string, now time.Time, allowDirect bool, storedRecent []contracts.ConversationMessage) *contracts.ConversationContext {
+func buildConversationContext(envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, userInput string, now time.Time, allowDirect bool, storedRecent []contracts.ConversationMessage, recentLimit int) *contracts.ConversationContext {
 	runtimeConversation := envelope.Context.Conversation
 	if runtimeConversation == nil && (!allowDirect || envelope.Caller.CallerID == "") {
 		return nil
@@ -206,7 +231,7 @@ func buildConversationContext(envelope contracts.AgentEnvelope, definition contr
 		recent = append(recent, runtimeConversation.RecentMessages...)
 		participants = participantsWithAgent(definition, runtimeConversation.Participants)
 	}
-	recent = normalizeRecentMessages(recent, current, 20)
+	recent = normalizeRecentMessages(recent, current, recentLimit)
 	return &contracts.ConversationContext{
 		Kind:           kind,
 		CurrentMessage: current,
@@ -327,12 +352,12 @@ func (c Coordinator) persistConversationMessage(ctx context.Context, envelope co
 	})
 }
 
-func (c Coordinator) storedConversationMessages(ctx context.Context, envelope contracts.AgentEnvelope) []contracts.ConversationMessage {
+func (c Coordinator) storedConversationMessages(ctx context.Context, envelope contracts.AgentEnvelope, limit int) []contracts.ConversationMessage {
 	if c.ConversationStore == nil || envelope.Context.Conversation == nil {
 		return nil
 	}
 	conversation := envelope.Context.Conversation
-	messages, err := c.ConversationStore.RecentMessages(ctx, envelope.Context.TenantID, conversation.ConversationID, conversation.ThreadID, 20)
+	messages, err := c.ConversationStore.RecentMessages(ctx, envelope.Context.TenantID, conversation.ConversationID, conversation.ThreadID, limit)
 	if err != nil {
 		c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, "", envelope.Context.TaskID, contracts.TraceConversationContextRetrievalFailed, map[string]any{
 			"reason":          "conversation_store_recent_messages_failed",
@@ -457,6 +482,22 @@ func retrievalQueryStrings(queries []contracts.ContextRetrievalQuery) []string {
 		}
 	}
 	return out
+}
+
+func contextQueriesWithMaxResults(queries []contracts.ContextRetrievalQuery, maxResults int) []contracts.ContextRetrievalQuery {
+	if len(queries) == 0 {
+		return nil
+	}
+	out := make([]contracts.ContextRetrievalQuery, len(queries))
+	copy(out, queries)
+	for i := range out {
+		out[i].MaxResults = maxResults
+	}
+	return out
+}
+
+func contextSourceEnabled(strategy contracts.ContextStrategy, source string) bool {
+	return contextcollector.SourceEnabled(strategy, source)
 }
 
 func retrievedSources(items []contracts.RetrievedContext) []string {

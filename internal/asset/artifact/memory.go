@@ -3,6 +3,7 @@ package artifact
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ type MemoryStore interface {
 	WriteMemoryWithPolicy(ctx context.Context, event contracts.MemoryEvent, policy contracts.MemoryPolicy, actorID string, actorType string, traceID contracts.TraceID) (contracts.MemoryEvent, error)
 	GetMemory(ctx context.Context, tenantID contracts.TenantID, memoryID contracts.MemoryID) (contracts.MemoryEvent, error)
 	ListMemory(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, userID contracts.UserID) ([]contracts.MemorySummary, error)
+	ListMemoryLimit(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, userID contracts.UserID, scopes []string, limit int) ([]contracts.MemorySummary, error)
 }
 
 type InMemoryMemoryStore struct {
@@ -97,9 +99,17 @@ func scopeAllowed(allowed []string, scope string) bool {
 }
 
 func (s *InMemoryMemoryStore) ListMemory(_ context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, userID contracts.UserID) ([]contracts.MemorySummary, error) {
+	return s.listMemory(tenantID, agentID, userID, nil, 0), nil
+}
+
+func (s *InMemoryMemoryStore) ListMemoryLimit(_ context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, userID contracts.UserID, scopes []string, limit int) ([]contracts.MemorySummary, error) {
+	return s.listMemory(tenantID, agentID, userID, scopes, limit), nil
+}
+
+func (s *InMemoryMemoryStore) listMemory(tenantID contracts.TenantID, agentID contracts.AgentID, userID contracts.UserID, scopes []string, limit int) []contracts.MemorySummary {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]contracts.MemorySummary, 0)
+	events := make([]contracts.MemoryEvent, 0)
 	for _, event := range s.events {
 		if event.TenantID != tenantID {
 			continue
@@ -110,7 +120,23 @@ func (s *InMemoryMemoryStore) ListMemory(_ context.Context, tenantID contracts.T
 		if userID != "" && event.UserID != userID {
 			continue
 		}
-		out = append(out, contracts.MemorySummary{MemoryID: event.MemoryID, Summary: event.Summary})
+		if len(scopes) > 0 && !scopeAllowed(scopes, event.Scope) {
+			continue
+		}
+		events = append(events, event)
 	}
-	return out, nil
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].CreatedAt.Equal(events[j].CreatedAt) {
+			return events[i].MemoryID < events[j].MemoryID
+		}
+		return events[i].CreatedAt.Before(events[j].CreatedAt)
+	})
+	if limit > 0 && len(events) > limit {
+		events = events[len(events)-limit:]
+	}
+	out := make([]contracts.MemorySummary, 0, len(events))
+	for _, event := range events {
+		out = append(out, contracts.MemorySummary{MemoryID: event.MemoryID, Summary: event.Summary, Scope: event.Scope})
+	}
+	return out
 }

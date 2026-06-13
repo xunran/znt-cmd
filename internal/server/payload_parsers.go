@@ -53,6 +53,7 @@ func parseArtifactRefs(value any) []contracts.ArtifactRef {
 			URI:        uri,
 			Summary:    summary,
 			Hash:       refHash,
+			Metadata:   parseMetadata(row["metadata"]),
 		})
 	}
 	return refs
@@ -244,6 +245,60 @@ func skillDefinitionFromDraftInput(input agentpackage.SkillDraftInput) (contract
 		CompletionCriteria:      input.CompletionCriteria,
 		OutputSchema:            input.OutputSchema,
 	}, nil
+}
+
+func parseSkillRefsPayload(value any) ([]contracts.SkillDefinitionRef, error) {
+	if value == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var refs []contracts.SkillDefinitionRef
+	if err := json.Unmarshal(data, &refs); err != nil {
+		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid skills payload", map[string]any{"error": err.Error()})
+	}
+	return refs, nil
+}
+
+func parseSkillDefinitionsPayload(value any) ([]contracts.SkillDefinition, error) {
+	if value == nil {
+		return nil, nil
+	}
+	raw, ok := value.([]any)
+	if !ok {
+		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "skill_definitions must be an array", nil)
+	}
+	out := make([]contracts.SkillDefinition, 0, len(raw))
+	for _, item := range raw {
+		row, ok := item.(map[string]any)
+		if !ok {
+			return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "skill_definitions entries must be objects", nil)
+		}
+		if _, structured := row["card"]; structured {
+			data, err := json.Marshal(row)
+			if err != nil {
+				return nil, err
+			}
+			var definition contracts.SkillDefinition
+			if err := json.Unmarshal(data, &definition); err != nil {
+				return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid skill definition payload", map[string]any{"error": err.Error()})
+			}
+			out = append(out, definition)
+			continue
+		}
+		input, err := skillDraftInput(row)
+		if err != nil {
+			return nil, err
+		}
+		definition, err := skillDefinitionFromDraftInput(input)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, definition)
+	}
+	return out, nil
 }
 
 func skillResourceIDs(resources []contracts.SkillResourceRef) []string {

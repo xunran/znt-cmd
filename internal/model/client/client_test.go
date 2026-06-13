@@ -115,6 +115,61 @@ func TestOpenAICompatibleClientComplete(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleClientUsesRequestBaseURL(t *testing.T) {
+	fallbackHits := make(chan struct{}, 1)
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case fallbackHits <- struct{}{}:
+		default:
+		}
+		http.Error(w, "fallback should not be used", http.StatusInternalServerError)
+	}))
+	defer fallback.Close()
+	overrideHits := make(chan string, 1)
+	override := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case overrideHits <- r.URL.Path:
+		default:
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "override-model",
+			"choices": []any{
+				map[string]any{"message": map[string]any{"content": `{"type":"reply","reply":{"kind":"answer","text":"ok"}}`}},
+			},
+		})
+	}))
+	defer override.Close()
+
+	resp, err := OpenAICompatibleClient{BaseURL: fallback.URL, Model: "default-model"}.Complete(context.Background(), ModelRequest{
+		ModelBaseURL: override.URL + "/chat/completions",
+		ModelName:    "override-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackCalled := false
+	select {
+	case <-fallbackHits:
+		fallbackCalled = true
+	default:
+	}
+	overridePath := ""
+	select {
+	case overridePath = <-overrideHits:
+	default:
+	}
+	overrideCalled := overridePath != ""
+	if fallbackCalled || !overrideCalled {
+		t.Fatalf("expected request base URL override, fallback_called=%v override_called=%v", fallbackCalled, overrideCalled)
+	}
+	if overridePath != "/chat/completions" {
+		t.Fatalf("unexpected override path %s", overridePath)
+	}
+	if resp.ModelName != "override-model" {
+		t.Fatalf("expected override model response, got %#v", resp)
+	}
+}
+
 func TestOpenAICompatibleClientStreamSSE(t *testing.T) {
 	var received chatCompletionRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +335,56 @@ func TestOpenAICompatibleClientSendsRequestOptions(t *testing.T) {
 		`"max_tokens":1024`,
 		`"temperature":0.1`,
 		`"thinking":{"type":"enabled"}`,
+		`"reasoning_effort":"low"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("expected request body to contain %s, got %s", expected, body)
+		}
+	}
+}
+
+func TestOpenAICompatibleClientRequestOverridesModelOptions(t *testing.T) {
+	clientTemperature := 0.7
+	requestTemperature := 0.2
+	var raw []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		raw, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "agent-model",
+			"choices": []any{
+				map[string]any{"message": map[string]any{"content": `{"type":"reply","reply":{"kind":"answer","text":"ok"}}`}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, err := OpenAICompatibleClient{
+		BaseURL:         server.URL,
+		Model:           "default-model",
+		MaxTokens:       1024,
+		Temperature:     &clientTemperature,
+		Thinking:        "enabled",
+		ReasoningEffort: "medium",
+	}.Complete(context.Background(), ModelRequest{
+		ModelName:       "agent-model",
+		MaxOutputTokens: 256,
+		Temperature:     &requestTemperature,
+		Thinking:        "disabled",
+		ReasoningEffort: "low",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	for _, expected := range []string{
+		`"model":"agent-model"`,
+		`"max_tokens":256`,
+		`"temperature":0.2`,
+		`"thinking":{"type":"disabled"}`,
 		`"reasoning_effort":"low"`,
 	} {
 		if !strings.Contains(body, expected) {

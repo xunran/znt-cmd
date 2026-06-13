@@ -23,7 +23,6 @@ func TestConfigureConversationJudgeModes(t *testing.T) {
 		ConversationJudgeMode:        "model",
 		ConversationJudgeTimeoutMS:   1200,
 		ConversationRetrievalEnabled: false,
-		ConversationMaxRetrieved:     2,
 	}, modelclient.StubModelClient{})
 	if judge, ok := coordinator.AddressingJudge.(contextconversation.ModelJudge); !ok {
 		t.Fatalf("expected model addressing judge, got %T", coordinator.AddressingJudge)
@@ -35,9 +34,6 @@ func TestConfigureConversationJudgeModes(t *testing.T) {
 	}
 	if coordinator.DisableConversationRetrieval {
 		t.Fatal("expected zero-value config to keep conversation retrieval enabled")
-	}
-	if coordinator.ConversationMaxRetrieved != 2 {
-		t.Fatalf("expected max retrieved to be configured, got %d", coordinator.ConversationMaxRetrieved)
 	}
 
 	dir := t.TempDir()

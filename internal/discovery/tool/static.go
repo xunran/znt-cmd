@@ -95,6 +95,7 @@ func (p StaticCandidateProvider) skillCandidates(agent contracts.AgentDefinition
 		}
 		return left > right
 	})
+	out = ApplySkillUseStrategy(CandidateSet{Skills: out}, agent.Strategies.Skills).Skills
 	instructions := make([]contracts.SkillInstruction, 0)
 	for _, card := range out {
 		if instruction, ok := instructionsByKey[skillKey(card.SkillID, card.Version)]; ok {

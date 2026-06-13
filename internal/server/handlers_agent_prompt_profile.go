@@ -173,51 +173,38 @@ func promptProfileVersionViews(ctx context.Context, appCore *core.Core, tenantID
 }
 
 func patchPromptProfileDraft(ctx context.Context, appCore *core.Core, caller auth.CallerIdentity, draftID string, payload map[string]any) (agentpackage.Draft, error) {
-	var draft agentpackage.Draft
-	var err error
+	draft, ok, err := appCore.Packages.GetDraft(ctx, draftID)
+	if err != nil {
+		return agentpackage.Draft{}, err
+	}
+	if !ok {
+		return agentpackage.Draft{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "draft not found", map[string]any{"draft_id": draftID})
+	}
+	if draft.TenantID != caller.TenantID {
+		return agentpackage.Draft{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "draft tenant does not match caller tenant", nil)
+	}
+	source := draft.Source
 	changed := false
 	if _, ok := payload["prompt"]; ok {
-		draft, err = appCore.Packages.PatchPromptForTenant(ctx, caller.TenantID, draftID, payloadString(payload, "prompt"), caller.CallerID)
-		if err != nil {
-			return agentpackage.Draft{}, err
-		}
+		source.Prompt = payloadString(payload, "prompt")
 		changed = true
 	}
 	if _, ok := payload["system_prompt"]; ok {
-		draft, err = appCore.Packages.PatchSystemPromptForTenant(ctx, caller.TenantID, draftID, payloadString(payload, "system_prompt"), caller.CallerID)
-		if err != nil {
-			return agentpackage.Draft{}, err
-		}
+		source.Strategies.Prompt.SystemPrompt = payloadString(payload, "system_prompt")
 		changed = true
 	}
 	if _, ok := payload["developer_prompt"]; ok {
-		draft, err = appCore.Packages.PatchDeveloperPromptForTenant(ctx, caller.TenantID, draftID, payloadString(payload, "developer_prompt"), caller.CallerID)
-		if err != nil {
-			return agentpackage.Draft{}, err
-		}
+		source.Strategies.Prompt.DeveloperPrompt = payloadString(payload, "developer_prompt")
 		changed = true
 	}
 	if _, ok := payload["agents_md"]; ok {
-		draft, err = appCore.Packages.PatchAgentsMDForTenant(ctx, caller.TenantID, draftID, payloadString(payload, "agents_md"), caller.CallerID)
-		if err != nil {
-			return agentpackage.Draft{}, err
-		}
+		source.AgentsMD = payloadString(payload, "agents_md")
 		changed = true
 	}
 	if !changed {
-		existing, ok, err := appCore.Packages.GetDraft(ctx, draftID)
-		if err != nil {
-			return agentpackage.Draft{}, err
-		}
-		if !ok {
-			return agentpackage.Draft{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "draft not found", map[string]any{"draft_id": draftID})
-		}
-		if existing.TenantID != caller.TenantID {
-			return agentpackage.Draft{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "draft tenant does not match caller tenant", nil)
-		}
-		return existing, nil
+		return draft, nil
 	}
-	return draft, nil
+	return appCore.Packages.PatchSourceForTenant(ctx, caller.TenantID, draftID, source, caller.CallerID)
 }
 
 func upsertStandalonePromptProfile(ctx context.Context, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, payload map[string]any) (agentpackage.PromptProfileProjection, error) {

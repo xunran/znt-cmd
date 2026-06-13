@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"znt/internal/agentdef/loader"
@@ -57,6 +58,108 @@ func TestRunnerPassesFinalReplyContains(t *testing.T) {
 	}
 	if !started || !completed {
 		t.Fatalf("expected eval trace events, got %#v", events)
+	}
+}
+
+func TestRunnerSupportsStrategyAssertions(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	definition := loader.TestAgentDefinition()
+	definition.Strategies.Context = contracts.ContextStrategy{
+		Mode:           "long_context",
+		EnabledSources: []string{"conversation_recent", "runtime_hook_context"},
+	}
+	coordinator := kernel.NewCoordinator(
+		loader.NewStaticLoader(definition),
+		runrepo.NewInMemoryRepository(),
+		taskruntime.NewService(taskRepo, taskrepo.NewInMemoryEventRepository()),
+		taskRepo,
+		trace.NewInMemoryRecorder(),
+		modelclient.StubModelClient{Response: modelclient.ModelResponse{RawDecisionJSON: []byte(`{"type":"reply","reply":{"kind":"answer","text":"ok"}}`)}},
+	)
+	result := NewRunner(coordinator).Run(context.Background(), Case{
+		Name:            "strategy",
+		Input:           "hello",
+		Target:          contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Context:         contracts.RuntimeContext{TenantID: "tenant_1"},
+		ShouldEndStatus: contracts.RunCompleted,
+		StrategyAssertions: StrategyAssertions{
+			ContextMode:    "long_context",
+			ContextSources: []string{"runtime_hook_context"},
+		},
+	})
+	if !result.Passed {
+		t.Fatalf("expected strategy assertions to pass, got %#v", result)
+	}
+	if result.Strategy.ContextMode != "long_context" || !containsString(result.Strategy.ContextSources, "runtime_hook_context") {
+		t.Fatalf("expected strategy evidence in eval result, got %#v", result.Strategy)
+	}
+
+	failed := NewRunner(coordinator).Run(context.Background(), Case{
+		Name:            "strategy_missing_source",
+		Input:           "hello",
+		Target:          contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Context:         contracts.RuntimeContext{TenantID: "tenant_1"},
+		ShouldEndStatus: contracts.RunCompleted,
+		StrategyAssertions: StrategyAssertions{
+			ContextSources: []string{"agent_plugin_context"},
+		},
+	})
+	if failed.Passed || len(failed.Failures) == 0 || !strings.Contains(strings.Join(failed.Failures, "\n"), "context source missing") {
+		t.Fatalf("expected missing context source assertion to fail, got %#v", failed)
+	}
+}
+
+func TestRunnerSupportsCompressionModeStrategyAssertions(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	definition := loader.TestAgentDefinition()
+	definition.Strategies.Context = contracts.ContextStrategy{
+		Mode:               "balanced",
+		ContextTokenBudget: contracts.IntPtr(24),
+		Compression: contracts.ContextCompressionStrategy{
+			Enabled:      true,
+			Mode:         "truncate",
+			TargetTokens: 24,
+		},
+	}
+	coordinator := kernel.NewCoordinator(
+		loader.NewStaticLoader(definition),
+		runrepo.NewInMemoryRepository(),
+		taskruntime.NewService(taskRepo, taskrepo.NewInMemoryEventRepository()),
+		taskRepo,
+		trace.NewInMemoryRecorder(),
+		modelclient.StubModelClient{Response: modelclient.ModelResponse{RawDecisionJSON: []byte(`{"type":"reply","reply":{"kind":"answer","text":"ok"}}`)}},
+	)
+	compressionApplied := true
+	result := NewRunner(coordinator).Run(context.Background(), Case{
+		Name:            "compression_strategy",
+		Input:           strings.Repeat("context ", 80),
+		Target:          contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Context:         contracts.RuntimeContext{TenantID: "tenant_1"},
+		ShouldEndStatus: contracts.RunCompleted,
+		StrategyAssertions: StrategyAssertions{
+			CompressionApplied: &compressionApplied,
+			CompressionMode:    "truncate",
+		},
+	})
+	if !result.Passed {
+		t.Fatalf("expected compression strategy assertions to pass, got %#v", result)
+	}
+	if result.Strategy.CompressionApplied == nil || !*result.Strategy.CompressionApplied || result.Strategy.CompressionMode != "truncate" {
+		t.Fatalf("expected compression evidence in eval result, got %#v", result.Strategy)
+	}
+
+	failed := NewRunner(coordinator).Run(context.Background(), Case{
+		Name:            "compression_strategy_mismatch",
+		Input:           strings.Repeat("context ", 80),
+		Target:          contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Context:         contracts.RuntimeContext{TenantID: "tenant_1"},
+		ShouldEndStatus: contracts.RunCompleted,
+		StrategyAssertions: StrategyAssertions{
+			CompressionMode: "llm",
+		},
+	})
+	if failed.Passed || len(failed.Failures) == 0 || !strings.Contains(strings.Join(failed.Failures, "\n"), "compression mode mismatch") {
+		t.Fatalf("expected compression mode assertion to fail, got %#v", failed)
 	}
 }
 

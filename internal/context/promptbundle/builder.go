@@ -45,6 +45,10 @@ func (b Builder) Build(_ context.Context, agent contracts.AgentDefinition, view 
 		Constraints: view.Constraints,
 		CreatedAt:   b.now(),
 	}
+	if view.ContextAssemblyReport != nil {
+		report := *view.ContextAssemblyReport
+		bundle.ContextAssemblyReport = &report
+	}
 	seenSkillInstructions := map[string]struct{}{}
 	for _, instruction := range view.CandidateSkillInstructions {
 		if strings.TrimSpace(instruction.Content) == "" {
@@ -62,20 +66,29 @@ func (b Builder) Build(_ context.Context, agent contracts.AgentDefinition, view 
 	if len(bundle.SkillInstructions) > 0 {
 		bundle.Developer = strings.Join(append([]string{bundle.Developer}, bundle.SkillInstructions...), "\n")
 	}
-	stable, err := hash.StableJSON(map[string]any{
-		"system":      bundle.System,
-		"developer":   bundle.Developer,
-		"task":        bundle.Task,
-		"context":     bundle.Context,
-		"constraints": bundle.Constraints,
-		"skills":      bundle.SkillInstructions,
-		"tools":       bundle.ToolCards,
-	})
-	if err != nil {
+	if err := RefreshHash(&bundle); err != nil {
 		return contracts.PromptBundle{}, err
 	}
-	bundle.Hash = stable
 	return bundle, nil
+}
+
+func RefreshHash(bundle *contracts.PromptBundle) error {
+	stable, err := hash.StableJSON(map[string]any{
+		"system":         bundle.System,
+		"developer":      bundle.Developer,
+		"task":           bundle.Task,
+		"context":        bundle.Context,
+		"context_report": bundle.ContextAssemblyReport,
+		"constraints":    bundle.Constraints,
+		"output_schema":  bundle.OutputSchema,
+		"skills":         bundle.SkillInstructions,
+		"tools":          bundle.ToolCards,
+	})
+	if err != nil {
+		return err
+	}
+	bundle.Hash = stable
+	return nil
 }
 
 func renderSkillInstruction(instruction contracts.SkillInstruction) string {
@@ -91,7 +104,7 @@ func renderSkillInstruction(instruction contracts.SkillInstruction) string {
 
 func renderContext(view contracts.WorkView) string {
 	parts := []string{
-		sourceBlock("user input", view.UserInput),
+		sourceBlock("user input", renderDynamicContext("user_input", "user_input:"+string(view.RunID), "untrusted_user_text", view.UserInput)),
 		sourceBlock("task summary", fmt.Sprintf("task_id=%s status=%s title=%s", view.TaskSummary.TaskID, view.TaskSummary.Status, view.TaskSummary.Title)),
 	}
 	if view.ConversationContext != nil {
@@ -114,16 +127,16 @@ func renderContext(view contracts.WorkView) string {
 		parts = append(parts, sourceBlock("handoff context", fmt.Sprintf("package_id=%s from=%s mode=%s summary=%s", view.HandoffContext.PackageID, view.HandoffContext.FromAgent, view.HandoffContext.Mode, view.HandoffContext.Summary)))
 	}
 	for _, memory := range view.MemorySummaries {
-		parts = append(parts, sourceBlock("memory summary", fmt.Sprintf("%s %s", memory.MemoryID, memory.Summary)))
+		parts = append(parts, sourceBlock("memory summary", renderMemorySummary(memory)))
 	}
 	for _, artifact := range view.ArtifactRefs {
-		parts = append(parts, sourceBlock("artifact summary", fmt.Sprintf("%s %s %s", artifact.ArtifactID, artifact.Type, artifact.Summary)))
+		parts = append(parts, sourceBlock("artifact summary", renderArtifactRef(artifact)))
 	}
 	for _, mark := range view.RiskMarks {
 		parts = append(parts, sourceBlock("risk mark", fmt.Sprintf("%s: %s", mark.Level, mark.Reason)))
 	}
 	for _, result := range view.ToolResultSummaries {
-		parts = append(parts, sourceBlock("tool result", fmt.Sprintf("%s %s %s", result.ToolCallID, result.Status, result.Summary)))
+		parts = append(parts, sourceBlock("tool result", renderToolResultSummary(result)))
 	}
 	for _, capability := range view.CandidateCapabilities {
 		parts = append(parts, sourceBlock("retrieved capability", fmt.Sprintf("%s/%s: %s", capability.Type, capability.Name, capability.Description)))
@@ -138,6 +151,75 @@ func renderContext(view contracts.WorkView) string {
 		parts = append(parts, sourceBlock("retrieved tool card", fmt.Sprintf("%s: %s", tool.Name, tool.Description)))
 	}
 	return strings.Join(parts, "\n")
+}
+
+func renderDynamicContext(sourceType string, sourceRef string, trustLevel string, content string) string {
+	header := contextMetadataLine(sourceType, sourceRef, trustLevel)
+	if strings.TrimSpace(content) == "" {
+		return header
+	}
+	return header + "\n" + content
+}
+
+func renderMemorySummary(memory contracts.MemorySummary) string {
+	body := strings.TrimSpace(fmt.Sprintf("%s %s", memory.MemoryID, memory.Summary))
+	return renderDynamicContext("memory_summary", "memory:"+string(memory.MemoryID), "system_record", body)
+}
+
+func renderToolResultSummary(result contracts.ToolResultSummary) string {
+	body := strings.TrimSpace(fmt.Sprintf("%s %s %s", result.ToolCallID, result.Status, result.Summary))
+	return renderDynamicContext("tool_result", "tool_result:"+string(result.ToolCallID), "tool_result", body)
+}
+
+func renderArtifactRef(artifact contracts.ArtifactRef) string {
+	sourceType := artifactMetadataString(artifact, "source_type")
+	if sourceType == "" {
+		sourceType = "artifact_refs"
+	}
+	sourceRef := artifactMetadataString(artifact, "source_ref")
+	if sourceRef == "" && artifact.ArtifactID != "" {
+		sourceRef = "artifact:" + string(artifact.ArtifactID)
+	}
+	trustLevel := artifactMetadataString(artifact, "trust_level")
+	if trustLevel == "" {
+		trustLevel = "tool_result"
+	}
+	parts := []string{
+		contextMetadataLine(sourceType, sourceRef, trustLevel),
+		fmt.Sprintf("%s %s", artifact.ArtifactID, artifact.Type),
+	}
+	if sourceType := artifactMetadataString(artifact, "source_type"); sourceType != "" {
+		parts = append(parts, "source_type="+sourceType)
+	}
+	if sourceRef := artifactMetadataString(artifact, "source_ref"); sourceRef != "" {
+		parts = append(parts, "source_ref="+sourceRef)
+	}
+	if providerID := artifactMetadataString(artifact, "provider_id"); providerID != "" {
+		parts = append(parts, "provider_id="+providerID)
+	}
+	if hookID := artifactMetadataString(artifact, "hook_id"); hookID != "" {
+		parts = append(parts, "hook_id="+hookID)
+	}
+	if toolCallID := artifactMetadataString(artifact, "tool_call_id"); toolCallID != "" {
+		parts = append(parts, "tool_call_id="+toolCallID)
+	}
+	if trustLevel := artifactMetadataString(artifact, "trust_level"); trustLevel != "" {
+		parts = append(parts, "trust_level="+trustLevel)
+	}
+	if artifact.Summary != "" {
+		parts = append(parts, artifact.Summary)
+	}
+	return strings.Join(parts, " ")
+}
+
+func artifactMetadataString(artifact contracts.ArtifactRef, key string) string {
+	if artifact.Metadata == nil {
+		return ""
+	}
+	if value, ok := artifact.Metadata[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func renderConversationContext(conversation contracts.ConversationContext) []string {
@@ -221,6 +303,7 @@ func renderConversationMessage(message contracts.ConversationMessage) string {
 	if !message.CreatedAt.IsZero() {
 		createdAt = message.CreatedAt.UTC().Format(time.RFC3339)
 	}
+	sourceRef := firstNonEmptyString(message.MessageID, message.ExternalMessageID)
 	prefix := fmt.Sprintf("[%s] %s %s", createdAt, message.SpeakerID, message.SpeakerName)
 	meta := []string{}
 	if message.MessageID != "" {
@@ -235,7 +318,8 @@ func renderConversationMessage(message contracts.ConversationMessage) string {
 	if len(meta) > 0 {
 		prefix += " (" + strings.Join(meta, " ") + ")"
 	}
-	return strings.TrimSpace(prefix) + ": " + message.Text
+	body := strings.TrimSpace(prefix) + ": " + message.Text
+	return renderDynamicContext("conversation_recent", "message:"+sourceRef, "untrusted_user_text", body)
 }
 
 func renderRetrievedContext(item contracts.RetrievedContext) string {
@@ -243,8 +327,12 @@ func renderRetrievedContext(item contracts.RetrievedContext) string {
 	if !item.CreatedAt.IsZero() {
 		createdAt = item.CreatedAt.UTC().Format(time.RFC3339)
 	}
+	sourceRef := ""
+	if strings.TrimSpace(item.SourceID) != "" {
+		sourceRef = strings.TrimSpace(item.SourceType) + ":" + strings.TrimSpace(item.SourceID)
+	}
 	lines := []string{
-		fmt.Sprintf("[%s %s relevance=%.2f recency=%.2f created_at=%s trust=%s visibility=%s input_boundary=untrusted]", item.SourceType, item.SourceID, item.Relevance, item.RecencyScore, createdAt, item.TrustLevel, item.Visibility),
+		fmt.Sprintf("[%s relevance=%.2f recency=%.2f created_at=%s visibility=%s]", contextMetadataLine(item.SourceType, sourceRef, item.TrustLevel), item.Relevance, item.RecencyScore, createdAt, item.Visibility),
 	}
 	if item.SpeakerID != "" || item.SpeakerName != "" {
 		lines = append(lines, fmt.Sprintf("speaker=%s %s", item.SpeakerID, item.SpeakerName))
@@ -256,6 +344,44 @@ func renderRetrievedContext(item contracts.RetrievedContext) string {
 		lines = append(lines, "snippet="+item.Snippet)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func contextMetadataLine(sourceType string, sourceRef string, trustLevel string) string {
+	sourceType = strings.TrimSpace(sourceType)
+	if sourceType == "" {
+		sourceType = "context"
+	}
+	trustLevel = strings.TrimSpace(trustLevel)
+	if trustLevel == "" {
+		trustLevel = "untrusted_user_text"
+	}
+	parts := []string{
+		"source_type=" + sourceType,
+		"trust_level=" + trustLevel,
+		"input_boundary=untrusted",
+	}
+	if sourceRef = safeSourceRef(sourceRef); sourceRef != "" {
+		parts = append(parts, "source_ref="+sourceRef)
+	}
+	return strings.Join(parts, " ")
+}
+
+func safeSourceRef(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasSuffix(value, ":") {
+		return ""
+	}
+	return strings.Join(strings.Fields(value), "_")
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func sourceBlock(source string, content string) string {

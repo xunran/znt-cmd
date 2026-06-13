@@ -9,19 +9,23 @@ import (
 	"time"
 
 	"znt/internal/agentdef/loader"
+	agentstrategy "znt/internal/agentdef/strategy"
 	"znt/internal/asset/artifact"
 	"znt/internal/bridge/array"
+	contextcollector "znt/internal/context/collector"
+	contextcompressor "znt/internal/context/compressor"
 	contextconversation "znt/internal/context/conversation"
 	promptbuilder "znt/internal/context/promptbundle"
 	workviewbuilder "znt/internal/context/workview"
 	"znt/internal/contracts"
 	conversationstore "znt/internal/conversation"
-	decisionparser "znt/internal/decision/parser"
 	decisionvalidator "znt/internal/decision/validator"
 	tooldiscovery "znt/internal/discovery/tool"
 	"znt/internal/governance/trace"
 	modelclient "znt/internal/model/client"
 	policyengine "znt/internal/policy/engine"
+	outputpolicy "znt/internal/policy/outputpolicy"
+	promptpolicy "znt/internal/policy/promptpolicy"
 	runtimehook "znt/internal/runtime/hook"
 	runrepo "znt/internal/runtime/run"
 	taskplan "znt/internal/task/plan"
@@ -54,9 +58,9 @@ type Coordinator struct {
 	AddressingJudge              contextconversation.AddressingJudge
 	SufficiencyJudge             contextconversation.SufficiencyJudge
 	ContextRetriever             contextconversation.Retriever
+	ContextDefaults              contracts.ContextStrategy
 	EnableDirectConversation     bool
 	DisableConversationRetrieval bool
-	ConversationMaxRetrieved     int
 	ExternalSync                 array.Syncer
 	ExternalBinding              func(context.Context, contracts.TenantID, contracts.TaskID) (*contracts.ExternalTaskBinding, bool)
 	Policies                     policyengine.Store
@@ -103,13 +107,28 @@ type PromptPreviewRequest struct {
 }
 
 type PromptPreviewResult struct {
-	Agent         contracts.AgentDefinition `json:"agent"`
-	PolicySet     contracts.PolicySet       `json:"policy_set"`
-	WorkView      contracts.WorkView        `json:"work_view"`
-	PromptBundle  contracts.PromptBundle    `json:"prompt_bundle"`
-	TokenEstimate int                       `json:"token_estimate"`
-	ModelProvider string                    `json:"model_provider,omitempty"`
-	ModelName     string                    `json:"model_name,omitempty"`
+	Agent                 contracts.AgentDefinition           `json:"agent"`
+	PolicySet             contracts.PolicySet                 `json:"policy_set"`
+	EffectiveStrategies   contracts.AgentStrategies           `json:"effective_strategies"`
+	StrategyHash          string                              `json:"strategy_hash,omitempty"`
+	GuardrailAdjustments  []agentstrategy.GuardrailAdjustment `json:"guardrail_adjustments,omitempty"`
+	HookEffects           []PromptPreviewHookEffect           `json:"hook_effects,omitempty"`
+	WorkView              contracts.WorkView                  `json:"work_view"`
+	PromptBundle          contracts.PromptBundle              `json:"prompt_bundle"`
+	ContextAssemblyReport *contracts.ContextAssemblyReport    `json:"context_assembly_report,omitempty"`
+	CompressionReport     *contracts.ContextCompressionReport `json:"compression_report,omitempty"`
+	TokenEstimate         int                                 `json:"token_estimate"`
+	ModelProvider         string                              `json:"model_provider,omitempty"`
+	ModelName             string                              `json:"model_name,omitempty"`
+}
+
+type PromptPreviewHookEffect struct {
+	Phase               runtimehook.HookPoint `json:"phase"`
+	ContextBlocksAdded  int                   `json:"context_blocks_added,omitempty"`
+	ContextRefsDropped  int                   `json:"context_refs_dropped,omitempty"`
+	ToolRankAdjustments int                   `json:"tool_rank_adjustments,omitempty"`
+	PlannerHints        int                   `json:"planner_hints,omitempty"`
+	MemoryWriteIntents  int                   `json:"memory_write_intents,omitempty"`
 }
 
 func NewCoordinator(agents loader.Loader, runs runrepo.Repository, tasks *taskruntime.Service, taskRepo taskrepo.TaskRepository, traceRecorder trace.Recorder, model modelclient.ModelClient) Coordinator {
@@ -130,6 +149,52 @@ func NewCoordinator(agents loader.Loader, runs runrepo.Repository, tasks *taskru
 		DisabledToolIDs:  map[string]struct{}{},
 		Now:              func() time.Time { return time.Now().UTC() },
 	}
+}
+
+func (c Coordinator) strategyDefaults() agentstrategy.Defaults {
+	defaults := agentstrategy.DefaultValues()
+	if contextStrategyConfigured(c.ContextDefaults) {
+		defaults.Context = c.ContextDefaults
+	}
+	return defaults
+}
+
+func contextStrategyConfigured(strategy contracts.ContextStrategy) bool {
+	return strategy.Mode != "" ||
+		strategy.RecentMessageLimit != nil ||
+		strategy.RetrievalMaxResults != nil ||
+		strategy.TaskHistoryMaxItems != nil ||
+		strategy.MemoryMaxItems != nil ||
+		strategy.ArtifactRefMaxItems != nil ||
+		strategy.ToolResultMaxItems != nil ||
+		strategy.ContextTokenBudget != nil ||
+		len(strategy.EnabledSources) > 0 ||
+		len(strategy.SourceBudgets) > 0 ||
+		strategy.Compression.Mode != "" ||
+		strategy.Compression.Enabled ||
+		strategy.Compression.TriggerRatio > 0 ||
+		strategy.Compression.TargetTokens > 0 ||
+		strategy.Compression.PromptProfileID != "" ||
+		strategy.Compression.InlinePrompt != nil
+}
+
+func appendPromptPreviewHookEffect(effects []PromptPreviewHookEffect, phase runtimehook.HookPoint, patch runtimehook.Patch) []PromptPreviewHookEffect {
+	effect := PromptPreviewHookEffect{
+		Phase:               phase,
+		ContextBlocksAdded:  len(patch.AddContextBlocks),
+		ContextRefsDropped:  len(patch.DropContextRefs),
+		ToolRankAdjustments: len(patch.ToolRankAdjustments),
+		PlannerHints:        len(patch.PlannerHints),
+		MemoryWriteIntents:  len(patch.MemoryWriteIntents),
+	}
+	if effect.ContextBlocksAdded == 0 &&
+		effect.ContextRefsDropped == 0 &&
+		effect.ToolRankAdjustments == 0 &&
+		effect.PlannerHints == 0 &&
+		effect.MemoryWriteIntents == 0 {
+		return effects
+	}
+	return append(effects, effect)
 }
 
 func (c Coordinator) PreviewPromptBundle(ctx context.Context, request PromptPreviewRequest) (PromptPreviewResult, error) {
@@ -158,6 +223,12 @@ func (c Coordinator) PreviewPromptBundle(ctx context.Context, request PromptPrev
 	if definition.PolicyRefs.PolicySetID == "" {
 		policySet = c.policySet(ctx, tenantID, "policy_default")
 	}
+	effective, strategyReport, err := agentstrategy.Resolve(definition, policySet, c.strategyDefaults())
+	if err != nil {
+		return PromptPreviewResult{}, err
+	}
+	activeDefinition := applyEffectiveStrategiesToRuntimeDefinition(definition, effective)
+	activePolicySet := effective.Policy
 	runID := contracts.AgentRunID(idgen.New("previewrun"))
 	taskID := contracts.TaskID(idgen.New("previewtask"))
 	run := contracts.AgentRun{
@@ -184,7 +255,7 @@ func (c Coordinator) PreviewPromptBundle(ctx context.Context, request PromptPrev
 	}
 	candidates := tooldiscovery.CandidateSet{}
 	if c.Tools != nil {
-		found, err := c.Tools.Candidates(ctx, definition, policySet, request.Input)
+		found, err := c.Tools.Candidates(ctx, activeDefinition, activePolicySet, request.Input)
 		if err != nil {
 			return PromptPreviewResult{}, err
 		}
@@ -198,21 +269,37 @@ func (c Coordinator) PreviewPromptBundle(ctx context.Context, request PromptPrev
 		},
 		Context: request.Context,
 	}
-	candidates = c.applyCandidateHook(ctx, envelope, definition, policySet, runID, taskID, request.Input, candidates)
+	hookEffects := make([]PromptPreviewHookEffect, 0, 3)
+	candidatePatch := c.applyRuntimeHook(ctx, runtimehook.AfterCandidateRetrieval, runtimehook.TransformRequest{
+		TenantID:   envelope.Context.TenantID,
+		TraceID:    envelope.TraceID,
+		RunID:      runID,
+		TaskID:     taskID,
+		Agent:      activeDefinition,
+		Policy:     activePolicySet,
+		Objective:  request.Input,
+		Candidates: candidates,
+	})
+	hookEffects = appendPromptPreviewHookEffect(hookEffects, runtimehook.AfterCandidateRetrieval, candidatePatch)
+	candidates = applyCandidatePatch(candidates, candidatePatch)
+	candidates = tooldiscovery.ApplyToolUseStrategy(candidates, effective.Tools)
+	candidates = tooldiscovery.ApplySkillUseStrategy(candidates, effective.Skills)
+	candidates = tooldiscovery.ApplyKnowledgeUseStrategy(candidates, effective.Knowledge)
 	contextPatch := c.applyRuntimeHook(ctx, runtimehook.BeforeContextBuild, runtimehook.TransformRequest{
 		TenantID:   tenantID,
 		TraceID:    envelope.TraceID,
 		RunID:      runID,
 		TaskID:     taskID,
-		Agent:      definition,
-		Policy:     policySet,
+		Agent:      activeDefinition,
+		Policy:     activePolicySet,
 		Objective:  request.Input,
 		Candidates: candidates,
 	})
+	hookEffects = appendPromptPreviewHookEffect(hookEffects, runtimehook.BeforeContextBuild, contextPatch)
 	view, err := c.WorkView.Build(ctx, workviewbuilder.BuildInput{
 		Run:               run,
 		Task:              task,
-		Agent:             definition,
+		Agent:             activeDefinition,
 		UserInput:         request.Input,
 		Capabilities:      candidates.Capabilities,
 		Skills:            candidates.Skills,
@@ -223,24 +310,60 @@ func (c Coordinator) PreviewPromptBundle(ctx context.Context, request PromptPrev
 	if err != nil {
 		return PromptPreviewResult{}, err
 	}
-	applyContextPatch(&view, contextPatch)
-	bundle, err := c.Prompts.Build(ctx, definition, view)
+	workviewbuilder.ApplyRuntimeHookPatch(&view, contextPatch)
+	sourceReports := contextcollector.ApplyContextSourcePolicy(&view, effective.Context, effective.Memory)
+	view.ContextAssemblyReport = contextcollector.ContextAssemblyReport(strategyReport.StrategyHash, effective.Context, sourceReports)
+	bundle, err := c.Prompts.Build(ctx, activeDefinition, view)
 	if err != nil {
 		return PromptPreviewResult{}, err
 	}
-	bundle = c.applyPromptHook(ctx, envelope, definition, policySet, runID, taskID, request.Input, candidates, view, bundle)
-	bundle, err = c.applyPromptPolicy(policySet, definition, bundle)
+	promptPatch := c.applyRuntimeHook(ctx, runtimehook.BeforeModelCall, runtimehook.TransformRequest{
+		TenantID:     envelope.Context.TenantID,
+		TraceID:      envelope.TraceID,
+		RunID:        runID,
+		TaskID:       taskID,
+		Agent:        activeDefinition,
+		Policy:       activePolicySet,
+		Objective:    request.Input,
+		Candidates:   candidates,
+		WorkView:     view,
+		PromptBundle: bundle,
+	})
+	var promptSourceReports []contracts.ContextSourceReport
+	promptPatch.AddContextBlocks, promptSourceReports = contextcollector.FilterRuntimeHookContextBlocks(promptPatch.AddContextBlocks, effective.Context)
+	if bundle.ContextAssemblyReport != nil {
+		for _, sourceReport := range promptSourceReports {
+			contextcollector.MergeContextSourceReportRow(bundle.ContextAssemblyReport, sourceReport)
+		}
+	}
+	hookEffects = appendPromptPreviewHookEffect(hookEffects, runtimehook.BeforeModelCall, promptPatch)
+	bundle, err = promptbuilder.ApplyRuntimeHookPatch(bundle, promptPatch)
+	if err != nil {
+		return PromptPreviewResult{}, err
+	}
+	bundle = outputpolicy.ApplyPromptBundle(bundle, activeDefinition.Strategies.Output)
+	if err := promptbuilder.RefreshHash(&bundle); err != nil {
+		return PromptPreviewResult{}, err
+	}
+	var compressionReport *contracts.ContextCompressionReport
+	bundle, compressionReport, err = c.applyPromptPolicy(ctx, activePolicySet, activeDefinition, effective.Context, bundle)
 	if err != nil {
 		return PromptPreviewResult{}, err
 	}
 	return PromptPreviewResult{
-		Agent:         definition,
-		PolicySet:     policySet,
-		WorkView:      view,
-		PromptBundle:  bundle,
-		TokenEstimate: estimatePromptTokens(bundle),
-		ModelProvider: c.snapshotModelProvider(),
-		ModelName:     c.snapshotModelName(),
+		Agent:                 activeDefinition,
+		PolicySet:             activePolicySet,
+		EffectiveStrategies:   effectiveAgentStrategies(effective),
+		StrategyHash:          strategyReport.StrategyHash,
+		GuardrailAdjustments:  strategyReport.Adjustments,
+		HookEffects:           hookEffects,
+		WorkView:              view,
+		PromptBundle:          bundle,
+		ContextAssemblyReport: bundle.ContextAssemblyReport,
+		CompressionReport:     compressionReport,
+		TokenEstimate:         estimatePromptTokens(bundle),
+		ModelProvider:         c.modelProviderForDefinition(activeDefinition),
+		ModelName:             c.modelNameForDefinition(activeDefinition),
 	}, nil
 }
 
@@ -652,14 +775,7 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 	if err != nil {
 		return RunResult{}, true, err
 	}
-	if definition.Runtime.MaxSteps > 0 && run.StepCount > definition.Runtime.MaxSteps {
-		return RunResult{}, true, contracts.NewRuntimeError(contracts.CodeModelError, "max steps exceeded", nil)
-	}
 	task, err := c.TaskRepo.Get(ctx, taskID)
-	if err != nil {
-		return RunResult{}, true, err
-	}
-	events, err := c.Tasks.Events(ctx, taskID)
 	if err != nil {
 		return RunResult{}, true, err
 	}
@@ -676,11 +792,60 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 		policySet = c.policySetForRun(ctx, run, envelope.Context.TenantID, definition.PolicyRefs.PolicySetID)
 	}
 	activeDefinition := *definition
+	effective, strategyReport, err := agentstrategy.Resolve(activeDefinition, policySet, c.strategyDefaults())
+	if err != nil {
+		return RunResult{}, true, err
+	}
+	activeDefinition = applyEffectiveStrategiesToRuntimeDefinition(activeDefinition, effective)
+	policySet = effective.Policy
+	if activeDefinition.Runtime.MaxSteps > 0 && run.StepCount > activeDefinition.Runtime.MaxSteps {
+		return RunResult{}, true, contracts.NewRuntimeError(contracts.CodeModelError, "max steps exceeded", nil)
+	}
+	if activeDefinition.Runtime.MaxDuration > 0 && !run.StartedAt.IsZero() && c.Now().Sub(run.StartedAt) > activeDefinition.Runtime.MaxDuration {
+		return RunResult{}, true, contracts.NewRuntimeError(contracts.CodeModelTimeout, "max duration exceeded", nil)
+	}
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceStrategyResolved, map[string]any{
+		"strategy_hash":         strategyReport.StrategyHash,
+		"source_kind":           activeDefinition.SourceKind,
+		"source_provider_id":    activeDefinition.SourceProviderID,
+		"manifest_version":      activeDefinition.ManifestVersion,
+		"manifest_hash":         activeDefinition.ManifestHash,
+		"agent_package":         activeDefinition.PackageVersionID,
+		"guardrail_adjustments": strategyReport.Adjustments,
+		"context_mode":          effective.Context.Mode,
+		"context_sources":       effective.Context.EnabledSources,
+		"context_token_budget":  contracts.IntValue(effective.Context.ContextTokenBudget),
+		"model":                 effective.Model,
+		"runtime":              activeDefinition.Runtime,
+		"tools":                effective.Tools,
+		"skills":               effective.Skills,
+		"collaboration":        effective.Collaboration,
+		"memory":               effective.Memory,
+		"knowledge":            effective.Knowledge,
+		"repair":               effective.Repair,
+		"output":               effective.Output,
+	})
+	if len(strategyReport.Adjustments) > 0 {
+		c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceStrategyGuardrailApplied, map[string]any{
+			"strategy_hash":     strategyReport.StrategyHash,
+			"adjustment_count":  len(strategyReport.Adjustments),
+			"adjustments":       strategyReport.Adjustments,
+		})
+	}
+	c.recordModelStrategySelected(ctx, envelope, activeDefinition, runID, taskID, strategyReport.StrategyHash)
+	c.recordRuntimeStrategyApplied(ctx, envelope, runID, taskID, strategyReport.StrategyHash, effective.Runtime, activeDefinition.Runtime)
+	c.recordRepairStrategyApplied(ctx, envelope, runID, taskID, strategyReport.StrategyHash, effective.Repair, activeDefinition.Runtime)
 	candidates, err := c.Tools.Candidates(ctx, activeDefinition, policySet, task.Objective)
 	if err != nil {
 		return RunResult{}, true, err
 	}
 	candidates = c.applyCandidateHook(ctx, envelope, activeDefinition, policySet, runID, taskID, task.Objective, candidates)
+	candidatesBeforeStrategy := candidates
+	candidates = tooldiscovery.ApplyToolUseStrategy(candidates, effective.Tools)
+	candidates = tooldiscovery.ApplySkillUseStrategy(candidates, effective.Skills)
+	candidates = tooldiscovery.ApplyKnowledgeUseStrategy(candidates, effective.Knowledge)
+	c.recordToolStrategyApplied(ctx, envelope, runID, taskID, strategyReport.StrategyHash, effective.Tools, effective.Knowledge, candidatesBeforeStrategy, candidates)
+	c.recordCollaborationStrategyApplied(ctx, envelope, runID, taskID, strategyReport.StrategyHash, effective.Collaboration, activeDefinition, candidates)
 	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceCapabilityRetrieved, map[string]any{
 		"capability_count":  len(candidates.Capabilities),
 		"skill_count":       len(candidates.Skills),
@@ -693,11 +858,25 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 	if err != nil {
 		return RunResult{}, true, err
 	}
-	toolResults := c.toolSummaries(ctx, runID)
-	taskHistory := c.taskHistory(ctx, envelope.Context.TenantID, taskID, runID, events)
-	memorySummaries := c.memorySummaries(ctx, envelope.Context.TenantID, activeDefinition.AgentID, envelope.Context.UserID)
-	artifactRefs := c.artifactRefs(ctx, runID)
-	conversation := c.conversationContext(ctx, envelope, activeDefinition, runID, taskID, events, memorySummaries, artifactRefs, toolResults, userInput)
+	contextSources, err := c.contextCollector().Collect(ctx, contextcollector.Input{
+		TenantID:        envelope.Context.TenantID,
+		TaskID:          taskID,
+		RunID:           runID,
+		AgentID:         activeDefinition.AgentID,
+		UserID:          envelope.Context.UserID,
+		ContextStrategy: effective.Context,
+		MemoryStrategy:  effective.Memory,
+	})
+	if err != nil {
+		return RunResult{}, true, err
+	}
+	events := contextSources.TaskEvents
+	toolResults := contextSources.ToolResults
+	taskHistory := contextSources.TaskHistory
+	memorySummaries := contextSources.Memory
+	c.recordMemoryStrategyApplied(ctx, envelope, runID, taskID, strategyReport.StrategyHash, effective.Memory, memorySummaries)
+	artifactRefs := contextSources.ArtifactRefs
+	conversation := c.conversationContext(ctx, envelope, activeDefinition, effective.Context, runID, taskID, events, memorySummaries, artifactRefs, toolResults, userInput)
 	contextPatch := c.applyRuntimeHook(ctx, runtimehook.BeforeContextBuild, runtimehook.TransformRequest{
 		TenantID:   envelope.Context.TenantID,
 		TraceID:    envelope.TraceID,
@@ -730,7 +909,9 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 	if err != nil {
 		return RunResult{}, true, err
 	}
-	applyContextPatch(&view, contextPatch)
+	workviewbuilder.ApplyRuntimeHookPatch(&view, contextPatch)
+	sourceReports := contextcollector.ApplyContextSourcePolicy(&view, effective.Context, effective.Memory)
+	view.ContextAssemblyReport = contextcollector.ContextAssemblyReport(strategyReport.StrategyHash, effective.Context, sourceReports)
 	c.observeHook(ctx, runtimehook.OnContextBuilt, envelope, activeDefinition, runID, taskID, map[string]any{"work_view": view})
 	_ = c.Trace.Record(ctx, contracts.TraceEvent{
 		TraceID:  envelope.TraceID,
@@ -751,6 +932,7 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 		CreatedAt: c.Now(),
 	})
 	if shouldNoOpByConversationGuard(conversation) {
+		c.recordContextCollectionCompleted(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, view.ContextAssemblyReport, 0)
 		decision := contracts.Decision{
 			DecisionID: contracts.DecisionID(idgen.New("decision")),
 			Type:       contracts.DecisionTypeNoOp,
@@ -769,8 +951,30 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 	if err != nil {
 		return RunResult{}, true, err
 	}
-	bundle = c.applyPromptHook(ctx, envelope, activeDefinition, policySet, runID, taskID, task.Objective, candidates, view, bundle)
-	bundle, err = c.applyPromptPolicy(policySet, activeDefinition, bundle)
+	bundle, err = c.applyPromptHook(ctx, envelope, activeDefinition, policySet, runID, taskID, task.Objective, candidates, view, effective.Context, bundle)
+	if err != nil {
+		return RunResult{}, true, err
+	}
+	bundle = outputpolicy.ApplyPromptBundle(bundle, activeDefinition.Strategies.Output)
+	if err := promptbuilder.RefreshHash(&bundle); err != nil {
+		return RunResult{}, true, err
+	}
+	c.recordContextCollectionCompleted(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, bundle.ContextAssemblyReport, estimatePromptTokens(bundle))
+	var compressionReport *contracts.ContextCompressionReport
+	if contextCompressionRequested(effective.Context.Compression) {
+		c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceContextCompressionRequested, contextCompressionRequestedTracePayload(effective.Context))
+	}
+	bundle, compressionReport, err = c.applyPromptPolicy(ctx, policySet, activeDefinition, effective.Context, bundle)
+	if compressionReport != nil && (compressionReport.Applied || compressionReport.FailureReason != "") {
+		payload := contextCompressionTracePayload(*compressionReport)
+		c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceContextCompressionCompleted, payload)
+		if compressionReport.FailureReason != "" {
+			c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceContextCompressionFailed, payload)
+			if compressionReport.Applied {
+				c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceContextCompressionFallbackApplied, payload)
+			}
+		}
+	}
 	if err != nil {
 		return RunResult{}, true, err
 	}
@@ -784,17 +988,18 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 		RunID:     runID,
 		TaskID:    taskID,
 		Type:      contracts.TracePromptBundleBuilt,
-		Payload:   map[string]any{"hash": bundle.Hash},
+		Payload: map[string]any{
+			"hash":                    bundle.Hash,
+			"context_assembly_report": bundle.ContextAssemblyReport,
+			"compression_report":      compressionReport,
+		},
 		CreatedAt: c.Now(),
 	})
-	if limit := promptTokenLimit(policySet, activeDefinition); limit > 0 && estimatePromptTokens(bundle) > limit {
-		return RunResult{}, true, contracts.NewRuntimeError(contracts.CodeModelError, "max prompt tokens exceeded", map[string]any{"max_prompt_tokens": limit})
-	}
 	decision, err := c.modelDecision(ctx, envelope, activeDefinition, runID, taskID, stepID, bundle, policySet, candidates.Tools)
 	if err != nil {
 		return RunResult{}, true, err
 	}
-	if err := c.applyMemoryWriteHook(ctx, envelope, activeDefinition, policySet, runID, taskID, task.Objective, candidates, view, bundle, decision); err != nil {
+	if err := c.applyMemoryWriteHook(ctx, envelope, activeDefinition, policySet, effective.Memory, runID, taskID, task.Objective, candidates, view, bundle, decision); err != nil {
 		return RunResult{}, true, err
 	}
 	return c.dispatch(ctx, envelope, activeDefinition, policySet, runID, taskID, stepID, decision, candidates)
@@ -803,14 +1008,14 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 func (c Coordinator) modelDecision(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, bundle contracts.PromptBundle, policySet contracts.PolicySet, candidateTools []contracts.ToolCard) (contracts.Decision, error) {
 	maxRepairAttempts := repairAttemptLimit(policySet, definition)
 	for repairAttempt := 0; ; repairAttempt++ {
-		c.recordModelCalled(ctx, envelope, runID, taskID, stepID, bundle, repairAttempt)
+		c.recordModelCalled(ctx, envelope, definition, runID, taskID, stepID, bundle, repairAttempt)
 		modelResp, err := c.completeModel(ctx, envelope, definition, runID, taskID, stepID, bundle)
 		if err != nil {
 			c.recordModelCompleted(ctx, envelope, runID, taskID, stepID, modelclient.ModelResponse{}, err)
 			return contracts.Decision{}, err
 		}
 		c.recordModelCompleted(ctx, envelope, runID, taskID, stepID, modelResp, nil)
-		decision, err := decisionparser.Parse(modelResp.RawDecisionJSON)
+		decision, err := outputpolicy.ParseDecision(modelResp.RawDecisionJSON, definition.Strategies.Output)
 		if err != nil {
 			if repairAttempt >= maxRepairAttempts || !isRepairable(err) {
 				return contracts.Decision{}, err
@@ -849,6 +1054,23 @@ func (c Coordinator) modelDecision(ctx context.Context, envelope contracts.Agent
 			bundle = c.repairPrompt(ctx, envelope, runID, taskID, stepID, bundle, repairAttempt+1, err)
 			continue
 		}
+		if err := outputpolicy.ValidateDecision(definition.Strategies.Output, validation); err != nil {
+			_ = c.Trace.Record(ctx, contracts.TraceEvent{
+				TraceID:   envelope.TraceID,
+				TenantID:  envelope.Context.TenantID,
+				SpanID:    contracts.SpanID(stepID),
+				RunID:     runID,
+				TaskID:    taskID,
+				Type:      contracts.TraceDecisionValidated,
+				Payload:   map[string]any{"decision_id": decision.DecisionID, "type": decision.Type, "error": err.Error(), "repair_attempt": repairAttempt, "output_strategy": definition.Strategies.Output},
+				CreatedAt: c.Now(),
+			})
+			if repairAttempt >= maxRepairAttempts || !isRepairable(err) {
+				return contracts.Decision{}, err
+			}
+			bundle = c.repairPrompt(ctx, envelope, runID, taskID, stepID, bundle, repairAttempt+1, err)
+			continue
+		}
 		decision = validation.Decision
 		c.observeHook(ctx, runtimehook.OnModelDecision, envelope, definition, runID, taskID, map[string]any{"decision": decision, "repair_attempt": repairAttempt})
 		_ = c.Trace.Record(ctx, contracts.TraceEvent{
@@ -875,11 +1097,18 @@ func (c Coordinator) modelDecision(ctx context.Context, envelope contracts.Agent
 	}
 }
 
-func (c Coordinator) recordModelCalled(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, bundle contracts.PromptBundle, repairAttempt int) {
+func (c Coordinator) recordModelCalled(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, bundle contracts.PromptBundle, repairAttempt int) {
 	payload := map[string]any{"prompt_bundle_hash": bundle.Hash, "repair_attempt": repairAttempt}
+	if provider := c.modelProviderForDefinition(definition); provider != "" {
+		payload["model_provider"] = provider
+	}
+	if modelName := c.modelNameForDefinition(definition); modelName != "" {
+		payload["model_name"] = modelName
+	}
+	if definition.Strategies.Model.MaxOutputTokens > 0 {
+		payload["max_output_tokens"] = definition.Strategies.Model.MaxOutputTokens
+	}
 	if capabilities, ok := c.modelCapabilities(); ok {
-		payload["model_provider"] = capabilities.Provider
-		payload["model_name"] = capabilities.Model
 		payload["model_capabilities"] = capabilities
 		if capabilitiesHash, err := hash.StableJSON(capabilities); err == nil {
 			payload["model_capabilities_hash"] = capabilitiesHash
@@ -941,9 +1170,162 @@ func (c Coordinator) recordModelDelta(ctx context.Context, envelope contracts.Ag
 	})
 }
 
+func (c Coordinator) recordModelStrategySelected(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, strategyHash string) {
+	strategy := definition.Strategies.Model
+	payload := map[string]any{
+		"strategy_hash":  strategyHash,
+		"model_provider": c.modelProviderForDefinition(definition),
+		"model_name":     c.modelNameForDefinition(definition),
+	}
+	if strategy.MaxOutputTokens > 0 {
+		payload["max_output_tokens"] = strategy.MaxOutputTokens
+	}
+	if strategy.Temperature != nil {
+		payload["temperature"] = *strategy.Temperature
+	}
+	if strings.TrimSpace(strategy.Thinking) != "" {
+		payload["thinking"] = strings.TrimSpace(strategy.Thinking)
+	}
+	if strings.TrimSpace(strategy.ReasoningEffort) != "" {
+		payload["reasoning_effort"] = strings.TrimSpace(strategy.ReasoningEffort)
+	}
+	if strategy.TimeoutMS > 0 {
+		payload["timeout_ms"] = strategy.TimeoutMS
+	}
+	payload["streaming"] = modelStreamingEnabled(strategy)
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceModelStrategySelected, payload)
+}
+
+func (c Coordinator) recordRuntimeStrategyApplied(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, strategyHash string, strategy contracts.RuntimeStrategy, runtime contracts.RuntimeLimits) {
+	payload := map[string]any{
+		"strategy_hash":                      strategyHash,
+		"execution_mode":                     strategy.ExecutionMode,
+		"effective_max_steps":                runtime.MaxSteps,
+		"effective_max_tool_calls":           runtime.MaxToolCalls,
+		"effective_max_model_retries":        runtime.MaxModelRetries,
+		"effective_max_consecutive_failures": runtime.MaxConsecutiveToolFailures,
+	}
+	if strategy.MaxSteps != nil {
+		payload["max_steps"] = *strategy.MaxSteps
+	}
+	if strategy.MaxDurationSeconds != nil {
+		payload["max_duration_seconds"] = *strategy.MaxDurationSeconds
+	}
+	if runtime.MaxDuration > 0 {
+		payload["effective_max_duration_seconds"] = int(runtime.MaxDuration.Seconds())
+	}
+	if strategy.MaxModelRetries != nil {
+		payload["max_model_retries"] = *strategy.MaxModelRetries
+	}
+	if strategy.MaxConsecutiveToolFailures != nil {
+		payload["max_consecutive_tool_failures"] = *strategy.MaxConsecutiveToolFailures
+	}
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceRuntimeStrategyApplied, payload)
+}
+
+func (c Coordinator) recordRepairStrategyApplied(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, strategyHash string, strategy contracts.RepairStrategy, runtime contracts.RuntimeLimits) {
+	payload := map[string]any{
+		"strategy_hash":                 strategyHash,
+		"effective_max_repair_attempts": runtime.MaxRepairAttempts,
+		"failure_mode":                  strategy.FailureMode,
+		"repairable_error_codes":        strategy.RepairableErrorCodes,
+	}
+	if strategy.Enabled != nil {
+		payload["enabled"] = *strategy.Enabled
+	}
+	if strategy.MaxRepairAttempts != nil {
+		payload["max_repair_attempts"] = *strategy.MaxRepairAttempts
+	}
+	if strategy.RequestModelRepairOnFail != nil {
+		payload["request_model_repair_on_fail"] = *strategy.RequestModelRepairOnFail
+	}
+	if strategy.StopOnDenied != nil {
+		payload["stop_on_denied"] = *strategy.StopOnDenied
+	}
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceRepairStrategyApplied, payload)
+}
+
+func (c Coordinator) recordToolStrategyApplied(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, strategyHash string, toolStrategy contracts.ToolUseStrategy, knowledgeStrategy contracts.KnowledgeUseStrategy, before tooldiscovery.CandidateSet, after tooldiscovery.CandidateSet) {
+	payload := map[string]any{
+		"strategy_hash":            strategyHash,
+		"tool_choice_mode":         toolStrategy.ToolChoiceMode,
+		"candidate_tool_count":     len(before.Tools),
+		"selected_tool_count":      len(after.Tools),
+		"candidate_capability_count": len(before.Capabilities),
+		"selected_capability_count":  len(after.Capabilities),
+		"allowed_tool_count":       len(toolStrategy.AllowedToolIDs),
+		"denied_tool_count":        len(toolStrategy.DeniedToolIDs),
+		"preferred_tool_count":     len(toolStrategy.PreferredToolIDs),
+		"selected_tool_ids":        toolCardIDs(after.Tools),
+	}
+	if toolStrategy.MaxToolCalls != nil {
+		payload["max_tool_calls"] = *toolStrategy.MaxToolCalls
+	}
+	if toolStrategy.RequireApprovalAtRiskLevel != "" {
+		payload["require_approval_at_risk_level"] = toolStrategy.RequireApprovalAtRiskLevel
+	}
+	if knowledgeStrategy.Enabled != nil {
+		payload["knowledge_enabled"] = *knowledgeStrategy.Enabled
+	}
+	if strings.TrimSpace(knowledgeStrategy.InjectMode) != "" {
+		payload["knowledge_inject_mode"] = strings.TrimSpace(knowledgeStrategy.InjectMode)
+	}
+	if len(knowledgeStrategy.KnowledgeBaseIDs) > 0 {
+		payload["knowledge_base_count"] = len(knowledgeStrategy.KnowledgeBaseIDs)
+	}
+	if strings.TrimSpace(knowledgeStrategy.SearchMode) != "" {
+		payload["knowledge_search_mode"] = strings.TrimSpace(knowledgeStrategy.SearchMode)
+	}
+	if knowledgeStrategy.MaxResults > 0 {
+		payload["knowledge_max_results"] = knowledgeStrategy.MaxResults
+	}
+	payload["knowledge_allow_cross_group"] = knowledgeStrategy.AllowCrossGroup
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceToolStrategyApplied, payload)
+}
+
+func (c Coordinator) recordCollaborationStrategyApplied(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, strategyHash string, strategy contracts.CollaborationStrategy, definition contracts.AgentDefinition, candidates tooldiscovery.CandidateSet) {
+	payload := map[string]any{
+		"strategy_hash":        strategyHash,
+		"delegation_mode":      strategy.DelegationMode,
+		"collaborator_count":   len(candidates.Collaborators),
+		"collaborator_ids":     retrievedCollaboratorIDs(candidates.Collaborators),
+		"delegate_tool_denied": stringAllowed(definition.Tools.DeniedToolIDs, "origin.agent.delegate"),
+	}
+	if strategy.MaxHandoffDepth != nil {
+		payload["max_handoff_depth"] = *strategy.MaxHandoffDepth
+	}
+	if strategy.MaxChildTasks != nil {
+		payload["max_child_tasks"] = *strategy.MaxChildTasks
+	}
+	if strategy.MaxContextTokens != nil {
+		payload["max_context_tokens"] = *strategy.MaxContextTokens
+	}
+	if strategy.DefaultHandoffMode != "" {
+		payload["default_handoff_mode"] = strategy.DefaultHandoffMode
+	}
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceCollaborationStrategyApplied, payload)
+}
+
+func (c Coordinator) recordMemoryStrategyApplied(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, strategyHash string, strategy contracts.MemoryUseStrategy, summaries []contracts.MemorySummary) {
+	payload := map[string]any{
+		"strategy_hash":          strategyHash,
+		"read_enabled":           memoryStrategyEnabled(strategy.ReadEnabled),
+		"write_enabled":          memoryStrategyEnabled(strategy.WriteEnabled),
+		"auto_write_mode":        strategy.AutoWriteMode,
+		"selected_memory_count":  len(summaries),
+		"read_scope_count":       len(strategy.ReadScopes),
+		"write_scope_count":      len(strategy.WriteScopes),
+		"write_prompt_profile_id": strategy.WritePromptProfileID,
+	}
+	if strategy.MaxMemoryItems != nil {
+		payload["max_memory_items"] = *strategy.MaxMemoryItems
+	}
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceMemoryStrategyApplied, payload)
+}
+
 func (c Coordinator) repairPrompt(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, bundle contracts.PromptBundle, repairAttempt int, cause error) contracts.PromptBundle {
 	bundle.Constraints = append(bundle.Constraints, fmt.Sprintf("repair attempt %d: previous decision was invalid (%s); return one valid Decision JSON object that matches the contract", repairAttempt, cause.Error()))
-	_ = rehashPromptBundle(&bundle)
+	_ = promptbuilder.RefreshHash(&bundle)
 	_ = c.Trace.Record(ctx, contracts.TraceEvent{
 		TraceID:   envelope.TraceID,
 		TenantID:  envelope.Context.TenantID,
@@ -994,7 +1376,7 @@ func (c Coordinator) applyCandidateHook(ctx context.Context, envelope contracts.
 	return applyCandidatePatch(candidates, patch)
 }
 
-func (c Coordinator) applyPromptHook(ctx context.Context, envelope contracts.AgentEnvelope, agent contracts.AgentDefinition, policy contracts.PolicySet, runID contracts.AgentRunID, taskID contracts.TaskID, objective string, candidates tooldiscovery.CandidateSet, view contracts.WorkView, bundle contracts.PromptBundle) contracts.PromptBundle {
+func (c Coordinator) applyPromptHook(ctx context.Context, envelope contracts.AgentEnvelope, agent contracts.AgentDefinition, policy contracts.PolicySet, runID contracts.AgentRunID, taskID contracts.TaskID, objective string, candidates tooldiscovery.CandidateSet, view contracts.WorkView, strategy contracts.ContextStrategy, bundle contracts.PromptBundle) (contracts.PromptBundle, error) {
 	patch := c.applyRuntimeHook(ctx, runtimehook.BeforeModelCall, runtimehook.TransformRequest{
 		TenantID:     envelope.Context.TenantID,
 		TraceID:      envelope.TraceID,
@@ -1007,11 +1389,18 @@ func (c Coordinator) applyPromptHook(ctx context.Context, envelope contracts.Age
 		WorkView:     view,
 		PromptBundle: bundle,
 	})
-	return applyPromptPatch(bundle, patch)
+	var sourceReports []contracts.ContextSourceReport
+	patch.AddContextBlocks, sourceReports = contextcollector.FilterRuntimeHookContextBlocks(patch.AddContextBlocks, strategy)
+	if bundle.ContextAssemblyReport != nil {
+		for _, sourceReport := range sourceReports {
+			contextcollector.MergeContextSourceReportRow(bundle.ContextAssemblyReport, sourceReport)
+		}
+	}
+	return promptbuilder.ApplyRuntimeHookPatch(bundle, patch)
 }
 
-func (c Coordinator) applyMemoryWriteHook(ctx context.Context, envelope contracts.AgentEnvelope, agent contracts.AgentDefinition, policy contracts.PolicySet, runID contracts.AgentRunID, taskID contracts.TaskID, objective string, candidates tooldiscovery.CandidateSet, view contracts.WorkView, bundle contracts.PromptBundle, decision contracts.Decision) error {
-	if c.Memory == nil {
+func (c Coordinator) applyMemoryWriteHook(ctx context.Context, envelope contracts.AgentEnvelope, agent contracts.AgentDefinition, policy contracts.PolicySet, strategy contracts.MemoryUseStrategy, runID contracts.AgentRunID, taskID contracts.TaskID, objective string, candidates tooldiscovery.CandidateSet, view contracts.WorkView, bundle contracts.PromptBundle, decision contracts.Decision) error {
+	if c.Memory == nil || !memoryStrategyEnabled(strategy.WriteEnabled) || strategy.AutoWriteMode == "disabled" {
 		return nil
 	}
 	patch := c.applyRuntimeHook(ctx, runtimehook.BeforeMemoryWrite, runtimehook.TransformRequest{
@@ -1033,11 +1422,15 @@ func (c Coordinator) applyMemoryWriteHook(ctx context.Context, envelope contract
 		if strings.TrimSpace(intent.Content) == "" {
 			continue
 		}
+		scope := memoryIntentScope(intent)
+		if len(strategy.WriteScopes) > 0 && !stringAllowed(strategy.WriteScopes, scope) {
+			continue
+		}
 		event := contracts.MemoryEvent{
 			TenantID:      envelope.Context.TenantID,
 			AgentID:       agent.AgentID,
 			UserID:        envelope.Context.UserID,
-			Scope:         memoryIntentScope(intent),
+			Scope:         scope,
 			Content:       intent.Content,
 			Summary:       memoryIntentSummary(intent),
 			SourceEventID: string(decision.DecisionID),
@@ -1195,6 +1588,7 @@ func (c Coordinator) dispatchToolCalls(ctx context.Context, envelope contracts.A
 		if _, ok := call.Arguments["trace_id"]; !ok {
 			call.Arguments["trace_id"] = string(envelope.TraceID)
 		}
+		call = applyKnowledgeUseStrategyToToolCall(call, definition.Strategies.Knowledge)
 		if call.ToolID == "origin.agent.delegate" {
 			if _, ok := call.Arguments["parent_task_id"]; !ok {
 				call.Arguments["parent_task_id"] = string(taskID)
@@ -1368,7 +1762,9 @@ func (c Coordinator) dispatchToolCalls(ctx context.Context, envelope contracts.A
 }
 
 func (c Coordinator) shouldContinueAfterToolFailure(ctx context.Context, definition contracts.AgentDefinition, policySet contracts.PolicySet, runID contracts.AgentRunID, call contracts.ToolCall, result contracts.ToolResult) bool {
-	if definition.Runtime.MaxConsecutiveToolFailures > 0 && c.consecutiveToolFailures(ctx, runID) > definition.Runtime.MaxConsecutiveToolFailures {
+	failureScanLimit := consecutiveToolFailureScanLimit(definition.Runtime.MaxConsecutiveToolFailures, policySet.ToolRepairPolicy.MaxRepairAttempts)
+	failureSeen := c.consecutiveToolFailures(ctx, runID, failureScanLimit)
+	if definition.Runtime.MaxConsecutiveToolFailures > 0 && failureSeen > definition.Runtime.MaxConsecutiveToolFailures {
 		return false
 	}
 	toolDef := contracts.ToolDefinition{ToolID: call.ToolID}
@@ -1383,7 +1779,7 @@ func (c Coordinator) shouldContinueAfterToolFailure(ctx context.Context, definit
 		Policy:      policySet,
 		Tool:        toolDef,
 		Result:      result,
-		FailureSeen: c.consecutiveToolFailures(ctx, runID),
+		FailureSeen: failureSeen,
 	})
 	return decision.Action == string(policyengine.RepairActionContinue)
 }
@@ -1428,7 +1824,7 @@ func (c Coordinator) completeModel(ctx context.Context, envelope contracts.Agent
 	}
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
-		resp, err := c.streamModel(ctx, envelope, definition, runID, taskID, stepID, bundle)
+		resp, err := c.invokeModel(ctx, envelope, definition, runID, taskID, stepID, bundle)
 		if err == nil {
 			return resp, nil
 		}
@@ -1440,12 +1836,25 @@ func (c Coordinator) completeModel(ctx context.Context, envelope contracts.Agent
 	return modelclient.ModelResponse{}, lastErr
 }
 
+func (c Coordinator) invokeModel(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, bundle contracts.PromptBundle) (modelclient.ModelResponse, error) {
+	if modelStreamingEnabled(definition.Strategies.Model) {
+		return c.streamModel(ctx, envelope, definition, runID, taskID, stepID, bundle)
+	}
+	return c.callModel(ctx, definition, runID, bundle)
+}
+
+func (c Coordinator) callModel(ctx context.Context, definition contracts.AgentDefinition, runID contracts.AgentRunID, bundle contracts.PromptBundle) (modelclient.ModelResponse, error) {
+	if err := c.validateModelProviderForDefinition(definition); err != nil {
+		return modelclient.ModelResponse{}, err
+	}
+	return c.Model.Complete(ctx, c.modelRequestForDefinition(definition, runID, bundle))
+}
+
 func (c Coordinator) streamModel(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, bundle contracts.PromptBundle) (modelclient.ModelResponse, error) {
-	events, err := c.Model.Stream(ctx, modelclient.ModelRequest{
-		RunID:        runID,
-		PromptBundle: bundle,
-		Timeout:      definition.Runtime.MaxDuration,
-	})
+	if err := c.validateModelProviderForDefinition(definition); err != nil {
+		return modelclient.ModelResponse{}, err
+	}
+	events, err := c.Model.Stream(ctx, c.modelRequestForDefinition(definition, runID, bundle))
 	if err != nil {
 		return modelclient.ModelResponse{}, err
 	}
@@ -1568,17 +1977,29 @@ func (c Coordinator) versionSnapshot(ctx context.Context, tenantID contracts.Ten
 			additional["model_capabilities_hash"] = capabilitiesHash
 		}
 	}
+	strategyHash := ""
+	if _, report, err := agentstrategy.Resolve(definition, policy, c.strategyDefaults()); err == nil {
+		strategyHash = report.StrategyHash
+		if strategyHash != "" {
+			additional["strategy_hash"] = strategyHash
+		}
+	}
 	return contracts.VersionSnapshot{
 		ContractVersion:      contractVersion(definition),
 		AgentDefinition:      definition.Version,
 		AgentPackage:         definition.PackageVersionID,
+		SourceKind:           definition.SourceKind,
+		SourceProviderID:     definition.SourceProviderID,
+		ManifestVersion:      definition.ManifestVersion,
+		ManifestHash:         definition.ManifestHash,
+		StrategyHash:         strategyHash,
 		PolicySet:            policySetID,
 		PolicyVersionID:      policyVersionID,
 		PolicySetVersion:     policy.Version,
 		SkillDefinitions:     skills,
 		ToolDefinitions:      tools,
-		ModelProvider:        c.snapshotModelProvider(),
-		ModelName:            c.snapshotModelName(),
+		ModelProvider:        c.modelProviderForDefinition(definition),
+		ModelName:            c.modelNameForDefinition(definition),
 		AdditionalAttributes: additional,
 	}
 }
@@ -1660,6 +2081,62 @@ func (c Coordinator) snapshotToolCall(tenantID contracts.TenantID, call contract
 	return call
 }
 
+func applyKnowledgeUseStrategyToToolCall(call contracts.ToolCall, strategy contracts.KnowledgeUseStrategy) contracts.ToolCall {
+	if !isKnowledgeSearchCall(call) {
+		return call
+	}
+	arguments := cloneArgumentMap(call.Arguments)
+	if len(strategy.KnowledgeBaseIDs) > 0 {
+		values := make([]string, 0, len(strategy.KnowledgeBaseIDs))
+		for _, id := range strategy.KnowledgeBaseIDs {
+			id = contracts.KnowledgeBaseID(strings.TrimSpace(string(id)))
+			if id != "" {
+				values = append(values, string(id))
+			}
+		}
+		arguments["knowledge_base_ids"] = values
+	}
+	if searchMode := strings.TrimSpace(strategy.SearchMode); searchMode != "" {
+		arguments["search_mode"] = searchMode
+	}
+	if strategy.MaxResults > 0 {
+		current := intArgumentValue(arguments["limit"])
+		if current <= 0 || current > strategy.MaxResults {
+			arguments["limit"] = strategy.MaxResults
+		}
+	}
+	arguments["allow_cross_group"] = strategy.AllowCrossGroup
+	call.Arguments = arguments
+	return call
+}
+
+func isKnowledgeSearchCall(call contracts.ToolCall) bool {
+	return strings.TrimSpace(call.ToolID) == "origin.knowledge.search" || strings.TrimSpace(call.Name) == "origin.knowledge.search"
+}
+
+func cloneArgumentMap(arguments map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range arguments {
+		out[key] = value
+	}
+	return out
+}
+
+func intArgumentValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
 func toolCallIdempotencyKey(runID contracts.AgentRunID, stepID string, call contracts.ToolCall) (string, error) {
 	toolID := call.ToolID
 	if toolID == "" {
@@ -1706,6 +2183,68 @@ func (c Coordinator) snapshotModelName() string {
 		return "stub-decision"
 	}
 	return ""
+}
+
+func (c Coordinator) modelProviderForDefinition(definition contracts.AgentDefinition) string {
+	if strings.TrimSpace(definition.Strategies.Model.Provider) != "" {
+		return strings.TrimSpace(definition.Strategies.Model.Provider)
+	}
+	return c.snapshotModelProvider()
+}
+
+func (c Coordinator) modelNameForDefinition(definition contracts.AgentDefinition) string {
+	if strings.TrimSpace(definition.Strategies.Model.Model) != "" {
+		return strings.TrimSpace(definition.Strategies.Model.Model)
+	}
+	return c.snapshotModelName()
+}
+
+func (c Coordinator) modelRequestForDefinition(definition contracts.AgentDefinition, runID contracts.AgentRunID, bundle contracts.PromptBundle) modelclient.ModelRequest {
+	model := definition.Strategies.Model
+	return modelclient.ModelRequest{
+		RunID:           runID,
+		PromptBundle:    bundle,
+		Timeout:         modelCallTimeout(definition.Runtime.MaxDuration, model.TimeoutMS),
+		ModelProvider:   c.modelProviderForDefinition(definition),
+		ModelName:       c.modelNameForDefinition(definition),
+		MaxOutputTokens: model.MaxOutputTokens,
+		Temperature:     model.Temperature,
+		Thinking:        model.Thinking,
+		ReasoningEffort: model.ReasoningEffort,
+	}
+}
+
+func (c Coordinator) validateModelProviderForDefinition(definition contracts.AgentDefinition) error {
+	requested := strings.TrimSpace(definition.Strategies.Model.Provider)
+	if requested == "" {
+		return nil
+	}
+	available := c.snapshotModelProvider()
+	if available == "" || requested == available {
+		return nil
+	}
+	return contracts.NewRuntimeError(contracts.CodeModelError, "model provider is not available for this runtime", map[string]any{
+		"requested_provider": requested,
+		"available_provider": available,
+	})
+}
+
+func modelCallTimeout(runtimeLimit time.Duration, strategyTimeoutMS int) time.Duration {
+	if strategyTimeoutMS <= 0 {
+		return runtimeLimit
+	}
+	strategyLimit := time.Duration(strategyTimeoutMS) * time.Millisecond
+	if runtimeLimit <= 0 || strategyLimit < runtimeLimit {
+		return strategyLimit
+	}
+	return runtimeLimit
+}
+
+func modelStreamingEnabled(strategy contracts.ModelStrategy) bool {
+	if strategy.Streaming == nil {
+		return true
+	}
+	return *strategy.Streaming
 }
 
 func (c Coordinator) modelCapabilities() (modelclient.ModelCapabilityDescriptor, bool) {
@@ -1818,62 +2357,254 @@ func (c Coordinator) externalBinding(ctx context.Context, tenantID contracts.Ten
 }
 
 func estimatePromptTokens(bundle contracts.PromptBundle) int {
-	text := strings.Join([]string{bundle.System, bundle.Developer, bundle.Task, bundle.Context}, " ")
-	for _, instruction := range bundle.SkillInstructions {
-		text += " " + instruction
-	}
-	return len(strings.Fields(text))
+	return contextcompressor.EstimatePromptTokens(bundle)
 }
 
-func (c Coordinator) applyPromptPolicy(policy contracts.PolicySet, definition contracts.AgentDefinition, bundle contracts.PromptBundle) (contracts.PromptBundle, error) {
-	for _, phrase := range policy.PromptPolicy.BlockedPhrases {
-		phrase = strings.TrimSpace(phrase)
-		if phrase == "" {
+func effectiveAgentStrategies(effective agentstrategy.EffectiveRunConfig) contracts.AgentStrategies {
+	return contracts.AgentStrategies{
+		Prompt:        effective.Prompt,
+		Model:         effective.Model,
+		Context:       effective.Context,
+		Tools:         effective.Tools,
+		Skills:        effective.Skills,
+		Collaboration: effective.Collaboration,
+		Memory:        effective.Memory,
+		Knowledge:     effective.Knowledge,
+		Runtime:       effective.Runtime,
+		Repair:        effective.Repair,
+		Output:        effective.Output,
+	}
+}
+
+func applyEffectiveStrategiesToRuntimeDefinition(definition contracts.AgentDefinition, effective agentstrategy.EffectiveRunConfig) contracts.AgentDefinition {
+	strategies := effectiveAgentStrategies(effective)
+	definition.Strategies = strategies
+	if strings.TrimSpace(strategies.Prompt.IdentityPrompt) != "" {
+		definition.IdentityPrompt = strings.TrimSpace(strategies.Prompt.IdentityPrompt)
+	}
+	if strings.TrimSpace(strategies.Prompt.SystemPrompt) != "" {
+		definition.SystemPrompt = strings.TrimSpace(strategies.Prompt.SystemPrompt)
+	}
+	if strings.TrimSpace(strategies.Prompt.DeveloperPrompt) != "" {
+		definition.DeveloperPrompt = strings.TrimSpace(strategies.Prompt.DeveloperPrompt)
+	}
+	definition.Tools.AllowedToolIDs = cloneStrings(strategies.Tools.AllowedToolIDs)
+	definition.Tools.AllowedToolGroupIDs = cloneStrings(strategies.Tools.AllowedToolGroupIDs)
+	definition.Tools.DeniedToolIDs = cloneStrings(strategies.Tools.DeniedToolIDs)
+	definition.Tools.DeniedToolGroupIDs = cloneStrings(strategies.Tools.DeniedToolGroupIDs)
+	if strategies.Tools.MaxToolCalls != nil {
+		definition.Runtime.MaxToolCalls = *strategies.Tools.MaxToolCalls
+	}
+	if strategies.Runtime.MaxSteps != nil {
+		definition.Runtime.MaxSteps = *strategies.Runtime.MaxSteps
+	}
+	if strategies.Runtime.MaxDurationSeconds != nil {
+		definition.Runtime.MaxDuration = time.Duration(*strategies.Runtime.MaxDurationSeconds) * time.Second
+	}
+	if strategies.Runtime.MaxModelRetries != nil {
+		definition.Runtime.MaxModelRetries = *strategies.Runtime.MaxModelRetries
+	}
+	if strategies.Runtime.MaxConsecutiveToolFailures != nil {
+		definition.Runtime.MaxConsecutiveToolFailures = *strategies.Runtime.MaxConsecutiveToolFailures
+	}
+	if strategies.Repair.MaxRepairAttempts != nil {
+		definition.Runtime.MaxRepairAttempts = *strategies.Repair.MaxRepairAttempts
+	}
+	if strategies.Collaboration.MaxHandoffDepth != nil {
+		definition.Runtime.MaxHandoffDepth = *strategies.Collaboration.MaxHandoffDepth
+	}
+	if strategies.Collaboration.MaxChildTasks != nil {
+		definition.Runtime.MaxChildTasks = *strategies.Collaboration.MaxChildTasks
+	}
+	if strings.TrimSpace(strategies.Collaboration.DelegationMode) == "disabled" {
+		definition.Tools.DeniedToolIDs = appendUniqueRuntimeString(definition.Tools.DeniedToolIDs, "origin.agent.delegate")
+	}
+	return definition
+}
+
+func cloneStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]string(nil), values...)
+}
+
+func appendUniqueRuntimeString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func memoryStrategyEnabled(value *bool) bool {
+	return contextcollector.MemoryStrategyEnabled(value)
+}
+
+func memoryReadLimit(contextStrategy contracts.ContextStrategy, memoryStrategy contracts.MemoryUseStrategy) int {
+	return contextcollector.MemoryReadLimit(contextStrategy, memoryStrategy)
+}
+
+func stringAllowed(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func contextSourceReport(source string, candidates int, selected int, limit int, reason string) contracts.ContextSourceReport {
+	return contextcollector.NewContextSourceReport(source, candidates, selected, limit, reason)
+}
+
+func (c Coordinator) recordContextCollectionCompleted(ctx context.Context, traceID contracts.TraceID, tenantID contracts.TenantID, runID contracts.AgentRunID, taskID contracts.TaskID, report *contracts.ContextAssemblyReport, estimatedTokensIn int) {
+	if report == nil {
+		return
+	}
+	traceReport := contextCollectionReportForTrace(*report, estimatedTokensIn)
+	c.recordTrace(ctx, traceID, tenantID, runID, taskID, contracts.TraceContextCollectionCompleted, contextCollectionTracePayload(traceReport))
+	for _, source := range report.Sources {
+		if !contextcollector.IsExternalContextSource(source.SourceType) {
 			continue
 		}
-		if strings.Contains(strings.ToLower(promptText(bundle)), strings.ToLower(phrase)) {
-			return contracts.PromptBundle{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "prompt policy blocked phrase", map[string]any{"phrase": phrase})
+		payload := contextSourceTracePayload(source)
+		if source.SelectedCount > 0 {
+			c.recordTrace(ctx, traceID, tenantID, runID, taskID, contracts.TraceContextExternalSourceSelected, payload)
+		}
+		if source.DroppedCount > 0 {
+			c.recordTrace(ctx, traceID, tenantID, runID, taskID, contracts.TraceContextExternalSourceDropped, payload)
 		}
 	}
-	limit := promptTokenLimit(policy, definition)
-	if limit <= 0 || estimatePromptTokens(bundle) <= limit {
-		return bundle, nil
-	}
-	if !policy.CompressionPolicy.Enabled {
-		return bundle, nil
-	}
-	reserve := estimatePromptTokens(contracts.PromptBundle{
-		System:            bundle.System,
-		Developer:         bundle.Developer,
-		Task:              bundle.Task,
-		SkillInstructions: bundle.SkillInstructions,
-	})
-	maxContextTokens := limit - reserve - 16
-	if policy.CompressionPolicy.MaxContextItems > 0 && maxContextTokens > policy.CompressionPolicy.MaxContextItems*40 {
-		maxContextTokens = policy.CompressionPolicy.MaxContextItems * 40
-	}
-	if maxContextTokens < 0 {
-		maxContextTokens = 0
-	}
-	bundle.Context = truncateWords(bundle.Context, maxContextTokens)
-	bundle.Constraints = append(bundle.Constraints, "context compressed by policy before model call")
-	if err := rehashPromptBundle(&bundle); err != nil {
-		return contracts.PromptBundle{}, err
-	}
-	return bundle, nil
 }
 
-func promptTokenLimit(policy contracts.PolicySet, definition contracts.AgentDefinition) int {
-	limit := definition.Runtime.MaxPromptTokens
-	if policy.PromptPolicy.MaxPromptTokens > 0 && (limit == 0 || policy.PromptPolicy.MaxPromptTokens < limit) {
-		limit = policy.PromptPolicy.MaxPromptTokens
+func contextCollectionReportForTrace(report contracts.ContextAssemblyReport, estimatedTokensIn int) contracts.ContextAssemblyReport {
+	if report.EstimatedTokensIn <= 0 && estimatedTokensIn > 0 {
+		report.EstimatedTokensIn = estimatedTokensIn
 	}
-	return limit
+	return report
+}
+
+func contextCollectionTracePayload(report contracts.ContextAssemblyReport) map[string]any {
+	candidateCount := 0
+	selectedCount := 0
+	droppedCount := 0
+	sourceCounts := map[string]map[string]int{}
+	for _, source := range report.Sources {
+		candidateCount += source.CandidateCount
+		selectedCount += source.SelectedCount
+		droppedCount += source.DroppedCount
+		counts := sourceCounts[source.SourceType]
+		if counts == nil {
+			counts = map[string]int{}
+			sourceCounts[source.SourceType] = counts
+		}
+		counts["candidate_count"] += source.CandidateCount
+		counts["selected_count"] += source.SelectedCount
+		counts["dropped_count"] += source.DroppedCount
+	}
+	return map[string]any{
+		"strategy_hash":           report.StrategyHash,
+		"mode":                    report.Mode,
+		"token_budget":            report.TokenBudget,
+		"estimated_tokens_in":     report.EstimatedTokensIn,
+		"estimated_tokens_out":    report.EstimatedTokensOut,
+		"candidate_count":         candidateCount,
+		"selected_count":          selectedCount,
+		"dropped_count":           droppedCount,
+		"source_counts":           sourceCounts,
+		"context_assembly_report": report,
+		"external_sources":        contextcollector.ExternalContextSourceReports(report.Sources),
+	}
+}
+
+func contextSourceTracePayload(source contracts.ContextSourceReport) map[string]any {
+	return map[string]any{
+		"source_type":     source.SourceType,
+		"source_ref":      source.SourceRef,
+		"provider_id":     source.ProviderID,
+		"hook_id":         source.HookID,
+		"tool_call_id":    source.ToolCallID,
+		"trust_level":     source.TrustLevel,
+		"candidate_count": source.CandidateCount,
+		"selected_count":  source.SelectedCount,
+		"dropped_count":   source.DroppedCount,
+		"limit":           source.Limit,
+		"reason":          source.Reason,
+	}
+}
+
+func (c Coordinator) applyPromptPolicy(ctx context.Context, policy contracts.PolicySet, definition contracts.AgentDefinition, strategy contracts.ContextStrategy, bundle contracts.PromptBundle) (contracts.PromptBundle, *contracts.ContextCompressionReport, error) {
+	if err := promptpolicy.ApplySafetyPolicy(policy.PromptPolicy, bundle); err != nil {
+		return contracts.PromptBundle{}, nil, err
+	}
+	limit := promptpolicy.TokenLimit(policy, definition)
+	result, err := (contextcompressor.LocalCompressor{Model: c.Model}).Compress(ctx, contextcompressor.Request{
+		Strategy:       strategy,
+		PromptBundle:   bundle,
+		HardTokenLimit: limit,
+	})
+	if err != nil {
+		report := result.Report
+		return result.PromptBundle, &report, err
+	}
+	bundle = result.PromptBundle
+	report := result.Report
+	if bundle.ContextAssemblyReport != nil {
+		bundle.ContextAssemblyReport.EstimatedTokensIn = report.InputTokens
+		bundle.ContextAssemblyReport.EstimatedTokensOut = estimatePromptTokens(bundle)
+		bundle.ContextAssemblyReport.Compression = &report
+	}
+	if err := promptpolicy.ApplyLimitPolicy(policy, definition, bundle); err != nil {
+		return bundle, &report, err
+	}
+	if err := promptbuilder.RefreshHash(&bundle); err != nil {
+		return contracts.PromptBundle{}, nil, err
+	}
+	return bundle, &report, nil
+}
+
+func contextCompressionRequested(compression contracts.ContextCompressionStrategy) bool {
+	mode := strings.TrimSpace(compression.Mode)
+	return compression.Enabled && mode != "" && mode != "none"
+}
+
+func contextCompressionRequestedTracePayload(strategy contracts.ContextStrategy) map[string]any {
+	compression := strategy.Compression
+	return map[string]any{
+		"mode":                 compression.Mode,
+		"model_provider":       compression.ModelProvider,
+		"model_name":           compression.ModelName,
+		"prompt_profile_id":    contextcompressor.PromptProfileID(compression),
+		"trigger_ratio":        compression.TriggerRatio,
+		"target_tokens":        compression.TargetTokens,
+		"context_token_budget": contracts.IntValue(strategy.ContextTokenBudget),
+	}
+}
+
+func contextCompressionTracePayload(report contracts.ContextCompressionReport) map[string]any {
+	return map[string]any{
+		"applied":           report.Applied,
+		"mode":              report.Mode,
+		"model_provider":    report.ModelProvider,
+		"model_name":        report.ModelName,
+		"prompt_profile_id": report.PromptProfileID,
+		"input_tokens":      report.InputTokens,
+		"output_tokens":     report.OutputTokens,
+		"summary_hash":      report.SummaryHash,
+		"failure_reason":    report.FailureReason,
+		"source_refs":       report.SourceRefs,
+	}
 }
 
 func repairAttemptLimit(policy contracts.PolicySet, definition contracts.AgentDefinition) int {
 	limit := definition.Runtime.MaxRepairAttempts
-	if policy.RuntimePolicy.MaxRepairAttempts > 0 && (limit == 0 || policy.RuntimePolicy.MaxRepairAttempts < limit) {
+	if policy.RuntimePolicy.MaxRepairAttempts > 0 && policy.RuntimePolicy.MaxRepairAttempts < limit {
 		limit = policy.RuntimePolicy.MaxRepairAttempts
 	}
 	return limit
@@ -1885,21 +2616,6 @@ func isRepairable(err error) bool {
 		return runtimeErr.IsRepairable()
 	}
 	return false
-}
-
-func promptText(bundle contracts.PromptBundle) string {
-	return strings.Join([]string{bundle.System, bundle.Developer, bundle.Task, bundle.Context}, "\n")
-}
-
-func truncateWords(value string, limit int) string {
-	if limit <= 0 {
-		return "[context omitted by compression policy]"
-	}
-	words := strings.Fields(value)
-	if len(words) <= limit {
-		return value
-	}
-	return strings.Join(words[:limit], " ") + "\n[context truncated by compression policy]"
 }
 
 func applyCandidatePatch(candidates tooldiscovery.CandidateSet, patch runtimehook.Patch) tooldiscovery.CandidateSet {
@@ -1950,74 +2666,14 @@ func retrievedCollaboratorIDs(collaborators []contracts.CollaboratorCard) []stri
 	return out
 }
 
-func applyContextPatch(view *contracts.WorkView, patch runtimehook.Patch) {
-	for _, ref := range patch.DropContextRefs {
-		switch ref {
-		case "conversation":
-			view.ConversationContext = nil
-		case "memory":
-			view.MemorySummaries = nil
-		case "artifacts":
-			view.ArtifactRefs = nil
-		case "tool_results":
-			view.ToolResultSummaries = nil
-		case "capabilities":
-			view.CandidateCapabilities = nil
-		case "skills":
-			view.CandidateSkills = nil
-			view.CandidateSkillInstructions = nil
-		case "tools":
-			view.CandidateTools = nil
-		case "collaborators":
-			view.CandidateCollaborators = nil
+func toolCardIDs(tools []contracts.ToolCard) []string {
+	out := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool.ToolID != "" {
+			out = append(out, tool.ToolID)
 		}
 	}
-	for _, block := range patch.AddContextBlocks {
-		if strings.TrimSpace(block.Content) == "" {
-			continue
-		}
-		id := contracts.ArtifactID(block.ID)
-		if id == "" {
-			id = contracts.ArtifactID(idgen.New("hookctx"))
-		}
-		summary := block.Content
-		if block.Title != "" {
-			summary = block.Title + ": " + block.Content
-		}
-		view.ArtifactRefs = append(view.ArtifactRefs, contracts.ArtifactRef{
-			ArtifactID: id,
-			Type:       "runtime_hook_context",
-			Summary:    summary,
-		})
-	}
-	for _, hint := range patch.PlannerHints {
-		if strings.TrimSpace(hint.Content) != "" {
-			view.Constraints = append(view.Constraints, "planner hint: "+hint.Content)
-		}
-	}
-}
-
-func applyPromptPatch(bundle contracts.PromptBundle, patch runtimehook.Patch) contracts.PromptBundle {
-	for _, block := range patch.AddContextBlocks {
-		if strings.TrimSpace(block.Content) == "" {
-			continue
-		}
-		title := block.Title
-		if title == "" {
-			title = block.ID
-		}
-		if title == "" {
-			title = "runtime hook context"
-		}
-		bundle.Context = strings.TrimSpace(bundle.Context + "\n<runtime hook context>\n" + title + "\n" + block.Content + "\n</runtime hook context>")
-	}
-	for _, hint := range patch.PlannerHints {
-		if strings.TrimSpace(hint.Content) != "" {
-			bundle.Constraints = append(bundle.Constraints, "planner hint: "+hint.Content)
-		}
-	}
-	_ = rehashPromptBundle(&bundle)
-	return bundle
+	return out
 }
 
 func memoryIntentScope(intent runtimehook.MemoryWriteIntent) string {
@@ -2069,23 +2725,6 @@ func memoryIntentFloat(metadata map[string]any, key string, fallback float64) fl
 	}
 }
 
-func rehashPromptBundle(bundle *contracts.PromptBundle) error {
-	stable, err := hash.StableJSON(map[string]any{
-		"system":      bundle.System,
-		"developer":   bundle.Developer,
-		"task":        bundle.Task,
-		"context":     bundle.Context,
-		"constraints": bundle.Constraints,
-		"skills":      bundle.SkillInstructions,
-		"tools":       bundle.ToolCards,
-	})
-	if err != nil {
-		return err
-	}
-	bundle.Hash = stable
-	return nil
-}
-
 func (c Coordinator) planContext(ctx context.Context, taskID contracts.TaskID) (*contracts.TaskPlan, *contracts.PlanStep, error) {
 	if c.Plans == nil {
 		return nil, nil, nil
@@ -2134,196 +2773,55 @@ func (c Coordinator) recordPlanStepResult(ctx context.Context, taskID contracts.
 	return nil
 }
 
-func (c Coordinator) toolSummaries(ctx context.Context, runID contracts.AgentRunID) []contracts.ToolResultSummary {
-	if c.ToolRepo == nil {
-		return nil
-	}
-	results, err := c.ToolRepo.ListResultsByRun(ctx, runID)
-	if err != nil {
-		return nil
-	}
-	out := make([]contracts.ToolResultSummary, 0, len(results))
-	for _, result := range results {
-		out = append(out, contracts.ToolResultSummary{
-			ToolCallID: result.ToolCallID,
-			Status:     result.Status,
-			Summary:    summarizeToolResult(result),
-		})
-	}
-	return out
-}
-
-func (c Coordinator) taskHistory(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID, currentRunID contracts.AgentRunID, events []contracts.TaskEvent) []contracts.RetrievedContext {
-	if taskID == "" {
-		return nil
-	}
-	out := make([]contracts.RetrievedContext, 0)
-	for _, event := range events {
-		if event.Type != "conversation.input" && event.Type != "run.resumed_input" {
-			continue
-		}
-		if eventRunID(event) == string(currentRunID) {
-			continue
-		}
-		input, _ := event.Payload["input"].(string)
-		input = strings.TrimSpace(input)
-		if input == "" {
-			continue
-		}
-		out = append(out, contracts.RetrievedContext{
-			SourceType: "task_event",
-			SourceID:   string(event.EventID),
-			SpeakerID:  event.ActorID,
-			CreatedAt:  event.CreatedAt,
-			Summary:    "previous task input",
-			Snippet:    input,
-			TrustLevel: "untrusted_user_text",
-			Visibility: "task",
-		})
-	}
-	if c.Runs != nil {
-		if runs, err := c.Runs.List(ctx, runrepo.ListFilter{TenantID: tenantID, TaskID: taskID, Limit: 8}); err == nil {
-			for _, run := range runs {
-				if run.RunID == currentRunID {
-					continue
-				}
-				summary := fmt.Sprintf("run_id=%s status=%s", run.RunID, run.Status)
-				if strings.TrimSpace(run.Input) != "" {
-					summary += " input=" + run.Input
-				}
-				out = append(out, contracts.RetrievedContext{
-					SourceType: "previous_run",
-					SourceID:   string(run.RunID),
-					CreatedAt:  run.StartedAt,
-					Summary:    summary,
-					TrustLevel: "system_record",
-					Visibility: "task",
-				})
-			}
-		}
-	}
-	if c.ToolRepo != nil {
-		callsByID := map[contracts.ToolCallID]contracts.ToolCall{}
-		if calls, err := c.ToolRepo.ListCallsByTask(ctx, tenantID, taskID); err == nil {
-			for _, call := range calls {
-				callsByID[call.ToolCallID] = call
-			}
-		}
-		if results, err := c.ToolRepo.ListResultsByTask(ctx, tenantID, taskID); err == nil {
-			for _, result := range results {
-				call := callsByID[result.ToolCallID]
-				if call.RunID == currentRunID {
-					continue
-				}
-				toolName := contextconversation.FirstNonEmpty(call.ToolID, call.Name)
-				summary := fmt.Sprintf("tool=%s status=%s %s", toolName, result.Status, summarizeToolResult(result))
-				out = append(out, contracts.RetrievedContext{
-					SourceType: "tool_result",
-					SourceID:   string(result.ToolResultID),
-					CreatedAt:  result.CompletedAt,
-					Summary:    strings.TrimSpace(summary),
-					TrustLevel: "tool_result",
-					Visibility: "task",
-				})
-				for _, ref := range result.ArtifactRefs {
-					if ref.ArtifactID == "" {
-						continue
-					}
-					out = append(out, contracts.RetrievedContext{
-						SourceType: "artifact",
-						SourceID:   string(ref.ArtifactID),
-						CreatedAt:  result.CompletedAt,
-						Summary:    fmt.Sprintf("%s %s", ref.Type, ref.Summary),
-						TrustLevel: "tool_result",
-						Visibility: "task",
-					})
-				}
-			}
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].CreatedAt.IsZero() || out[j].CreatedAt.IsZero() {
-			return i < j
-		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
-	})
-	if len(out) > 30 {
-		out = out[len(out)-30:]
-	}
-	return out
-}
-
-func summarizeToolResult(result contracts.ToolResult) string {
-	if result.Error != nil {
-		return result.Error.Message
-	}
-	if len(result.Output) > 0 {
-		return "tool output available"
-	}
-	if len(result.ArtifactRefs) > 0 {
-		return "artifact refs available"
-	}
-	return ""
-}
-
-func eventRunID(event contracts.TaskEvent) string {
-	if event.Payload == nil {
-		return ""
-	}
-	switch value := event.Payload["run_id"].(type) {
-	case contracts.AgentRunID:
-		return string(value)
-	case string:
-		return value
-	default:
-		if value == nil {
-			return ""
-		}
-		return fmt.Sprint(value)
+func (c Coordinator) contextCollector() contextcollector.Collector {
+	return contextcollector.Collector{
+		Runs:     c.Runs,
+		Tasks:    c.Tasks,
+		Memory:   c.Memory,
+		ToolRepo: c.ToolRepo,
 	}
 }
 
-func (c Coordinator) artifactRefs(ctx context.Context, runID contracts.AgentRunID) []contracts.ArtifactRef {
-	if c.ToolRepo == nil {
-		return nil
-	}
-	results, err := c.ToolRepo.ListResultsByRun(ctx, runID)
-	if err != nil {
-		return nil
-	}
-	seen := map[contracts.ArtifactID]struct{}{}
-	out := make([]contracts.ArtifactRef, 0)
-	for _, result := range results {
-		for _, ref := range result.ArtifactRefs {
-			if ref.ArtifactID == "" {
-				continue
-			}
-			if _, ok := seen[ref.ArtifactID]; ok {
-				continue
-			}
-			seen[ref.ArtifactID] = struct{}{}
-			out = append(out, ref)
-		}
-	}
-	return out
+func (c Coordinator) taskEventsForContext(ctx context.Context, taskID contracts.TaskID, strategy contracts.ContextStrategy) ([]contracts.TaskEvent, error) {
+	return c.contextCollector().TaskEventsForContext(ctx, taskID, strategy)
 }
 
-func (c Coordinator) memorySummaries(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, userID contracts.UserID) []contracts.MemorySummary {
-	if c.Memory == nil || tenantID == "" {
-		return nil
-	}
-	memories, err := c.Memory.ListMemory(ctx, tenantID, agentID, userID)
-	if err != nil {
-		return nil
-	}
-	return memories
+func taskEventsReadLimit(strategy contracts.ContextStrategy) (int, bool) {
+	return contextcollector.TaskEventsReadLimit(strategy)
 }
 
-func (c Coordinator) consecutiveToolFailures(ctx context.Context, runID contracts.AgentRunID) int {
+func (c Coordinator) toolSummaries(ctx context.Context, runID contracts.AgentRunID, limit int) []contracts.ToolResultSummary {
+	return c.contextCollector().ToolSummaries(ctx, runID, limit)
+}
+
+func (c Coordinator) taskHistory(ctx context.Context, tenantID contracts.TenantID, taskID contracts.TaskID, currentRunID contracts.AgentRunID, events []contracts.TaskEvent, limit int) []contracts.RetrievedContext {
+	return c.contextCollector().TaskHistory(ctx, tenantID, taskID, currentRunID, events, limit)
+}
+
+func (c Coordinator) artifactRefs(ctx context.Context, runID contracts.AgentRunID, limit int) []contracts.ArtifactRef {
+	return c.contextCollector().ArtifactRefs(ctx, runID, limit)
+}
+
+func (c Coordinator) memorySummaries(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, userID contracts.UserID, limit int, strategy contracts.MemoryUseStrategy) []contracts.MemorySummary {
+	return c.contextCollector().MemorySummaries(ctx, tenantID, agentID, userID, limit, strategy)
+}
+
+func consecutiveToolFailureScanLimit(maxConsecutiveFailures int, maxRepairAttempts int) int {
+	limit := 0
+	if maxConsecutiveFailures > 0 {
+		limit = maxConsecutiveFailures + 1
+	}
+	if maxRepairAttempts >= 0 && maxRepairAttempts+1 > limit {
+		limit = maxRepairAttempts + 1
+	}
+	return limit
+}
+
+func (c Coordinator) consecutiveToolFailures(ctx context.Context, runID contracts.AgentRunID, limit int) int {
 	if c.ToolRepo == nil {
 		return 0
 	}
-	results, err := c.ToolRepo.ListResultsByRun(ctx, runID)
+	results, err := c.ToolRepo.ListResultsByRunLimit(ctx, runID, limit)
 	if err != nil {
 		return 0
 	}

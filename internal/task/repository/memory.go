@@ -21,6 +21,7 @@ type TaskRepository interface {
 type EventRepository interface {
 	Append(ctx context.Context, event contracts.TaskEvent) error
 	ListByTask(ctx context.Context, taskID contracts.TaskID) ([]contracts.TaskEvent, error)
+	ListByTaskLimit(ctx context.Context, taskID contracts.TaskID, limit int) ([]contracts.TaskEvent, error)
 }
 
 type AtomicRepository interface {
@@ -122,12 +123,23 @@ func (r *InMemoryStore) Append(_ context.Context, event contracts.TaskEvent) err
 }
 
 func (r *InMemoryStore) ListByTask(_ context.Context, taskID contracts.TaskID) ([]contracts.TaskEvent, error) {
+	return r.listByTask(taskID, 0), nil
+}
+
+func (r *InMemoryStore) ListByTaskLimit(_ context.Context, taskID contracts.TaskID, limit int) ([]contracts.TaskEvent, error) {
+	return r.listByTask(taskID, limit), nil
+}
+
+func (r *InMemoryStore) listByTask(taskID contracts.TaskID, limit int) []contracts.TaskEvent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	events := r.events[taskID]
+	if limit > 0 && len(events) > limit {
+		events = events[len(events)-limit:]
+	}
 	out := make([]contracts.TaskEvent, len(events))
 	copy(out, events)
-	return out, nil
+	return out
 }
 
 func (r *InMemoryStore) updateTaskLocked(task contracts.Task, expectedVersion int64) error {
@@ -240,12 +252,23 @@ func (r *InMemoryEventRepository) Append(_ context.Context, event contracts.Task
 }
 
 func (r *InMemoryEventRepository) ListByTask(_ context.Context, taskID contracts.TaskID) ([]contracts.TaskEvent, error) {
+	return r.listByTask(taskID, 0), nil
+}
+
+func (r *InMemoryEventRepository) ListByTaskLimit(_ context.Context, taskID contracts.TaskID, limit int) ([]contracts.TaskEvent, error) {
+	return r.listByTask(taskID, limit), nil
+}
+
+func (r *InMemoryEventRepository) listByTask(taskID contracts.TaskID, limit int) []contracts.TaskEvent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	events := r.events[taskID]
+	if limit > 0 && len(events) > limit {
+		events = events[len(events)-limit:]
+	}
 	out := make([]contracts.TaskEvent, len(events))
 	copy(out, events)
-	return out, nil
+	return out
 }
 
 func eventLess(a, b contracts.TaskEvent) bool {

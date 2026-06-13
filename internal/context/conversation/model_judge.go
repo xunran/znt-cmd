@@ -161,7 +161,8 @@ func sufficiencyOutputContract() string {
 	return strings.Join([]string{
 		"<sufficiency output contract>",
 		"Return exactly one valid JSON object. Do not return Markdown, comments, or extra text.",
-		`Required shape: {"phase":"pre_decision","sufficient":false,"confidence":0.0,"reason":"...","missing_facts":["..."],"retrieval_needed":true,"queries":[{"query":"...","sources":["conversation_history","memory","task_event","artifact","tool_result"],"max_results":8}],"suggested_action":"retrieve_context"}`,
+		`Required shape: {"phase":"pre_decision","sufficient":false,"confidence":0.0,"reason":"...","missing_facts":["..."],"retrieval_needed":true,"queries":[{"query":"...","sources":["conversation_history","memory","task_event","artifact","tool_result"],"max_results":0}],"suggested_action":"retrieve_context"}`,
+		`Use max_results=0 unless the input facts explicitly provide a smaller retrieval budget; CleanCore applies the effective ContextStrategy retrieval limit after this judgment.`,
 		`allowed phase values: pre_addressing, pre_decision`,
 		`allowed suggested_action values: continue, retrieve_context, ask_clarification, no_op`,
 		"</sufficiency output contract>",

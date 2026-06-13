@@ -22,6 +22,7 @@ type BuildInput struct {
 	Artifacts         []contracts.ArtifactRef
 	Handoff           *contracts.HandoffContextSummary
 	Conversation      *contracts.ConversationContext
+	ContextReport     *contracts.ContextAssemblyReport
 	Capabilities      []contracts.CapabilityCard
 	Skills            []contracts.SkillCard
 	SkillInstructions []contracts.SkillInstruction
@@ -56,6 +57,7 @@ func (Builder) Build(_ context.Context, input BuildInput) (contracts.WorkView, e
 		MemorySummaries:            input.Memory,
 		ArtifactRefs:               input.Artifacts,
 		ToolResultSummaries:        input.ToolResults,
+		ContextAssemblyReport:      input.ContextReport,
 		CandidateCapabilities:      input.Capabilities,
 		CandidateSkills:            input.Skills,
 		CandidateSkillInstructions: input.SkillInstructions,

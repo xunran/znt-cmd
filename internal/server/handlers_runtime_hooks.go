@@ -839,16 +839,17 @@ func parseRuntimeHookProviderPayload(payload map[string]any) (runtimehook.Provid
 		source = raw
 	}
 	provider := runtimehook.Provider{
-		ProviderID:      payloadString(source, "provider_id"),
-		Name:            payloadString(source, "name"),
-		Description:     payloadString(source, "description"),
-		ProviderType:    runtimehook.ProviderType(payloadString(source, "provider_type")),
-		Endpoint:        payloadString(source, "endpoint"),
-		Status:          payloadString(source, "status"),
-		HealthStatus:    payloadString(source, "health_status"),
-		LastHealthError: payloadString(source, "last_health_error"),
-		Version:         payloadString(source, "version"),
-		Config:          parseMetadata(source["config"]),
+		ProviderID:          payloadString(source, "provider_id"),
+		Name:                payloadString(source, "name"),
+		Description:         payloadString(source, "description"),
+		ProviderType:        runtimehook.ProviderType(payloadString(source, "provider_type")),
+		ServiceConnectionID: payloadString(source, "service_connection_id"),
+		Endpoint:            payloadString(source, "endpoint"),
+		Status:              payloadString(source, "status"),
+		HealthStatus:        payloadString(source, "health_status"),
+		LastHealthError:     payloadString(source, "last_health_error"),
+		Version:             payloadString(source, "version"),
+		Config:              parseMetadata(source["config"]),
 	}
 	if provider.ProviderID == "" {
 		return runtimehook.Provider{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "runtime_hook.provider.upsert requires provider_id", nil)

@@ -229,7 +229,7 @@ func (HeuristicSufficiencyJudge) JudgeSufficiency(_ context.Context, conversatio
 type BasicRetriever struct{}
 
 func (BasicRetriever) Retrieve(_ context.Context, queries []contracts.ContextRetrievalQuery, input RetrievalInput) ([]contracts.RetrievedContext, error) {
-	limit := 8
+	limit := 0
 	if len(queries) > 0 && queries[0].MaxResults > 0 {
 		limit = queries[0].MaxResults
 	}
@@ -311,7 +311,7 @@ func (BasicRetriever) Retrieve(_ context.Context, queries []contracts.ContextRet
 			Snippet:      text,
 			Relevance:    MaxFloat(score, 0.48),
 			RecencyScore: RecencyScore(now, event.CreatedAt),
-			TrustLevel:   "system_record",
+			TrustLevel:   "untrusted_user_text",
 			Visibility:   "task",
 		})
 	}
@@ -333,7 +333,7 @@ func (BasicRetriever) Retrieve(_ context.Context, queries []contracts.ContextRet
 			Summary:    SummarizeText(text, 220),
 			Snippet:    artifact.Summary,
 			Relevance:  MaxFloat(score, 0.46),
-			TrustLevel: "system_record",
+			TrustLevel: "tool_result",
 			Visibility: "artifact_ref",
 		})
 	}
@@ -367,7 +367,11 @@ func (BasicRetriever) Retrieve(_ context.Context, queries []contracts.ContextRet
 		}
 		return left > right
 	})
-	out := make([]contracts.RetrievedContext, 0, MinInt(len(candidates), limit))
+	capacity := len(candidates)
+	if limit > 0 {
+		capacity = MinInt(len(candidates), limit)
+	}
+	out := make([]contracts.RetrievedContext, 0, capacity)
 	seen := map[string]struct{}{}
 	for _, candidate := range candidates {
 		key := candidate.SourceType + ":" + candidate.SourceID
@@ -379,7 +383,7 @@ func (BasicRetriever) Retrieve(_ context.Context, queries []contracts.ContextRet
 		}
 		seen[key] = struct{}{}
 		out = append(out, candidate)
-		if len(out) >= limit {
+		if limit > 0 && len(out) >= limit {
 			break
 		}
 	}
@@ -387,6 +391,10 @@ func (BasicRetriever) Retrieve(_ context.Context, queries []contracts.ContextRet
 }
 
 func BuildRetrievalQuery(conversation contracts.ConversationContext, text string) contracts.ContextRetrievalQuery {
+	return BuildRetrievalQueryWithLimit(conversation, text, 0)
+}
+
+func BuildRetrievalQueryWithLimit(conversation contracts.ConversationContext, text string, maxResults int) contracts.ContextRetrievalQuery {
 	query := strings.TrimSpace(text)
 	if query == "" {
 		query = "当前消息相关的上一轮上下文"
@@ -396,7 +404,7 @@ func BuildRetrievalQuery(conversation contracts.ConversationContext, text string
 		Sources:    []string{"conversation_history", "memory", "task_event", "artifact", "tool_result"},
 		ThreadID:   conversation.CurrentMessage.ThreadID,
 		TimeHint:   "recent",
-		MaxResults: 8,
+		MaxResults: maxResults,
 	}
 }
 

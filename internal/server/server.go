@@ -143,20 +143,12 @@ func dispatchCommand(r *http.Request, appCore *core.Core, metrics *metricsState,
 		return runtimeHookPreview(r, appCore, envelope, caller)
 	case "prompt.preview":
 		return promptPreview(r, appCore, envelope, caller)
+	case "agent.plugin.sync":
+		return agentPluginSync(r, appCore, envelope, caller)
 	case "agent.package.draft.create":
 		return packageDraftCreate(r, appCore, envelope, caller)
-	case "agent.package.draft.patch_prompt":
-		return packageDraftPatchPrompt(r, appCore, envelope, caller)
-	case "agent.package.draft.patch_developer_prompt":
-		return packageDraftPatchDeveloperPrompt(r, appCore, envelope, caller)
-	case "agent.package.draft.patch_system_prompt":
-		return packageDraftPatchSystemPrompt(r, appCore, envelope, caller)
-	case "agent.package.draft.patch_agents_md":
-		return packageDraftPatchAgentsMD(r, appCore, envelope, caller)
-	case "agent.package.tool_binding.update":
-		return packageToolBindingUpdate(r, appCore, envelope, caller)
-	case "agent.package.runtime_hooks.update":
-		return packageRuntimeHooksUpdate(r, appCore, envelope, caller)
+	case "agent.package.draft.patch_strategies":
+		return packageDraftPatchStrategies(r, appCore, envelope, caller)
 	case "agent.package.collaborator.replace":
 		return packageCollaboratorReplace(r, appCore, envelope, caller)
 	case "agent.package.collaborator.add", "agent.package.collaborator.update":
@@ -234,7 +226,7 @@ func allowedCommand(command string, caller auth.CallerIdentity) bool {
 	switch command {
 	case "agent.run", "task.start", "task.command", "tools.invoke", "artifact.read", "origin.agent.delegate":
 		return caller.HasRole(auth.RoleRuntimeCaller) || caller.HasRole(auth.RoleAdmin)
-	case "prompt.preview", "agent.package.draft.create", "agent.package.draft.patch_prompt", "agent.package.draft.patch_developer_prompt", "agent.package.draft.patch_system_prompt", "agent.package.draft.patch_agents_md", "agent.package.tool_binding.update", "agent.package.runtime_hooks.update", "agent.package.collaborator.add", "agent.package.collaborator.update", "agent.package.collaborator.replace", "agent.package.collaborator.remove", "agent.package.exported_tool.add", "agent.package.exported_tool.update", "agent.package.exported_tool.replace", "agent.package.exported_tool.remove", "agent.package.skill.add", "agent.package.skill.update", "agent.package.skill.remove", "agent.package.proposal.create", "agent.package.proposal.submit", "agent.package.proposal.approve", "agent.package.proposal.reject", "agent.package.proposal.publish", "agent.package.draft.validate", "agent.package.review", "agent.package.publish", "agent.package.canary", "agent.package.stable", "agent.package.rollback", "permission.policy.upsert", "tool.provider.upsert", "tool.provider.sync", "tool.group.upsert", "tool.group.list", "tool.manifest.upsert", "tool.manifest.list", "runtime_hook.provider.upsert", "runtime_hook.provider.list", "runtime_hook.binding.upsert", "runtime_hook.binding.list", "runtime_hook.preview", "policy.draft.create", "policy.update", "policy.draft.validate", "policy.review", "policy.publish", "policy.canary", "policy.stable", "policy.rollback", "approval.approve", "approval.reject", "eval.suite.create", "eval.suite.add_case", "eval.suite.run", "eval.run", "artifact.delete":
+	case "prompt.preview", "agent.plugin.sync", "agent.package.draft.create", "agent.package.draft.patch_strategies", "agent.package.collaborator.add", "agent.package.collaborator.update", "agent.package.collaborator.replace", "agent.package.collaborator.remove", "agent.package.exported_tool.add", "agent.package.exported_tool.update", "agent.package.exported_tool.replace", "agent.package.exported_tool.remove", "agent.package.skill.add", "agent.package.skill.update", "agent.package.skill.remove", "agent.package.proposal.create", "agent.package.proposal.submit", "agent.package.proposal.approve", "agent.package.proposal.reject", "agent.package.proposal.publish", "agent.package.draft.validate", "agent.package.review", "agent.package.publish", "agent.package.canary", "agent.package.stable", "agent.package.rollback", "permission.policy.upsert", "tool.provider.upsert", "tool.provider.sync", "tool.group.upsert", "tool.group.list", "tool.manifest.upsert", "tool.manifest.list", "runtime_hook.provider.upsert", "runtime_hook.provider.list", "runtime_hook.binding.upsert", "runtime_hook.binding.list", "runtime_hook.preview", "policy.draft.create", "policy.update", "policy.draft.validate", "policy.review", "policy.publish", "policy.canary", "policy.stable", "policy.rollback", "approval.approve", "approval.reject", "eval.suite.create", "eval.suite.add_case", "eval.suite.run", "eval.run", "artifact.delete":
 		return caller.HasRole(auth.RoleOptimizer) || caller.HasRole(auth.RoleAdmin)
 	default:
 		return true

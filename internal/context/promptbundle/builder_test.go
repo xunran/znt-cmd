@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"znt/internal/agentdef/loader"
+	contextcollector "znt/internal/context/collector"
 	"znt/internal/contracts"
+	runtimehook "znt/internal/runtime/hook"
 )
 
 func TestBuilderSeparatesSourcesAndHashes(t *testing.T) {
@@ -30,6 +32,204 @@ func TestBuilderSeparatesSourcesAndHashes(t *testing.T) {
 	}
 	if !strings.Contains(bundle.Context, "<user input>") || strings.Contains(bundle.System, "ignore system") {
 		t.Fatalf("source isolation failed: %#v", bundle)
+	}
+}
+
+func TestBuilderCarriesContextAssemblyReport(t *testing.T) {
+	agent := loader.TestAgentDefinition()
+	view := contracts.WorkView{
+		RunID:     "run_1",
+		UserInput: "hello",
+		TaskSummary: contracts.TaskSummary{
+			TaskID:    "task_1",
+			Status:    contracts.TaskRunning,
+			Objective: "answer",
+		},
+		ContextAssemblyReport: &contracts.ContextAssemblyReport{
+			StrategyHash: "strategy_hash_1",
+			Mode:         "balanced",
+			TokenBudget:  4000,
+		},
+	}
+	bundle, err := NewBuilder().Build(context.Background(), agent, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.ContextAssemblyReport == nil || bundle.ContextAssemblyReport.StrategyHash != "strategy_hash_1" {
+		t.Fatalf("expected context assembly report on bundle, got %#v", bundle.ContextAssemblyReport)
+	}
+	view.ContextAssemblyReport.StrategyHash = "strategy_hash_2"
+	changed, err := NewBuilder().Build(context.Background(), agent, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Hash == changed.Hash {
+		t.Fatalf("expected context assembly report to affect prompt bundle hash")
+	}
+}
+
+func TestRefreshHashUpdatesPromptBundleHash(t *testing.T) {
+	bundle := contracts.PromptBundle{
+		System:  "system",
+		Task:    "task",
+		Context: "first context",
+	}
+	if err := RefreshHash(&bundle); err != nil {
+		t.Fatal(err)
+	}
+	first := bundle.Hash
+	bundle.Context = "second context"
+	if err := RefreshHash(&bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Hash == "" || bundle.Hash == first {
+		t.Fatalf("expected refreshed hash after context mutation, first=%s next=%s", first, bundle.Hash)
+	}
+	second := bundle.Hash
+	bundle.OutputSchema = map[string]any{"type": "object", "required": []string{"type"}}
+	if err := RefreshHash(&bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Hash == second {
+		t.Fatalf("expected refreshed hash after output schema mutation")
+	}
+}
+
+func TestApplyRuntimeHookPatchRendersExternalContextAndRefreshesHash(t *testing.T) {
+	bundle := contracts.PromptBundle{
+		Context: "base context",
+	}
+	if err := RefreshHash(&bundle); err != nil {
+		t.Fatal(err)
+	}
+	first := bundle.Hash
+
+	patched, err := ApplyRuntimeHookPatch(bundle, runtimehook.Patch{
+		AddContextBlocks: []runtimehook.ContextBlock{{
+			ID:      "crm_ctx",
+			Title:   "CRM context",
+			Content: "renewal is active",
+			Metadata: map[string]any{
+				"source_type": contextcollector.SourceAgentPluginContext,
+				"source_ref":  "crm://account/42",
+				"provider_id": "crm-plugin",
+				"hook_id":     "crm-context",
+			},
+		}},
+		PlannerHints: []runtimehook.PlannerHint{{Content: "prefer concise answer"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`<external_context source_type="agent_plugin_context" source_ref="crm://account/42" trust_level="untrusted_external_context" provider_id="crm-plugin" hook_id="crm-context">`,
+		"CRM context",
+		"renewal is active",
+		"</external_context>",
+	} {
+		if !strings.Contains(patched.Context, expected) {
+			t.Fatalf("expected %q in patched context, got %s", expected, patched.Context)
+		}
+	}
+	if len(patched.Constraints) != 1 || patched.Constraints[0] != "planner hint: prefer concise answer" {
+		t.Fatalf("expected planner hint constraint, got %#v", patched.Constraints)
+	}
+	if patched.Hash == "" || patched.Hash == first {
+		t.Fatalf("expected patched hash to change, first=%s next=%s", first, patched.Hash)
+	}
+}
+
+func TestBuilderRendersExternalArtifactRefMetadata(t *testing.T) {
+	agent := loader.TestAgentDefinition()
+	view := contracts.WorkView{
+		RunID:     "run_1",
+		UserInput: "hello",
+		TaskSummary: contracts.TaskSummary{
+			TaskID:    "task_1",
+			Status:    contracts.TaskRunning,
+			Objective: "answer",
+		},
+		ArtifactRefs: []contracts.ArtifactRef{{
+			ArtifactID: "hookctx_1",
+			Type:       "agent_plugin_context",
+			Summary:    "CRM account renewal is active.",
+			Metadata: map[string]any{
+				"source_ref":  "crm://account/42",
+				"provider_id": "crm-plugin",
+				"hook_id":     "crm-context",
+				"trust_level": "untrusted_external_context",
+			},
+		}},
+	}
+	bundle, err := NewBuilder().Build(context.Background(), agent, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"source_ref=crm://account/42", "provider_id=crm-plugin", "hook_id=crm-context", "trust_level=untrusted_external_context"} {
+		if !strings.Contains(bundle.Context, expected) {
+			t.Fatalf("expected external artifact metadata %q in context, got %s", expected, bundle.Context)
+		}
+	}
+}
+
+func TestBuilderMarksDynamicContextTrustAndSourceRefs(t *testing.T) {
+	agent := loader.TestAgentDefinition()
+	view := contracts.WorkView{
+		RunID:     "run_1",
+		UserInput: "please continue",
+		TaskSummary: contracts.TaskSummary{
+			TaskID:    "task_1",
+			Status:    contracts.TaskRunning,
+			Objective: "answer",
+		},
+		ConversationContext: &contracts.ConversationContext{
+			RecentMessages: []contracts.ConversationMessage{{
+				MessageID: "msg_1",
+				Text:      "previous user message",
+			}},
+			Retrieved: []contracts.RetrievedContext{{
+				SourceType: "conversation_history",
+				SourceID:   "msg_2",
+				Summary:    "retrieved message",
+				TrustLevel: "untrusted_user_text",
+			}},
+		},
+		MemorySummaries: []contracts.MemorySummary{{MemoryID: "memory_1", Summary: "remembered fact"}},
+		ToolResultSummaries: []contracts.ToolResultSummary{{
+			ToolCallID: "call_1",
+			Status:     contracts.ToolResultSucceeded,
+			Summary:    "tool output fact",
+		}},
+		ArtifactRefs: []contracts.ArtifactRef{{
+			ArtifactID: "artifact_1",
+			Type:       "report",
+			Summary:    "artifact summary",
+		}},
+	}
+	bundle, err := NewBuilder().Build(context.Background(), agent, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"source_type=user_input",
+		"source_ref=user_input:run_1",
+		"source_type=conversation_recent",
+		"source_ref=message:msg_1",
+		"source_type=conversation_history",
+		"source_ref=conversation_history:msg_2",
+		"source_type=memory_summary",
+		"source_ref=memory:memory_1",
+		"source_type=tool_result",
+		"source_ref=tool_result:call_1",
+		"source_type=artifact_refs",
+		"source_ref=artifact:artifact_1",
+		"trust_level=untrusted_user_text",
+		"trust_level=tool_result",
+		"input_boundary=untrusted",
+	} {
+		if !strings.Contains(bundle.Context, expected) {
+			t.Fatalf("expected %q in context, got %s", expected, bundle.Context)
+		}
 	}
 }
 

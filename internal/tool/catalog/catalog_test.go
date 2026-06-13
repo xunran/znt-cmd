@@ -326,6 +326,60 @@ func TestUpsertManifestRegistersAgentPluginServiceTool(t *testing.T) {
 	}
 }
 
+func TestAgentPluginToolInvokeRejectsTopLevelControlFields(t *testing.T) {
+	reg := registry.NewInMemoryRegistry()
+	service := NewService(reg, nil)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tools/invoke" {
+			t.Fatalf("expected /tools/invoke, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":{"ok":true},"run_status":"completed"}`))
+	}))
+	defer remote.Close()
+
+	if _, err := service.UpsertProvider(context.Background(), ToolProvider{
+		TenantID:            "tenant_1",
+		ProviderID:          "crm_plugin",
+		ProviderType:        ProviderTypeAgentPlugin,
+		Name:                "CRM plugin",
+		ServiceConnectionID: attachProviderConnection(t, service, "tenant_1", "crm_plugin", remote.URL),
+	}, "optimizer_1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpsertManifest(context.Background(), ToolManifest{
+		TenantID:     "tenant_1",
+		ToolID:       "crm.plugin.lookup",
+		Name:         "CRM plugin lookup",
+		Description:  "Look up a customer through AgentPlugin Service.",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+		Executor: ExecutorSpec{
+			Type:       ExecutorTypeAgentPlugin,
+			ProviderID: "crm_plugin",
+			Operation:  "lookup",
+		},
+	}, "optimizer_1"); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := reg.GetForTenant("tenant_1", "crm.plugin.lookup")
+	if !ok {
+		t.Fatal("expected agent plugin tool registered")
+	}
+	_, _, err := tool.Executor.Execute(context.Background(), contracts.ToolCall{
+		ToolID:    "crm.plugin.lookup",
+		TenantID:  "tenant_1",
+		Arguments: map[string]any{"customer_id": "c_1"},
+	})
+	var runtimeErr *contracts.RuntimeError
+	if !errors.As(err, &runtimeErr) || runtimeErr.Code != contracts.CodeToolExecutionFailed {
+		t.Fatalf("expected top-level control field to fail tool execution, got %T %v", err, err)
+	}
+	if !strings.Contains(err.Error(), `unknown field "run_status"`) {
+		t.Fatalf("expected unknown field detail, got %v", err)
+	}
+}
+
 func TestConnectionNetworkScopeFeedsExecutionProfile(t *testing.T) {
 	reg := registry.NewInMemoryRegistry()
 	service := NewService(reg, nil)

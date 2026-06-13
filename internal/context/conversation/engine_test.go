@@ -78,4 +78,7 @@ func TestBuildRetrievalQueryDoesNotOverConstrainSpeaker(t *testing.T) {
 	if query.ThreadID != "thread_a" {
 		t.Fatalf("expected thread hint to be retained, got %#v", query)
 	}
+	if query.MaxResults != 0 {
+		t.Fatalf("default retrieval query should not carry a hard-coded max result limit, got %#v", query)
+	}
 }

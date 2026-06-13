@@ -41,6 +41,13 @@ config:
   modelTemperature: "0"
   modelThinking: ""
   modelReasoningEffort: ""
+  contextDefaultMode: balanced
+  contextDefaultRecentMessageLimit: "20"
+  contextDefaultRetrievalMaxResults: "8"
+  contextDefaultTaskHistoryMaxItems: "30"
+  contextDefaultTokenBudget: "4000"
+  contextCompressionDefaultEnabled: "true"
+  contextCompressionDefaultMode: truncate
 
 secret:
   serviceToken: ""

@@ -61,14 +61,20 @@ func promptPreview(r *http.Request, appCore *core.Core, envelope contracts.Agent
 		return nil, err
 	}
 	return map[string]any{
-		"agent":              result.Agent,
-		"policy_set_id":      result.PolicySet.PolicySetID,
-		"policy_version":     result.PolicySet.Version,
-		"work_view":          result.WorkView,
-		"prompt_bundle":      result.PromptBundle,
-		"prompt_bundle_hash": result.PromptBundle.Hash,
-		"token_estimate":     result.TokenEstimate,
-		"model_provider":     result.ModelProvider,
-		"model_name":         result.ModelName,
+		"agent":                   result.Agent,
+		"policy_set_id":           result.PolicySet.PolicySetID,
+		"policy_version":          result.PolicySet.Version,
+		"effective_strategies":    result.EffectiveStrategies,
+		"strategy_hash":           result.StrategyHash,
+		"guardrail_adjustments":   result.GuardrailAdjustments,
+		"hook_effects":            result.HookEffects,
+		"work_view":               result.WorkView,
+		"prompt_bundle":           result.PromptBundle,
+		"context_assembly_report": result.ContextAssemblyReport,
+		"compression_report":      result.CompressionReport,
+		"prompt_bundle_hash":      result.PromptBundle.Hash,
+		"token_estimate":          result.TokenEstimate,
+		"model_provider":          result.ModelProvider,
+		"model_name":              result.ModelName,
 	}, nil
 }

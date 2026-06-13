@@ -46,6 +46,11 @@ type VersionSnapshot struct {
 	ContractVersion      string            `json:"contract_version,omitempty"`
 	AgentDefinition      AgentVersion      `json:"agent_definition"`
 	AgentPackage         PackageVersionID  `json:"agent_package,omitempty"`
+	SourceKind           AgentSourceKind   `json:"source_kind,omitempty"`
+	SourceProviderID     string            `json:"source_provider_id,omitempty"`
+	ManifestVersion      string            `json:"manifest_version,omitempty"`
+	ManifestHash         string            `json:"manifest_hash,omitempty"`
+	StrategyHash         string            `json:"strategy_hash,omitempty"`
 	PolicySet            PolicySetID       `json:"policy_set"`
 	PolicyVersionID      PolicyVersionID   `json:"policy_version_id,omitempty"`
 	PolicySetVersion     string            `json:"policy_set_version,omitempty"`

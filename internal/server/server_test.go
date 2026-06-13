@@ -23,6 +23,7 @@ import (
 	"znt/internal/app/logging"
 	"znt/internal/contracts"
 	"znt/internal/eval"
+	"znt/internal/governance/replay"
 	modelclient "znt/internal/model/client"
 	runtimehook "znt/internal/runtime/hook"
 	serviceconnection "znt/internal/serviceconnection"
@@ -102,7 +103,9 @@ func TestCommandAgentRunAndQueries(t *testing.T) {
 	runDiagnosticsResp := doJSON(handler, "GET", "/v1/runs/"+string(result.RunID)+"/diagnostics", nil)
 	if runDiagnosticsResp.Code != http.StatusOK ||
 		!bytes.Contains(runDiagnosticsResp.Body.Bytes(), []byte(contracts.TraceAgentRouteResolved)) ||
-		!bytes.Contains(runDiagnosticsResp.Body.Bytes(), []byte(`"prompt_bundle_hash"`)) {
+		!bytes.Contains(runDiagnosticsResp.Body.Bytes(), []byte(`"prompt_bundle_hash"`)) ||
+		!bytes.Contains(runDiagnosticsResp.Body.Bytes(), []byte(`"context"`)) ||
+		!bytes.Contains(runDiagnosticsResp.Body.Bytes(), []byte(`"strategy_hash"`)) {
 		t.Fatalf("unexpected run diagnostics status %d body %s", runDiagnosticsResp.Code, runDiagnosticsResp.Body.String())
 	}
 	finalResp := doJSON(handler, "GET", "/v1/runs/"+string(result.RunID)+"/final-response", nil)
@@ -156,20 +159,19 @@ func TestOptimizerCommandDispatchCoverageForContractWarnings(t *testing.T) {
 	}
 	handler := NewHandlerWithCore(appCore, logging.New("error"))
 	commands := []string{
+		"agent.plugin.sync",
 		"agent.package.collaborator.remove",
 		"agent.package.collaborator.replace",
 		"agent.package.collaborator.update",
-		"agent.package.draft.patch_agents_md",
+		"agent.package.draft.patch_strategies",
 		"agent.package.exported_tool.remove",
 		"agent.package.exported_tool.replace",
 		"agent.package.exported_tool.update",
 		"agent.package.proposal.reject",
 		"agent.package.review",
-		"agent.package.runtime_hooks.update",
 		"agent.package.skill.add",
 		"agent.package.skill.remove",
 		"agent.package.skill.update",
-		"agent.package.tool_binding.update",
 		"approval.reject",
 		"permission.policy.upsert",
 		"policy.canary",
@@ -198,6 +200,40 @@ func TestOptimizerCommandDispatchCoverageForContractWarnings(t *testing.T) {
 			}
 			if strings.Contains(body, "unsupported command") {
 				t.Fatalf("command %s did not reach dispatch handler: %d %s", command, resp.Code, body)
+			}
+		})
+	}
+}
+
+func TestRemovedAgentPackagePatchCommandsAreUnsupported(t *testing.T) {
+	appCore, err := core.New(config.Config{
+		ServiceName: "clean-core",
+		Version:     "test",
+		Env:         "test",
+		HTTPAddr:    ":0",
+		LogLevel:    "error",
+		Readiness:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	for _, command := range []string{
+		"agent.package.draft.patch_prompt",
+		"agent.package.draft.patch_developer_prompt",
+		"agent.package.draft.patch_system_prompt",
+		"agent.package.draft.patch_agents_md",
+		"agent.package.tool_binding.update",
+		"agent.package.runtime_hooks.update",
+	} {
+		t.Run(command, func(t *testing.T) {
+			resp := doJSONWithHeaders(handler, http.MethodPost, "/v1/commands", map[string]any{
+				"command": command,
+				"payload": map[string]any{},
+				"context": map[string]any{"tenant_id": "tenant_1"},
+			}, map[string]string{"X-Roles": "admin,optimizer"})
+			if resp.Code != http.StatusBadRequest || !bytes.Contains(resp.Body.Bytes(), []byte("unsupported command")) {
+				t.Fatalf("expected removed command to be unsupported, got %d body %s", resp.Code, resp.Body.String())
 			}
 		})
 	}
@@ -1340,29 +1376,22 @@ func TestPackageDraftCommandsExposeStagedFlow(t *testing.T) {
 	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
 		t.Fatal(err)
 	}
-	patch := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
-		"command": "agent.package.draft.patch_prompt",
-		"payload": map[string]any{"draft_id": draft.DraftID, "prompt": "patched prompt"},
+	patchStrategies := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.patch_strategies",
+		"payload": map[string]any{
+			"draft_id": draft.DraftID,
+			"strategies": map[string]any{
+				"prompt": map[string]any{
+					"identity_prompt":  "patched prompt",
+					"developer_prompt": "developer strategy",
+					"system_prompt":    "system contract",
+				},
+			},
+		},
 		"context": map[string]any{"tenant_id": "tenant_1"},
 	}, map[string]string{"X-Roles": "optimizer"})
-	if patch.Code != http.StatusOK {
-		t.Fatalf("draft patch failed %d body %s", patch.Code, patch.Body.String())
-	}
-	patchDeveloper := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
-		"command": "agent.package.draft.patch_developer_prompt",
-		"payload": map[string]any{"draft_id": draft.DraftID, "developer_prompt": "developer strategy"},
-		"context": map[string]any{"tenant_id": "tenant_1"},
-	}, map[string]string{"X-Roles": "optimizer"})
-	if patchDeveloper.Code != http.StatusOK {
-		t.Fatalf("developer prompt patch failed %d body %s", patchDeveloper.Code, patchDeveloper.Body.String())
-	}
-	patchSystem := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
-		"command": "agent.package.draft.patch_system_prompt",
-		"payload": map[string]any{"draft_id": draft.DraftID, "system_prompt": "system contract"},
-		"context": map[string]any{"tenant_id": "tenant_1"},
-	}, map[string]string{"X-Roles": "optimizer"})
-	if patchSystem.Code != http.StatusOK {
-		t.Fatalf("system prompt patch failed %d body %s", patchSystem.Code, patchSystem.Body.String())
+	if patchStrategies.Code != http.StatusOK {
+		t.Fatalf("draft strategy patch failed %d body %s", patchStrategies.Code, patchStrategies.Body.String())
 	}
 	validate := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
 		"command": "agent.package.draft.validate",
@@ -1590,6 +1619,10 @@ func TestPromptPreviewCommandBuildsBundleWithoutModelCall(t *testing.T) {
 			Developer string `json:"developer"`
 			Task      string `json:"task"`
 		} `json:"prompt_bundle"`
+		EffectiveStrategies struct {
+			Context contracts.ContextStrategy `json:"context"`
+		} `json:"effective_strategies"`
+		ContextAssemblyReport *contracts.ContextAssemblyReport `json:"context_assembly_report"`
 		TokenEstimate int `json:"token_estimate"`
 	}
 	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
@@ -1600,6 +1633,9 @@ func TestPromptPreviewCommandBuildsBundleWithoutModelCall(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(result.PromptBundle.Developer), []byte("agent package instructions")) {
 		t.Fatalf("expected preview to include package instructions, got %s", result.PromptBundle.Developer)
+	}
+	if result.EffectiveStrategies.Context.Mode == "" || result.ContextAssemblyReport == nil || result.ContextAssemblyReport.StrategyHash == "" {
+		t.Fatalf("expected preview strategy diagnostics, got %#v", result)
 	}
 }
 
@@ -1640,6 +1676,846 @@ func TestPromptPreviewCommandSupportsDraftID(t *testing.T) {
 	}
 	if !bytes.Contains(resp.Body.Bytes(), []byte("draft identity prompt")) || !bytes.Contains(resp.Body.Bytes(), []byte("draft developer prompt")) {
 		t.Fatalf("expected preview to include draft prompts, got %s", resp.Body.String())
+	}
+}
+
+func TestPackageDraftPatchStrategiesAffectsPromptPreview(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	create := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.create",
+		"payload": map[string]any{
+			"agent_id": "test-agent",
+			"version":  "v-strategy-preview",
+			"prompt":   "strategy draft prompt",
+			"strategies": map[string]any{
+				"model": map[string]any{
+					"provider":          "openai",
+					"model":             "strategy-model",
+					"max_output_tokens": 128,
+				},
+				"tools": map[string]any{
+					"preferred_tool_ids": []any{"crm.lookup"},
+					"tool_choice_mode":   "auto",
+				},
+				"context": map[string]any{
+					"mode":                 "balanced",
+					"recent_message_limit": 8,
+					"compression": map[string]any{
+						"enabled":       true,
+						"mode":          "truncate",
+						"trigger_ratio": 80,
+						"target_tokens": 1200,
+					},
+				},
+			},
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if create.Code != http.StatusOK {
+		t.Fatalf("draft create failed %d body %s", create.Code, create.Body.String())
+	}
+	var draft agentpackage.Draft
+	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
+		t.Fatal(err)
+	}
+	patch := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.patch_strategies",
+		"payload": map[string]any{
+			"draft_id": draft.DraftID,
+			"strategies": map[string]any{
+				"context": map[string]any{
+					"mode":                  "long_context",
+					"recent_message_limit":  12,
+					"retrieval_max_results": 6,
+					"context_token_budget":  3600,
+					"enabled_sources":       []any{"conversation_recent", "runtime_hook_context"},
+					"compression": map[string]any{
+						"target_tokens": 1800,
+					},
+				},
+			},
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if patch.Code != http.StatusOK {
+		t.Fatalf("draft strategies patch failed %d body %s", patch.Code, patch.Body.String())
+	}
+	var patched agentpackage.Draft
+	if err := json.Unmarshal(patch.Body.Bytes(), &patched); err != nil {
+		t.Fatal(err)
+	}
+	if patched.Source.Strategies.Model.Model != "strategy-model" || patched.Source.Strategies.Model.MaxOutputTokens != 128 {
+		t.Fatalf("expected model strategy to be preserved, got %#v", patched.Source.Strategies.Model)
+	}
+	if len(patched.Source.Strategies.Tools.PreferredToolIDs) != 1 || patched.Source.Strategies.Tools.PreferredToolIDs[0] != "crm.lookup" || patched.Source.Strategies.Tools.ToolChoiceMode != "auto" {
+		t.Fatalf("expected tool strategy to be preserved, got %#v", patched.Source.Strategies.Tools)
+	}
+	if !patched.Source.Strategies.Context.Compression.Enabled || patched.Source.Strategies.Context.Compression.Mode != "truncate" || patched.Source.Strategies.Context.Compression.TriggerRatio != 80 || patched.Source.Strategies.Context.Compression.TargetTokens != 1800 {
+		t.Fatalf("expected nested compression strategy to be merged, got %#v", patched.Source.Strategies.Context.Compression)
+	}
+	preview := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "prompt.preview",
+		"payload": map[string]any{"draft_id": draft.DraftID, "input": "preview strategy draft"},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if preview.Code != http.StatusOK {
+		t.Fatalf("draft prompt.preview failed %d body %s", preview.Code, preview.Body.String())
+	}
+	var result struct {
+		EffectiveStrategies struct {
+			Context contracts.ContextStrategy `json:"context"`
+			Model   contracts.ModelStrategy   `json:"model"`
+			Tools   contracts.ToolUseStrategy `json:"tools"`
+		} `json:"effective_strategies"`
+		ContextAssemblyReport *contracts.ContextAssemblyReport `json:"context_assembly_report"`
+	}
+	if err := json.Unmarshal(preview.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.EffectiveStrategies.Context.Mode != "long_context" || contracts.IntValue(result.EffectiveStrategies.Context.RecentMessageLimit) != 12 || contracts.IntValue(result.EffectiveStrategies.Context.RetrievalMaxResults) != 6 {
+		t.Fatalf("expected patched context strategy in preview, got %#v", result.EffectiveStrategies.Context)
+	}
+	if result.EffectiveStrategies.Model.Model != "strategy-model" || result.EffectiveStrategies.Tools.ToolChoiceMode != "auto" {
+		t.Fatalf("expected non-context strategies to remain effective, got model=%#v tools=%#v", result.EffectiveStrategies.Model, result.EffectiveStrategies.Tools)
+	}
+	if result.ContextAssemblyReport == nil || result.ContextAssemblyReport.Mode != "long_context" || result.ContextAssemblyReport.TokenBudget != 3600 {
+		t.Fatalf("expected context assembly report from patched strategy, got %#v", result.ContextAssemblyReport)
+	}
+}
+
+func TestPackageDraftPatchStrategiesRejectsUnknownStrategyFields(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	create := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.create",
+		"payload": map[string]any{
+			"agent_id": "strategy-typo-agent",
+			"version":  "v1",
+			"prompt":   "draft prompt",
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if create.Code != http.StatusOK {
+		t.Fatalf("draft create failed %d body %s", create.Code, create.Body.String())
+	}
+	var draft agentpackage.Draft
+	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
+		t.Fatal(err)
+	}
+	patch := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.patch_strategies",
+		"payload": map[string]any{
+			"draft_id": draft.DraftID,
+			"strategies": map[string]any{
+				"context": map[string]any{
+					"retrival_max_results": 6,
+				},
+			},
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if patch.Code == http.StatusOK || !bytes.Contains(patch.Body.Bytes(), []byte(`unknown field "retrival_max_results"`)) {
+		t.Fatalf("expected unknown strategy field rejection, got %d body %s", patch.Code, patch.Body.String())
+	}
+	outerPatch := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.patch_strategies",
+		"payload": map[string]any{
+			"draft_id":   draft.DraftID,
+			"unexpected": true,
+			"strategies": map[string]any{
+				"context": map[string]any{
+					"retrieval_max_results": 6,
+				},
+			},
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if outerPatch.Code == http.StatusOK || !bytes.Contains(outerPatch.Body.Bytes(), []byte(`unknown payload field`)) || !bytes.Contains(outerPatch.Body.Bytes(), []byte(`unexpected`)) {
+		t.Fatalf("expected unknown payload field rejection, got %d body %s", outerPatch.Code, outerPatch.Body.String())
+	}
+}
+
+func TestPackageDraftPluginSourceValidatesProviderConnection(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ServiceConnections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+		TenantID:       "tenant_1",
+		ConnectionID:   "crm-plugin-connection",
+		Name:           "CRM Plugin Connection",
+		ConnectionType: serviceconnection.TypeHTTPAPI,
+		Status:         serviceconnection.StatusEnabled,
+		BaseURL:        "https://crm-plugin.example.test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ToolCatalog.UpsertProvider(context.Background(), toolcatalog.ToolProvider{
+		TenantID:            "tenant_1",
+		ProviderID:          "crm-plugin",
+		ProviderType:        toolcatalog.ProviderTypeAgentPlugin,
+		Name:                "CRM Plugin",
+		ServiceConnectionID: "crm-plugin-connection",
+		Status:              toolcatalog.StatusEnabled,
+	}, "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	create := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.create",
+		"payload": map[string]any{
+			"agent_id":         "plugin-agent",
+			"version":          "v1",
+			"source_kind":      "plugin_service",
+			"provider_id":      "crm-plugin",
+			"manifest_version": "2026-06-12",
+			"prompt":           "plugin backed prompt",
+			"strategies": map[string]any{
+				"context": map[string]any{
+					"mode":                 "balanced",
+					"recent_message_limit": 0,
+				},
+			},
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if create.Code != http.StatusOK {
+		t.Fatalf("plugin draft create failed %d body %s", create.Code, create.Body.String())
+	}
+	var draft agentpackage.Draft
+	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
+		t.Fatal(err)
+	}
+	validate := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.validate",
+		"payload": map[string]any{"draft_id": draft.DraftID},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if validate.Code != http.StatusOK {
+		t.Fatalf("plugin draft validate failed %d body %s", validate.Code, validate.Body.String())
+	}
+	preview := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "prompt.preview",
+		"payload": map[string]any{"draft_id": draft.DraftID, "input": "preview plugin draft"},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if preview.Code != http.StatusOK {
+		t.Fatalf("plugin draft preview failed %d body %s", preview.Code, preview.Body.String())
+	}
+	var result struct {
+		Agent contracts.AgentDefinition `json:"agent"`
+	}
+	if err := json.Unmarshal(preview.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Agent.SourceKind != contracts.AgentSourceKindPlugin || result.Agent.SourceProviderID != "crm-plugin" || result.Agent.ManifestVersion != "2026-06-12" {
+		t.Fatalf("expected plugin source metadata in preview, got %#v", result.Agent)
+	}
+}
+
+func TestAgentPluginSyncCreatesDraftAndToolManifests(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ServiceConnections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+		TenantID:       "tenant_1",
+		ConnectionID:   "crm-plugin-connection",
+		Name:           "CRM Plugin Connection",
+		ConnectionType: serviceconnection.TypeHTTPAPI,
+		Status:         serviceconnection.StatusEnabled,
+		BaseURL:        "https://crm-plugin.example.test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ToolCatalog.UpsertProvider(context.Background(), toolcatalog.ToolProvider{
+		TenantID:            "tenant_1",
+		ProviderID:          "crm-plugin",
+		ProviderType:        toolcatalog.ProviderTypeAgentPlugin,
+		Name:                "CRM Plugin",
+		ServiceConnectionID: "crm-plugin-connection",
+		Status:              toolcatalog.StatusEnabled,
+	}, "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	sync := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"trace_id": "trace_agent_plugin_sync_1",
+		"command": "agent.plugin.sync",
+		"payload": map[string]any{
+			"provider_id": "crm-plugin",
+			"manifest": map[string]any{
+				"manifest_version": "2026-06-12",
+				"provider_id":      "crm-plugin",
+				"agent": map[string]any{
+					"agent_id":    "plugin-agent",
+					"version":     "v1",
+					"name":        "CRM Agent",
+					"description": "Handles CRM tasks.",
+					"prompt":      "You are a CRM plugin agent.",
+				},
+				"tools": []any{map[string]any{
+					"tool_id":       "crm.lookup",
+					"operation":     "customers.lookup",
+					"name":          "CRM lookup",
+					"description":   "Lookup a customer.",
+					"input_schema":  map[string]any{"type": "object"},
+					"output_schema": map[string]any{"type": "object"},
+				}},
+				"hooks": []any{map[string]any{
+					"hook_id":        "crm.before_model",
+					"name":           "CRM before model",
+					"phase":          "before_model_call",
+					"version":        "v1",
+					"timeout_ms":     450,
+					"failure_policy": "ignore",
+				}},
+				"strategies": map[string]any{
+					"context": map[string]any{"mode": "balanced"},
+				},
+			},
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if sync.Code != http.StatusOK {
+		t.Fatalf("agent plugin sync failed %d body %s", sync.Code, sync.Body.String())
+	}
+	var result struct {
+		Draft agentpackage.Draft `json:"draft"`
+	}
+	if err := json.Unmarshal(sync.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Draft.Source.SourceKind != contracts.AgentSourceKindPlugin || result.Draft.Source.ProviderID != "crm-plugin" || result.Draft.Source.ManifestVersion != "2026-06-12" {
+		t.Fatalf("expected plugin draft source, got %#v", result.Draft.Source)
+	}
+	sourceManifestHash, _ := result.Draft.Source.Metadata["manifest_hash"].(string)
+	if sourceManifestHash == "" {
+		t.Fatalf("expected plugin draft source manifest hash, got %#v", result.Draft.Source.Metadata)
+	}
+	if result.Draft.Source.RuntimeHooks.Mode != "plugin_hooks" || len(result.Draft.Source.RuntimeHooks.Hooks) != 1 {
+		t.Fatalf("expected plugin runtime hook binding in draft source, got %#v", result.Draft.Source.RuntimeHooks)
+	}
+	tool := doJSONWithHeaders(handler, "GET", "/v1/tool-manifests/crm.lookup", nil, map[string]string{"X-Roles": "optimizer"})
+	if tool.Code != http.StatusOK || !bytes.Contains(tool.Body.Bytes(), []byte(`"type":"agent_plugin_service"`)) || !bytes.Contains(tool.Body.Bytes(), []byte(`"operation":"customers.lookup"`)) {
+		t.Fatalf("expected synced agent plugin tool manifest, got %d body %s", tool.Code, tool.Body.String())
+	}
+	hookProvider, ok, err := runtimeHookProviderByID(context.Background(), appCore, "tenant_1", "crm-plugin")
+	if err != nil || !ok {
+		t.Fatalf("expected synced runtime hook provider, ok=%v err=%v", ok, err)
+	}
+	if hookProvider.ProviderType != runtimehook.ProviderTypeStaticHookHost || hookProvider.ServiceConnectionID != "crm-plugin-connection" || hookProvider.Endpoint != "" {
+		t.Fatalf("unexpected synced runtime hook provider: %#v", hookProvider)
+	}
+	hook, ok, err := appCore.RuntimeHooks.GetManifest(context.Background(), "tenant_1", "crm.before_model")
+	if err != nil || !ok {
+		t.Fatalf("expected synced runtime hook manifest, ok=%v err=%v", ok, err)
+	}
+	if hook.ProviderID != "crm-plugin" || hook.Phase != runtimehook.BeforeModelCall {
+		t.Fatalf("unexpected synced runtime hook manifest: %#v", hook)
+	}
+	bindings, err := appCore.RuntimeHooks.ListBindings(context.Background(), "tenant_1", "plugin-agent", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || bindings[0].ProviderID != "crm-plugin" || bindings[0].HookID != "crm.before_model" {
+		t.Fatalf("expected synced runtime hook binding, got %#v", bindings)
+	}
+	events, err := appCore.Trace.ListByTrace(context.Background(), "trace_agent_plugin_sync_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one agent plugin sync trace event, got %#v", events)
+	}
+	manifestHash, _ := events[0].Payload["manifest_hash"].(string)
+	if events[0].Type != contracts.TraceAgentPluginSynced || events[0].Payload["service_connection_id"] != "crm-plugin-connection" || manifestHash != sourceManifestHash {
+		t.Fatalf("expected agent plugin sync trace evidence, got %#v", events)
+	}
+}
+
+func TestStrategyDiagnosticsReportsPluginSourceAndConnection(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ToolCatalog.UpsertProvider(context.Background(), toolcatalog.ToolProvider{
+		TenantID:            "tenant_1",
+		ProviderID:          "crm-plugin",
+		ProviderType:        toolcatalog.ProviderTypeAgentPlugin,
+		Name:                "CRM Plugin",
+		ServiceConnectionID: "crm-plugin-connection",
+		Status:              toolcatalog.StatusEnabled,
+	}, "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, 6, 12, 10, 0, 0, 0, time.UTC)
+	run := contracts.AgentRun{
+		TenantID: "tenant_1",
+		VersionSnapshot: contracts.VersionSnapshot{
+			AgentPackage:     "pkg_1",
+			SourceKind:       contracts.AgentSourceKindPlugin,
+			SourceProviderID: "crm-plugin",
+			ManifestVersion:  "2026-06-12",
+			ManifestHash:     "sha256:manifest",
+		},
+	}
+	diagnostic := strategyDiagnostics(run, []contracts.TraceEvent{{
+		Type:      contracts.TraceStrategyResolved,
+		CreatedAt: createdAt,
+		Payload: map[string]any{
+			"strategy_hash":   "sha256:strategy",
+			"context_mode":    "balanced",
+			"context_sources": []any{"conversation_recent", "agent_plugin_context"},
+			"knowledge":       contracts.KnowledgeUseStrategy{Enabled: contracts.BoolPtr(false), InjectMode: "tool_only"},
+			"memory":          contracts.MemoryUseStrategy{AutoWriteMode: "explicit_intent"},
+			"repair":          contracts.RepairStrategy{FailureMode: "stop"},
+			"guardrail_adjustments": []any{map[string]any{
+				"path":      "context.context_token_budget",
+				"reason":    "policy_max_context_tokens",
+				"requested": 8000,
+				"effective": 4000,
+			}},
+		},
+	}}, appCore)
+	if diagnostic.ServiceConnectionID != "crm-plugin-connection" || diagnostic.StrategyHash != "sha256:strategy" || diagnostic.ManifestHash != "sha256:manifest" || diagnostic.ContextMode != "balanced" {
+		t.Fatalf("unexpected strategy diagnostic: %#v", diagnostic)
+	}
+	if len(diagnostic.ContextSources) != 2 || diagnostic.ContextSources[1] != "agent_plugin_context" || diagnostic.ResolvedAt == nil {
+		t.Fatalf("expected context source and resolved time evidence, got %#v", diagnostic)
+	}
+	if diagnostic.Knowledge == nil || diagnostic.Memory == nil || diagnostic.Repair == nil {
+		t.Fatalf("expected strategy diagnostic summaries, got %#v", diagnostic)
+	}
+	if len(diagnostic.GuardrailAdjustments) != 1 {
+		t.Fatalf("expected guardrail adjustment evidence, got %#v", diagnostic.GuardrailAdjustments)
+	}
+}
+
+func TestDiagnosticsSummaryClassifiesStrategyLimitFailures(t *testing.T) {
+	cases := []struct {
+		name    string
+		message string
+		reason  string
+	}{
+		{name: "steps", message: "max steps exceeded", reason: "runtime.max_steps"},
+		{name: "duration", message: "max duration exceeded", reason: "runtime.max_duration_seconds"},
+		{name: "prompt", message: "max prompt tokens exceeded", reason: "prompt.max_prompt_tokens"},
+		{name: "tool_calls", message: "max tool calls exceeded", reason: "tools.max_tool_calls"},
+		{name: "consecutive_tool_failures", message: "max consecutive tool failures exceeded", reason: "runtime.max_consecutive_tool_failures"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			summary := diagnosticsSummary(contracts.AgentRun{
+				RunID:        "run_strategy_limit",
+				TenantID:     "tenant_1",
+				Status:       contracts.RunFailed,
+				ErrorCode:    contracts.CodeModelError,
+				ErrorMessage: tc.message,
+			}, nil, nil, nil, nil, nil, nil, replay.Report{})
+			if summary.ErrorMessage != tc.message || summary.StrategyLimitReason != tc.reason {
+				t.Fatalf("expected %s, got %#v", tc.reason, summary)
+			}
+		})
+	}
+}
+
+func TestContextDiagnosticsReportsSourcesAndCompression(t *testing.T) {
+	diagnostic := contextDiagnostics([]contracts.TraceEvent{{
+		Type: contracts.TracePromptBundleBuilt,
+		Payload: map[string]any{
+			"hash": "prompt_hash_1",
+			"context_assembly_report": contracts.ContextAssemblyReport{
+				StrategyHash: "strategy_hash_1",
+				Mode:         "balanced",
+				TokenBudget:  4000,
+				Sources: []contracts.ContextSourceReport{{
+					SourceType:     "agent_plugin_context",
+					SourceRef:      "crm://account/42",
+					ProviderID:     "crm-plugin",
+					HookID:         "crm-context",
+					TrustLevel:     "untrusted_external_context",
+					CandidateCount: 2,
+					SelectedCount:  1,
+					DroppedCount:   1,
+				}},
+				Compression: &contracts.ContextCompressionReport{Applied: true, Mode: "truncate", SummaryHash: "summary_hash_1"},
+			},
+			"compression_report": contracts.ContextCompressionReport{Applied: true, Mode: "truncate", SummaryHash: "summary_hash_1"},
+		},
+	}, {
+		Type:    contracts.TraceContextCompressionCompleted,
+		Payload: map[string]any{"applied": true, "mode": "truncate", "summary_hash": "summary_hash_1"},
+	}})
+	if diagnostic.PromptBundleHash != "prompt_hash_1" || diagnostic.StrategyHash != "strategy_hash_1" || diagnostic.Mode != "balanced" {
+		t.Fatalf("unexpected context diagnostic identity: %#v", diagnostic)
+	}
+	if len(diagnostic.ExternalSources) != 1 || diagnostic.ExternalSources[0].ProviderID != "crm-plugin" || diagnostic.ExternalSources[0].HookID != "crm-context" || diagnostic.ExternalSources[0].SourceRef != "crm://account/42" || diagnostic.ExternalSources[0].TrustLevel != "untrusted_external_context" || diagnostic.ExternalSources[0].DroppedCount != 1 {
+		t.Fatalf("expected external source evidence, got %#v", diagnostic.ExternalSources)
+	}
+	if diagnostic.Compression == nil || diagnostic.Compression.SummaryHash != "summary_hash_1" || len(diagnostic.CompressionEvents) != 1 {
+		t.Fatalf("expected compression evidence, got %#v", diagnostic)
+	}
+}
+
+func TestAgentPluginSyncFetchesRemoteManifest(t *testing.T) {
+	authRefCh := make(chan string, 1)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/agent-plugin.json" {
+			http.Error(w, "unexpected manifest path", http.StatusNotFound)
+			return
+		}
+		select {
+		case authRefCh <- r.Header.Get("X-Origin-Provider-Auth-Ref"):
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"manifest_version": "2026-06-12",
+			"provider_id":      "crm-plugin",
+			"agent": map[string]any{
+				"agent_id": "remote-plugin-agent",
+				"version":  "v1",
+				"prompt":   "You are a remote CRM plugin agent.",
+			},
+			"tools": []any{map[string]any{
+				"tool_id":       "crm.remote_lookup",
+				"operation":     "customers.remote_lookup",
+				"name":          "CRM remote lookup",
+				"description":   "Lookup a remote customer.",
+				"input_schema":  map[string]any{"type": "object"},
+				"output_schema": map[string]any{"type": "object"},
+			}},
+		})
+	}))
+	defer remote.Close()
+
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ServiceConnections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+		TenantID:       "tenant_1",
+		ConnectionID:   "crm-plugin-connection",
+		Name:           "CRM Plugin Connection",
+		ConnectionType: serviceconnection.TypeHTTPAPI,
+		Status:         serviceconnection.StatusEnabled,
+		BaseURL:        remote.URL,
+		AuthType:       serviceconnection.AuthTypeAPIKey,
+		AuthRef:        "secret://tenant_1/crm-plugin",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ToolCatalog.UpsertProvider(context.Background(), toolcatalog.ToolProvider{
+		TenantID:            "tenant_1",
+		ProviderID:          "crm-plugin",
+		ProviderType:        toolcatalog.ProviderTypeAgentPlugin,
+		Name:                "CRM Plugin",
+		ServiceConnectionID: "crm-plugin-connection",
+		Status:              toolcatalog.StatusEnabled,
+	}, "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	sync := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.plugin.sync",
+		"payload": map[string]any{
+			"provider_id": "crm-plugin",
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if sync.Code != http.StatusOK {
+		t.Fatalf("remote agent plugin sync failed %d body %s", sync.Code, sync.Body.String())
+	}
+	select {
+	case authRef := <-authRefCh:
+		if authRef != "secret://tenant_1/crm-plugin" {
+			t.Fatalf("expected manifest fetch to pass service connection auth ref, got %q", authRef)
+		}
+	default:
+		t.Fatalf("expected remote manifest fetch")
+	}
+	var result struct {
+		Draft agentpackage.Draft `json:"draft"`
+	}
+	if err := json.Unmarshal(sync.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Draft.AgentID != "remote-plugin-agent" || result.Draft.Source.ProviderID != "crm-plugin" {
+		t.Fatalf("expected remote manifest draft source, got %#v", result.Draft)
+	}
+	tool := doJSONWithHeaders(handler, "GET", "/v1/tool-manifests/crm.remote_lookup", nil, map[string]string{"X-Roles": "optimizer"})
+	if tool.Code != http.StatusOK || !bytes.Contains(tool.Body.Bytes(), []byte(`"operation":"customers.remote_lookup"`)) {
+		t.Fatalf("expected remote synced tool manifest, got %d body %s", tool.Code, tool.Body.String())
+	}
+}
+
+func TestAgentPluginSyncFallsBackToToolCatalogWithoutDraft(t *testing.T) {
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/agent-plugin.json":
+			http.NotFound(w, r)
+		case "/tools/catalog":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tools": []any{map[string]any{
+					"tool_id":      "crm.catalog_lookup",
+					"operation":    "customers.catalog_lookup",
+					"name":         "CRM catalog lookup",
+					"description":  "Lookup a customer through catalog fallback.",
+					"input_schema": map[string]any{"type": "object"},
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer remote.Close()
+
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ServiceConnections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+		TenantID:       "tenant_1",
+		ConnectionID:   "crm-plugin-connection",
+		Name:           "CRM Plugin Connection",
+		ConnectionType: serviceconnection.TypeHTTPAPI,
+		Status:         serviceconnection.StatusEnabled,
+		BaseURL:        remote.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ToolCatalog.UpsertProvider(context.Background(), toolcatalog.ToolProvider{
+		TenantID:            "tenant_1",
+		ProviderID:          "crm-plugin",
+		ProviderType:        toolcatalog.ProviderTypeAgentPlugin,
+		Name:                "CRM Plugin",
+		ServiceConnectionID: "crm-plugin-connection",
+		Status:              toolcatalog.StatusEnabled,
+	}, "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	sync := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"trace_id": "trace_agent_plugin_sync_fallback",
+		"command":  "agent.plugin.sync",
+		"payload": map[string]any{
+			"provider_id": "crm-plugin",
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if sync.Code != http.StatusOK {
+		t.Fatalf("agent plugin catalog fallback failed %d body %s", sync.Code, sync.Body.String())
+	}
+	var result struct {
+		Fallback      string                     `json:"fallback"`
+		DraftCreated bool                       `json:"draft_created"`
+		ToolManifests []toolcatalog.ToolManifest `json:"tool_manifests"`
+	}
+	if err := json.Unmarshal(sync.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Fallback != "tool_catalog" || result.DraftCreated || len(result.ToolManifests) != 1 {
+		t.Fatalf("expected tool-only fallback without draft, got %#v", result)
+	}
+	drafts, err := appCore.Packages.ListDrafts(context.Background(), "tenant_1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drafts) != 0 {
+		t.Fatalf("catalog fallback must not create plugin agent drafts, got %#v", drafts)
+	}
+	tool := doJSONWithHeaders(handler, "GET", "/v1/tool-manifests/crm.catalog_lookup", nil, map[string]string{"X-Roles": "optimizer"})
+	if tool.Code != http.StatusOK || !bytes.Contains(tool.Body.Bytes(), []byte(`"operation":"customers.catalog_lookup"`)) {
+		t.Fatalf("expected catalog fallback tool manifest, got %d body %s", tool.Code, tool.Body.String())
+	}
+	events, err := appCore.Trace.ListByTrace(context.Background(), "trace_agent_plugin_sync_fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Payload["fallback"] != "tool_catalog_fallback" || events[0].Payload["draft_created"] != false {
+		t.Fatalf("expected fallback trace evidence, got %#v", events)
+	}
+}
+
+func TestAgentPluginLifecycleBlocksUnavailableProviderAndConnection(t *testing.T) {
+	healthOK := true
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			if !healthOK {
+				http.Error(w, "down", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer remote.Close()
+
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := appCore.LoadPolicySet(context.Background(), "tenant_1", "policy_default")
+	policy.ReleasePolicy.MaxCanaryPercentWithoutApproval = 100
+	if err := appCore.Policies.Put(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	upsertConnection := func(status string) {
+		t.Helper()
+		if _, err := appCore.ServiceConnections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+			TenantID:       "tenant_1",
+			ConnectionID:   "crm-plugin-connection",
+			Name:           "CRM Plugin Connection",
+			ConnectionType: serviceconnection.TypeHTTPAPI,
+			Status:         status,
+			BaseURL:        remote.URL,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upsertConnection(serviceconnection.StatusEnabled)
+	if _, err := appCore.ToolCatalog.UpsertProvider(context.Background(), toolcatalog.ToolProvider{
+		TenantID:            "tenant_1",
+		ProviderID:          "crm-plugin",
+		ProviderType:        toolcatalog.ProviderTypeAgentPlugin,
+		Name:                "CRM Plugin",
+		ServiceConnectionID: "crm-plugin-connection",
+		Status:              toolcatalog.StatusEnabled,
+	}, "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	createDraft := func(version string) (agentpackage.Draft, *httptest.ResponseRecorder) {
+		t.Helper()
+		resp := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+			"command": "agent.package.draft.create",
+			"payload": map[string]any{
+				"agent_id":    "plugin-agent",
+				"version":     version,
+				"source_kind": "plugin_service",
+				"provider_id": "crm-plugin",
+				"prompt":      "plugin backed prompt " + version,
+			},
+			"context": map[string]any{"tenant_id": "tenant_1"},
+		}, map[string]string{"X-Roles": "optimizer"})
+		var draft agentpackage.Draft
+		if resp.Code == http.StatusOK {
+			if err := json.Unmarshal(resp.Body.Bytes(), &draft); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return draft, resp
+	}
+
+	healthOK = false
+	if _, err := appCore.ToolCatalog.CheckProviderHealth(context.Background(), "tenant_1", "crm-plugin", "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, resp := createDraft("v-unhealthy"); resp.Code == http.StatusOK || !bytes.Contains(resp.Body.Bytes(), []byte("provider is unhealthy")) {
+		t.Fatalf("expected unhealthy provider to block plugin draft create, got %d body %s", resp.Code, resp.Body.String())
+	}
+
+	healthOK = true
+	if _, err := appCore.ToolCatalog.CheckProviderHealth(context.Background(), "tenant_1", "crm-plugin", "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	draft, resp := createDraft("v1")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("plugin draft create failed %d body %s", resp.Code, resp.Body.String())
+	}
+	validate := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.validate",
+		"payload": map[string]any{"draft_id": draft.DraftID},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if validate.Code != http.StatusOK {
+		t.Fatalf("plugin draft validate failed %d body %s", validate.Code, validate.Body.String())
+	}
+	upsertConnection(serviceconnection.StatusDisabled)
+	publishBlocked := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.publish",
+		"payload": map[string]any{"draft_id": draft.DraftID},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if publishBlocked.Code == http.StatusOK || !bytes.Contains(publishBlocked.Body.Bytes(), []byte("service connection is not enabled")) {
+		t.Fatalf("expected disabled connection to block plugin publish, got %d body %s", publishBlocked.Code, publishBlocked.Body.String())
+	}
+
+	upsertConnection(serviceconnection.StatusEnabled)
+	draft, resp = createDraft("v2")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("plugin draft create v2 failed %d body %s", resp.Code, resp.Body.String())
+	}
+	validate = doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.validate",
+		"payload": map[string]any{"draft_id": draft.DraftID},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if validate.Code != http.StatusOK {
+		t.Fatalf("plugin draft validate v2 failed %d body %s", validate.Code, validate.Body.String())
+	}
+	publish := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.publish",
+		"payload": map[string]any{"draft_id": draft.DraftID},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if publish.Code != http.StatusOK {
+		t.Fatalf("plugin publish v2 failed %d body %s", publish.Code, publish.Body.String())
+	}
+	var release contracts.AgentPackageVersion
+	if err := json.Unmarshal(publish.Body.Bytes(), &release); err != nil {
+		t.Fatal(err)
+	}
+
+	healthOK = false
+	if _, err := appCore.ToolCatalog.CheckProviderHealth(context.Background(), "tenant_1", "crm-plugin", "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	canaryBlocked := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.canary",
+		"payload": map[string]any{"package_version_id": release.PackageVersionID, "canary_percent": 10},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if canaryBlocked.Code == http.StatusOK || !bytes.Contains(canaryBlocked.Body.Bytes(), []byte("provider is unhealthy")) {
+		t.Fatalf("expected unhealthy provider to block plugin canary, got %d body %s", canaryBlocked.Code, canaryBlocked.Body.String())
+	}
+
+	healthOK = true
+	if _, err := appCore.ToolCatalog.CheckProviderHealth(context.Background(), "tenant_1", "crm-plugin", "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	canary := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.canary",
+		"payload": map[string]any{"package_version_id": release.PackageVersionID, "canary_percent": 10},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if canary.Code != http.StatusOK {
+		t.Fatalf("plugin canary failed %d body %s", canary.Code, canary.Body.String())
+	}
+
+	healthOK = false
+	if _, err := appCore.ToolCatalog.CheckProviderHealth(context.Background(), "tenant_1", "crm-plugin", "optimizer"); err != nil {
+		t.Fatal(err)
+	}
+	stableBlocked := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.stable",
+		"payload": map[string]any{"package_version_id": release.PackageVersionID},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if stableBlocked.Code == http.StatusOK || !bytes.Contains(stableBlocked.Body.Bytes(), []byte("provider is unhealthy")) {
+		t.Fatalf("expected unhealthy provider to block plugin stable, got %d body %s", stableBlocked.Code, stableBlocked.Body.String())
 	}
 }
 
@@ -1714,9 +2590,17 @@ func TestPackageCanaryRoutesDefaultTrafficAndRecordsHit(t *testing.T) {
 	for _, event := range events {
 		if event.Type == contracts.TraceCanaryRouted {
 			found = true
+			manifestHash, hasManifestHash := event.Payload["manifest_hash"]
+			if event.Payload["strategy_hash"] != release.StrategyHash || event.Payload["source_kind"] != release.SourceKind || !hasManifestHash || manifestHash != release.ManifestHash {
+				t.Fatalf("expected canary route trace to include release strategy evidence, got %#v", event.Payload)
+			}
 		}
 		if event.Type == contracts.TraceAgentRouteResolved && stringFromMap(event.Payload, "route_reason") == "canary_percent" {
 			foundRoute = true
+			manifestHash, hasManifestHash := event.Payload["manifest_hash"]
+			if event.Payload["strategy_hash"] != release.StrategyHash || event.Payload["source_kind"] != release.SourceKind || !hasManifestHash || manifestHash != release.ManifestHash {
+				t.Fatalf("expected route resolved trace to include release strategy evidence, got %#v", event.Payload)
+			}
 		}
 	}
 	if !found {
@@ -1899,6 +2783,155 @@ func TestPolicyManagementCommandsRequireEvalBeforeStable(t *testing.T) {
 	auditResp := doJSON(handler, "GET", "/v1/audit?action=policy.stable", nil)
 	if auditResp.Code != http.StatusOK || !bytes.Contains(auditResp.Body.Bytes(), []byte("policy.stable")) {
 		t.Fatalf("expected policy stable audit, got %d body %s", auditResp.Code, auditResp.Body.String())
+	}
+}
+
+func TestPolicyContextGovernanceAffectsPromptPreview(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	policy := appCore.LoadPolicySet(context.Background(), "tenant_1", "policy_default")
+	policy.Version = "v-context-governance"
+	policy.ReleasePolicy.RequireApprovalForStable = false
+	policy.ReleasePolicy.RequireCanaryBeforeStable = false
+	policy.ContextGovernancePolicy = contracts.ContextGovernancePolicy{
+		MaxContextTokenBudget:  100,
+		MaxRecentMessageLimit:  2,
+		MaxRetrievalResults:    1,
+		MaxTaskHistoryItems:    1,
+		MaxMemoryItems:         3,
+		MaxArtifactRefItems:    2,
+		MaxToolResultItems:     1,
+		AllowFullDebugMode:     false,
+		AllowLLMCompression:    true,
+		AllowedCompressionModels: []string{"small-compressor"},
+	}
+	createPolicy := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "policy.draft.create",
+		"payload": map[string]any{
+			"policy_set_id": "policy_default",
+			"version":       policy.Version,
+			"policy":        policy,
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if createPolicy.Code != http.StatusOK {
+		t.Fatalf("policy draft create failed %d body %s", createPolicy.Code, createPolicy.Body.String())
+	}
+	var policyDraft contracts.PolicyDraft
+	if err := json.Unmarshal(createPolicy.Body.Bytes(), &policyDraft); err != nil {
+		t.Fatal(err)
+	}
+	validate := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "policy.draft.validate",
+		"payload": map[string]any{"draft_id": policyDraft.DraftID},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if validate.Code != http.StatusOK {
+		t.Fatalf("policy validate failed %d body %s", validate.Code, validate.Body.String())
+	}
+	publish := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "policy.publish",
+		"payload": map[string]any{"draft_id": policyDraft.DraftID},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if publish.Code != http.StatusOK {
+		t.Fatalf("policy publish failed %d body %s", publish.Code, publish.Body.String())
+	}
+	var policyVersion contracts.PolicyVersion
+	if err := json.Unmarshal(publish.Body.Bytes(), &policyVersion); err != nil {
+		t.Fatal(err)
+	}
+	evalResp := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "eval.run",
+		"target":  map[string]any{"agent_id": "test-agent", "version": "v1"},
+		"payload": map[string]any{
+			"policy_version_id":    policyVersion.PolicyVersionID,
+			"input":                "hello",
+			"final_reply_contains": []any{"ok"},
+			"should_end_status":    "completed",
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if evalResp.Code != http.StatusOK {
+		t.Fatalf("policy eval failed %d body %s", evalResp.Code, evalResp.Body.String())
+	}
+	stable := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "policy.stable",
+		"payload": map[string]any{"policy_version_id": policyVersion.PolicyVersionID},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if stable.Code != http.StatusOK {
+		t.Fatalf("policy stable failed %d body %s", stable.Code, stable.Body.String())
+	}
+
+	createAgent := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.package.draft.create",
+		"payload": map[string]any{
+			"agent_id": "policy-context-agent",
+			"version":  "v1",
+			"prompt":   "policy context governance draft",
+			"strategies": map[string]any{
+				"context": map[string]any{
+					"mode":                   "full_debug",
+					"recent_message_limit":   99,
+					"retrieval_max_results":  99,
+					"task_history_max_items": 99,
+					"memory_max_items":       99,
+					"artifact_ref_max_items": 99,
+					"tool_result_max_items":  99,
+					"context_token_budget":   9999,
+					"compression": map[string]any{
+						"enabled":        true,
+						"mode":           "llm",
+						"model_base_url": "https://unapproved-compressor.example.test/v1",
+					},
+				},
+			},
+		},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if createAgent.Code != http.StatusOK {
+		t.Fatalf("agent draft create failed %d body %s", createAgent.Code, createAgent.Body.String())
+	}
+	var agentDraft agentpackage.Draft
+	if err := json.Unmarshal(createAgent.Body.Bytes(), &agentDraft); err != nil {
+		t.Fatal(err)
+	}
+	preview := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
+		"command": "prompt.preview",
+		"payload": map[string]any{"draft_id": agentDraft.DraftID, "input": "preview policy context governance"},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	}, map[string]string{"X-Roles": "optimizer"})
+	if preview.Code != http.StatusOK {
+		t.Fatalf("prompt preview failed %d body %s", preview.Code, preview.Body.String())
+	}
+	var result struct {
+		EffectiveStrategies struct {
+			Context contracts.ContextStrategy `json:"context"`
+		} `json:"effective_strategies"`
+		GuardrailAdjustments []map[string]any `json:"guardrail_adjustments"`
+	}
+	if err := json.Unmarshal(preview.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.EffectiveStrategies.Context.Mode != "balanced" ||
+		contracts.IntValue(result.EffectiveStrategies.Context.RecentMessageLimit) != 2 ||
+		contracts.IntValue(result.EffectiveStrategies.Context.RetrievalMaxResults) != 1 ||
+		contracts.IntValue(result.EffectiveStrategies.Context.TaskHistoryMaxItems) != 1 ||
+		contracts.IntValue(result.EffectiveStrategies.Context.MemoryMaxItems) != 3 ||
+		contracts.IntValue(result.EffectiveStrategies.Context.ArtifactRefMaxItems) != 2 ||
+		contracts.IntValue(result.EffectiveStrategies.Context.ToolResultMaxItems) != 1 ||
+		contracts.IntValue(result.EffectiveStrategies.Context.ContextTokenBudget) != 100 {
+		t.Fatalf("expected context governance caps in preview, got %#v", result.EffectiveStrategies.Context)
+	}
+	if result.EffectiveStrategies.Context.Compression.Mode != "llm" || result.EffectiveStrategies.Context.Compression.ModelName != "small-compressor" || result.EffectiveStrategies.Context.Compression.ModelBaseURL != "" {
+		t.Fatalf("expected compression model allowlist in preview, got %#v", result.EffectiveStrategies.Context.Compression)
+	}
+	if len(result.GuardrailAdjustments) == 0 {
+		t.Fatalf("expected guardrail adjustments in preview, got %#v", result.GuardrailAdjustments)
 	}
 }
 
@@ -4463,20 +5496,20 @@ func TestAgentSubresourceGovernanceViewsIncludeStandaloneDraftAndRelease(t *test
 			Visibility:  contracts.ToolProtected,
 			Version:     "v1",
 		}}},
-		Metadata: map[string]any{
-			"skill_definitions": []any{map[string]any{
-				"skill_id":             "governance-skill",
-				"version":              "v1",
-				"name":                 "Governance Skill",
-				"description":          "Exercise governance views.",
-				"instruction":          "Use governance evidence.",
-				"risk_level":           "medium",
-				"when_to_use":          []any{"governance"},
-				"recommended_tools":    []any{"artifact.read"},
-				"allowed_tools":        []any{"echo"},
-				"recommended_handoffs": []any{"review-agent"},
-			}},
-		},
+		SkillDefinitions: []contracts.SkillDefinition{{
+			Card: contracts.SkillCard{
+				SkillID:     "governance-skill",
+				Version:     "v1",
+				Name:        "Governance Skill",
+				Description: "Exercise governance views.",
+				WhenToUse:   []string{"governance"},
+				RiskLevel:   contracts.RiskMedium,
+			},
+			Instruction:         contracts.SkillInstruction{SkillID: "governance-skill", Content: "Use governance evidence."},
+			RecommendedTools:    []string{"artifact.read"},
+			AllowedTools:        []string{"echo"},
+			RecommendedHandoffs: []string{"review-agent"},
+		}},
 	}
 	draft, err := appCore.Packages.CreateDraft(ctx, "tenant_1", "test-agent", "v20", source, "tester")
 	if err != nil {
@@ -4884,9 +5917,11 @@ func TestPromptProfileVersionResourceAPIsActivateStableVersion(t *testing.T) {
 	handler := NewHandlerWithCore(appCore, logging.New("error"))
 	draft, err := appCore.Packages.CreateDraft(context.Background(), "tenant_1", "test-agent", "v4", agentpackage.AgentPackageSource{
 		Prompt: "prompt profile resource prompt",
-		Metadata: map[string]any{
-			"system_prompt":    "prompt profile resource system",
-			"developer_prompt": "prompt profile resource developer",
+		Strategies: contracts.AgentStrategies{
+			Prompt: contracts.PromptStrategy{
+				SystemPrompt:    "prompt profile resource system",
+				DeveloperPrompt: "prompt profile resource developer",
+			},
 		},
 	}, "tester")
 	if err != nil {
@@ -5250,16 +6285,16 @@ func TestSkillVersionResourceAPIsActivateStableVersion(t *testing.T) {
 	handler := NewHandlerWithCore(appCore, logging.New("error"))
 	draft, err := appCore.Packages.CreateDraft(context.Background(), "tenant_1", "test-agent", "v6", agentpackage.AgentPackageSource{
 		Prompt: "skill resource prompt",
-		Metadata: map[string]any{
-			"skill_definitions": []any{
-				map[string]any{
-					"skill_id":          "skill.lifecycle",
-					"version":           "s1",
-					"name":              "Lifecycle Skill",
-					"instruction":       "Use lifecycle skill.",
-					"risk_level":        "low",
-					"recommended_tools": []any{"echo"},
+		SkillDefinitions: []contracts.SkillDefinition{
+			{
+				Card: contracts.SkillCard{
+					SkillID:   "skill.lifecycle",
+					Version:   "s1",
+					Name:      "Lifecycle Skill",
+					RiskLevel: contracts.RiskLow,
 				},
+				Instruction:      contracts.SkillInstruction{SkillID: "skill.lifecycle", Content: "Use lifecycle skill."},
+				RecommendedTools: []string{"echo"},
 			},
 		},
 	}, "tester")

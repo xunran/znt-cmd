@@ -134,6 +134,10 @@ func (s *Service) Events(ctx context.Context, taskID contracts.TaskID) ([]contra
 	return s.events.ListByTask(ctx, taskID)
 }
 
+func (s *Service) EventsLimit(ctx context.Context, taskID contracts.TaskID, limit int) ([]contracts.TaskEvent, error) {
+	return s.events.ListByTaskLimit(ctx, taskID, limit)
+}
+
 func (s *Service) AppendEvent(ctx context.Context, event contracts.TaskEvent) error {
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = s.now()

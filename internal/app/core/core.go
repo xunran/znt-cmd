@@ -222,6 +222,7 @@ func New(cfg config.Config) (*Core, error) {
 	serviceConnections := serviceconnection.NewServiceWithStore(serviceConnectionStore)
 	toolCatalog.SetServiceConnections(serviceConnections)
 	runtimeHooks := runtimehook.NewService(runtimeHookStore, traceRecorder, auditLogger)
+	runtimeHooks.SetServiceConnections(serviceConnections)
 	toolRuntime := toolruntime.New(tools, toolpolicy.New(auditLogger), traceRecorder)
 	toolRuntime.Audit = auditLogger
 	toolRuntime.Availability = toolCatalog
@@ -252,6 +253,7 @@ func New(cfg config.Config) (*Core, error) {
 	configureConversationJudge(&coordinator, cfg, model)
 	coordinator.ModelProvider = modelProviderFromConfig(cfg)
 	coordinator.ModelName = cfg.ModelName
+	coordinator.ContextDefaults = cfg.ContextDefaultStrategy()
 	coordinator.Plans = plans
 	coordinator.Tools = tooldiscovery.StaticCandidateProvider{
 		Capabilities: tooldiscovery.DefaultCapabilities(),
@@ -606,7 +608,6 @@ func modelProviderFromConfig(cfg config.Config) string {
 func configureConversationJudge(coordinator *kernel.Coordinator, cfg config.Config, model modelclient.ModelClient) {
 	coordinator.EnableDirectConversation = cfg.ConversationDirectEnabled
 	coordinator.DisableConversationRetrieval = !cfg.ConversationRetrievalIsEnabled()
-	coordinator.ConversationMaxRetrieved = cfg.ConversationMaxRetrieved
 	modelJudge := contextconversation.ModelJudge{
 		Model:   model,
 		Timeout: time.Duration(cfg.ConversationJudgeTimeoutMS) * time.Millisecond,

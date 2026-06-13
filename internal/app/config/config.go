@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"znt/internal/contracts"
 )
 
 const (
@@ -67,11 +69,17 @@ type Config struct {
 	ModelTemperature             *float64 `json:"model_temperature,omitempty"`
 	ModelThinking                string   `json:"model_thinking,omitempty"`
 	ModelReasoningEffort         string   `json:"model_reasoning_effort,omitempty"`
-	ConversationJudgeMode        string   `json:"conversation_judge_mode,omitempty"`
-	ConversationJudgeTimeoutMS   int      `json:"conversation_judge_timeout_ms,omitempty"`
-	ConversationDirectEnabled    bool     `json:"conversation_direct_enabled,omitempty"`
-	ConversationRetrievalEnabled bool     `json:"conversation_retrieval_enabled,omitempty"`
-	ConversationMaxRetrieved     int      `json:"conversation_max_retrieved,omitempty"`
+	ConversationJudgeMode            string `json:"conversation_judge_mode,omitempty"`
+	ConversationJudgeTimeoutMS       int    `json:"conversation_judge_timeout_ms,omitempty"`
+	ConversationDirectEnabled        bool   `json:"conversation_direct_enabled,omitempty"`
+	ConversationRetrievalEnabled     bool   `json:"conversation_retrieval_enabled,omitempty"`
+	ContextDefaultMode               string `json:"context_default_mode,omitempty"`
+	ContextDefaultRecentMessageLimit int    `json:"context_default_recent_message_limit,omitempty"`
+	ContextDefaultRetrievalMaxResults int   `json:"context_default_retrieval_max_results,omitempty"`
+	ContextDefaultTaskHistoryMaxItems int   `json:"context_default_task_history_max_items,omitempty"`
+	ContextDefaultTokenBudget         int   `json:"context_default_token_budget,omitempty"`
+	ContextCompressionDefaultEnabled  bool  `json:"context_compression_default_enabled,omitempty"`
+	ContextCompressionDefaultMode     string `json:"context_compression_default_mode,omitempty"`
 	ExternalBridgeProvider       string   `json:"external_bridge_provider,omitempty"`
 	ExternalBridgeBaseURL        string   `json:"external_bridge_base_url,omitempty"`
 	ExternalBridgeToken          string   `json:"external_bridge_token,omitempty"`
@@ -81,10 +89,15 @@ type Config struct {
 	DisableHandoff             bool     `json:"disable_handoff,omitempty"`
 	DisableExternalToolsInvoke bool     `json:"disable_external_tools_invoke,omitempty"`
 
-	readinessSet                    bool
-	conversationRetrievalEnabledSet bool
-	disableHandoffSet               bool
-	disableExternalToolsInvokeSet   bool
+	readinessSet                         bool
+	conversationRetrievalEnabledSet      bool
+	contextDefaultRecentMessageLimitSet  bool
+	contextDefaultRetrievalMaxResultsSet bool
+	contextDefaultTaskHistoryMaxItemsSet bool
+	contextDefaultTokenBudgetSet         bool
+	contextCompressionDefaultEnabledSet  bool
+	disableHandoffSet                    bool
+	disableExternalToolsInvokeSet        bool
 }
 
 func (c *Config) UnmarshalJSON(data []byte) error {
@@ -100,6 +113,11 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	*c = Config(decoded)
 	_, c.readinessSet = raw["readiness"]
 	_, c.conversationRetrievalEnabledSet = raw["conversation_retrieval_enabled"]
+	_, c.contextDefaultRecentMessageLimitSet = raw["context_default_recent_message_limit"]
+	_, c.contextDefaultRetrievalMaxResultsSet = raw["context_default_retrieval_max_results"]
+	_, c.contextDefaultTaskHistoryMaxItemsSet = raw["context_default_task_history_max_items"]
+	_, c.contextDefaultTokenBudgetSet = raw["context_default_token_budget"]
+	_, c.contextCompressionDefaultEnabledSet = raw["context_compression_default_enabled"]
 	_, c.disableHandoffSet = raw["disable_handoff"]
 	_, c.disableExternalToolsInvokeSet = raw["disable_external_tools_invoke"]
 	return nil
@@ -128,6 +146,13 @@ func Default() Config {
 		HTTPMaxBodyBytes:             DefaultHTTPMaxBodyBytes,
 		AgentRunExecutionMode:        DefaultAgentRunExecutionMode,
 		ConversationRetrievalEnabled: true,
+		ContextDefaultMode:               "balanced",
+		ContextDefaultRecentMessageLimit: 20,
+		ContextDefaultRetrievalMaxResults: 8,
+		ContextDefaultTaskHistoryMaxItems: 30,
+		ContextDefaultTokenBudget:         4000,
+		ContextCompressionDefaultEnabled:  true,
+		ContextCompressionDefaultMode:     "truncate",
 	}
 }
 
@@ -191,6 +216,49 @@ func (c Config) EffectiveAgentRunExecutionMode() string {
 	}
 }
 
+func (c Config) ContextDefaultStrategy() contracts.ContextStrategy {
+	mode := strings.ToLower(strings.TrimSpace(c.ContextDefaultMode))
+	if mode == "" {
+		mode = "balanced"
+	}
+	recentLimit := configuredLimit(c.ContextDefaultRecentMessageLimit, c.contextDefaultRecentMessageLimitSet, 20)
+	retrievalLimit := configuredLimit(c.ContextDefaultRetrievalMaxResults, c.contextDefaultRetrievalMaxResultsSet, 8)
+	taskHistoryLimit := configuredLimit(c.ContextDefaultTaskHistoryMaxItems, c.contextDefaultTaskHistoryMaxItemsSet, 30)
+	tokenBudget := configuredLimit(c.ContextDefaultTokenBudget, c.contextDefaultTokenBudgetSet, 4000)
+	compressionMode := strings.ToLower(strings.TrimSpace(c.ContextCompressionDefaultMode))
+	if compressionMode == "" {
+		compressionMode = "truncate"
+	}
+	compressionEnabled := c.ContextCompressionDefaultEnabled
+	if !c.contextCompressionDefaultEnabledSet && !compressionEnabled {
+		compressionEnabled = true
+	}
+	if compressionMode == "none" {
+		compressionEnabled = false
+	}
+	return contracts.ContextStrategy{
+		Mode:                mode,
+		RecentMessageLimit:  contracts.IntPtr(recentLimit),
+		RetrievalMaxResults: contracts.IntPtr(retrievalLimit),
+		TaskHistoryMaxItems: contracts.IntPtr(taskHistoryLimit),
+		ContextTokenBudget:  contracts.IntPtr(tokenBudget),
+		Compression: contracts.ContextCompressionStrategy{
+			Enabled: compressionEnabled,
+			Mode:    compressionMode,
+		},
+	}
+}
+
+func configuredLimit(value int, explicitlySet bool, fallback int) int {
+	if explicitlySet {
+		return value
+	}
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
 func (c Config) Validate() error {
 	var missing []string
 	if strings.TrimSpace(c.ServiceName) == "" {
@@ -237,8 +305,21 @@ func (c Config) Validate() error {
 	if c.ConversationJudgeTimeoutMS < 0 {
 		return fmt.Errorf("conversation_judge_timeout_ms must be non-negative")
 	}
-	if c.ConversationMaxRetrieved < 0 {
-		return fmt.Errorf("conversation_max_retrieved must be non-negative")
+	for name, value := range map[string]int{
+		"context_default_recent_message_limit":   c.ContextDefaultRecentMessageLimit,
+		"context_default_retrieval_max_results":  c.ContextDefaultRetrievalMaxResults,
+		"context_default_task_history_max_items": c.ContextDefaultTaskHistoryMaxItems,
+		"context_default_token_budget":           c.ContextDefaultTokenBudget,
+	} {
+		if value < 0 {
+			return fmt.Errorf("%s must be non-negative", name)
+		}
+	}
+	if err := validateOneOf("context_default_mode", c.ContextDefaultMode, "", "auto", "concise", "balanced", "long_context", "full_debug"); err != nil {
+		return err
+	}
+	if err := validateOneOf("context_compression_default_mode", c.ContextCompressionDefaultMode, "", "none", "truncate", "llm", "llm_then_truncate"); err != nil {
+		return err
 	}
 	if err := validateOneOf("readiness_mode", c.ReadinessMode, "", "shallow", "deep"); err != nil {
 		return err
@@ -413,12 +494,35 @@ func merge(base Config, override Config) Config {
 	if override.ConversationDirectEnabled {
 		base.ConversationDirectEnabled = true
 	}
-	if override.ConversationMaxRetrieved > 0 {
-		base.ConversationMaxRetrieved = override.ConversationMaxRetrieved
-	}
 	if override.conversationRetrievalEnabledSet {
 		base.ConversationRetrievalEnabled = override.ConversationRetrievalEnabled
 		base.conversationRetrievalEnabledSet = true
+	}
+	if override.ContextDefaultMode != "" {
+		base.ContextDefaultMode = override.ContextDefaultMode
+	}
+	if override.contextDefaultRecentMessageLimitSet || override.ContextDefaultRecentMessageLimit > 0 {
+		base.ContextDefaultRecentMessageLimit = override.ContextDefaultRecentMessageLimit
+		base.contextDefaultRecentMessageLimitSet = override.contextDefaultRecentMessageLimitSet
+	}
+	if override.contextDefaultRetrievalMaxResultsSet || override.ContextDefaultRetrievalMaxResults > 0 {
+		base.ContextDefaultRetrievalMaxResults = override.ContextDefaultRetrievalMaxResults
+		base.contextDefaultRetrievalMaxResultsSet = override.contextDefaultRetrievalMaxResultsSet
+	}
+	if override.contextDefaultTaskHistoryMaxItemsSet || override.ContextDefaultTaskHistoryMaxItems > 0 {
+		base.ContextDefaultTaskHistoryMaxItems = override.ContextDefaultTaskHistoryMaxItems
+		base.contextDefaultTaskHistoryMaxItemsSet = override.contextDefaultTaskHistoryMaxItemsSet
+	}
+	if override.contextDefaultTokenBudgetSet || override.ContextDefaultTokenBudget > 0 {
+		base.ContextDefaultTokenBudget = override.ContextDefaultTokenBudget
+		base.contextDefaultTokenBudgetSet = override.contextDefaultTokenBudgetSet
+	}
+	if override.contextCompressionDefaultEnabledSet {
+		base.ContextCompressionDefaultEnabled = override.ContextCompressionDefaultEnabled
+		base.contextCompressionDefaultEnabledSet = true
+	}
+	if override.ContextCompressionDefaultMode != "" {
+		base.ContextCompressionDefaultMode = override.ContextCompressionDefaultMode
 	}
 	if override.ExternalBridgeBaseURL != "" {
 		base.ExternalBridgeBaseURL = override.ExternalBridgeBaseURL
@@ -486,6 +590,8 @@ func applyEnvMap(cfg Config, env map[string]string) Config {
 	setString("CLEAN_CORE_MODEL_THINKING", &cfg.ModelThinking)
 	setString("CLEAN_CORE_MODEL_REASONING_EFFORT", &cfg.ModelReasoningEffort)
 	setString("CLEAN_CORE_CONVERSATION_JUDGE_MODE", &cfg.ConversationJudgeMode)
+	setString("CLEAN_CORE_CONTEXT_DEFAULT_MODE", &cfg.ContextDefaultMode)
+	setString("CLEAN_CORE_CONTEXT_COMPRESSION_DEFAULT_MODE", &cfg.ContextCompressionDefaultMode)
 	setString("CLEAN_CORE_EXTERNAL_BRIDGE_PROVIDER", &cfg.ExternalBridgeProvider)
 	setString("CLEAN_CORE_EXTERNAL_BRIDGE_BASE_URL", &cfg.ExternalBridgeBaseURL)
 	setString("CLEAN_CORE_EXTERNAL_BRIDGE_TOKEN", &cfg.ExternalBridgeToken)
@@ -498,6 +604,14 @@ func applyEnvMap(cfg Config, env map[string]string) Config {
 		if v := strings.TrimSpace(env[key]); v != "" {
 			if parsed, err := strconv.Atoi(v); err == nil {
 				*dst = parsed
+			}
+		}
+	}
+	setIntWithFlag := func(key string, dst *int, set *bool) {
+		if v := strings.TrimSpace(env[key]); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil {
+				*dst = parsed
+				*set = true
 			}
 		}
 	}
@@ -522,6 +636,10 @@ func applyEnvMap(cfg Config, env map[string]string) Config {
 	setInt("CLEAN_CORE_RUN_MAX_CONCURRENT", &cfg.RunMaxConcurrent)
 	setInt("CLEAN_CORE_TENANT_RUN_MAX_CONCURRENT", &cfg.TenantRunMaxConcurrent)
 	setInt("CLEAN_CORE_AGENT_RUN_MAX_CONCURRENT", &cfg.AgentRunMaxConcurrent)
+	setIntWithFlag("CLEAN_CORE_CONTEXT_DEFAULT_RECENT_MESSAGE_LIMIT", &cfg.ContextDefaultRecentMessageLimit, &cfg.contextDefaultRecentMessageLimitSet)
+	setIntWithFlag("CLEAN_CORE_CONTEXT_DEFAULT_RETRIEVAL_MAX_RESULTS", &cfg.ContextDefaultRetrievalMaxResults, &cfg.contextDefaultRetrievalMaxResultsSet)
+	setIntWithFlag("CLEAN_CORE_CONTEXT_DEFAULT_TASK_HISTORY_MAX_ITEMS", &cfg.ContextDefaultTaskHistoryMaxItems, &cfg.contextDefaultTaskHistoryMaxItemsSet)
+	setIntWithFlag("CLEAN_CORE_CONTEXT_DEFAULT_TOKEN_BUDGET", &cfg.ContextDefaultTokenBudget, &cfg.contextDefaultTokenBudgetSet)
 	if v := strings.TrimSpace(env["CLEAN_CORE_MODEL_TEMPERATURE"]); v != "" {
 		if parsed, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.ModelTemperature = &parsed
@@ -537,15 +655,16 @@ func applyEnvMap(cfg Config, env map[string]string) Config {
 			cfg.ConversationDirectEnabled = parsed
 		}
 	}
-	if v := strings.TrimSpace(env["CLEAN_CORE_CONVERSATION_MAX_RETRIEVED"]); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil {
-			cfg.ConversationMaxRetrieved = parsed
-		}
-	}
 	if v := strings.TrimSpace(env["CLEAN_CORE_CONVERSATION_RETRIEVAL_ENABLED"]); v != "" {
 		if parsed, err := strconv.ParseBool(v); err == nil {
 			cfg.ConversationRetrievalEnabled = parsed
 			cfg.conversationRetrievalEnabledSet = true
+		}
+	}
+	if v := strings.TrimSpace(env["CLEAN_CORE_CONTEXT_COMPRESSION_DEFAULT_ENABLED"]); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			cfg.ContextCompressionDefaultEnabled = parsed
+			cfg.contextCompressionDefaultEnabledSet = true
 		}
 	}
 	if v := strings.TrimSpace(env["CLEAN_CORE_DISABLED_AGENT_IDS"]); v != "" {
@@ -814,12 +933,45 @@ func parseSimpleYAML(data []byte) (Config, error) {
 			}
 			cfg.ConversationRetrievalEnabled = parsed
 			cfg.conversationRetrievalEnabledSet = true
-		case "conversation_max_retrieved":
-			parsed, err := strconv.Atoi(value)
+		case "context_default_mode":
+			cfg.ContextDefaultMode = value
+		case "context_default_recent_message_limit":
+			parsed, err := parseYAMLInt(i+1, key, value)
 			if err != nil {
-				return Config{}, fmt.Errorf("parse yaml config line %d conversation_max_retrieved: %w", i+1, err)
+				return Config{}, err
 			}
-			cfg.ConversationMaxRetrieved = parsed
+			cfg.ContextDefaultRecentMessageLimit = parsed
+			cfg.contextDefaultRecentMessageLimitSet = true
+		case "context_default_retrieval_max_results":
+			parsed, err := parseYAMLInt(i+1, key, value)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.ContextDefaultRetrievalMaxResults = parsed
+			cfg.contextDefaultRetrievalMaxResultsSet = true
+		case "context_default_task_history_max_items":
+			parsed, err := parseYAMLInt(i+1, key, value)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.ContextDefaultTaskHistoryMaxItems = parsed
+			cfg.contextDefaultTaskHistoryMaxItemsSet = true
+		case "context_default_token_budget":
+			parsed, err := parseYAMLInt(i+1, key, value)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.ContextDefaultTokenBudget = parsed
+			cfg.contextDefaultTokenBudgetSet = true
+		case "context_compression_default_enabled":
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("parse yaml config line %d context_compression_default_enabled: %w", i+1, err)
+			}
+			cfg.ContextCompressionDefaultEnabled = parsed
+			cfg.contextCompressionDefaultEnabledSet = true
+		case "context_compression_default_mode":
+			cfg.ContextCompressionDefaultMode = value
 		case "external_bridge_base_url":
 			cfg.ExternalBridgeBaseURL = value
 		case "external_bridge_provider":

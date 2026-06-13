@@ -69,6 +69,7 @@ func evalRun(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelo
 		FinalReplyNotContains: stringSlice(envelope.Payload["final_reply_not_contains"]),
 		MaxToolCalls:          payloadInt(envelope.Payload, "max_tool_calls"),
 		ShouldEndStatus:       status,
+		StrategyAssertions:    evalStrategyAssertionsFromPayload(envelope.Payload["strategy_assertions"]),
 	})
 	suiteResult, err := appCore.Evals.SaveResult(r.Context(), eval.SuiteResult{
 		EvalRunID:      result.EvalRunID,
@@ -291,7 +292,41 @@ func evalCaseFromPayload(envelope contracts.AgentEnvelope, payload map[string]an
 		FinalReplyNotContains: stringSlice(payload["final_reply_not_contains"]),
 		MaxToolCalls:          payloadInt(payload, "max_tool_calls"),
 		ShouldEndStatus:       status,
+		StrategyAssertions:    evalStrategyAssertionsFromPayload(payload["strategy_assertions"]),
 	}, nil
+}
+
+func evalStrategyAssertionsFromPayload(value any) eval.StrategyAssertions {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return eval.StrategyAssertions{}
+	}
+	return eval.StrategyAssertions{
+		StrategyHash:       payloadString(raw, "strategy_hash"),
+		ContextMode:        payloadString(raw, "context_mode"),
+		ContextSources:     stringSlice(raw["context_sources"]),
+		CompressionApplied: optionalBool(raw["compression_applied"]),
+		CompressionMode:    payloadString(raw, "compression_mode"),
+	}
+}
+
+func optionalBool(value any) *bool {
+	switch typed := value.(type) {
+	case bool:
+		return &typed
+	case string:
+		switch strings.ToLower(strings.TrimSpace(typed)) {
+		case "true", "1", "yes":
+			parsed := true
+			return &parsed
+		case "false", "0", "no":
+			parsed := false
+			return &parsed
+		}
+		return nil
+	default:
+		return nil
+	}
 }
 
 func runtimeContextFromEvalPayload(base contracts.RuntimeContext, payload map[string]any) (contracts.RuntimeContext, error) {

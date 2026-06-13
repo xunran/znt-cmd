@@ -1,21 +1,33 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
+	agentplugin "znt/internal/agentdef/plugin"
 	agentpackage "znt/internal/agentdef/package"
 	"znt/internal/app/auth"
 	"znt/internal/app/core"
 	"znt/internal/contracts"
 	policyengine "znt/internal/policy/engine"
+	runtimehook "znt/internal/runtime/hook"
+	serviceconnection "znt/internal/serviceconnection"
 	toolcatalog "znt/internal/tool/catalog"
+	"znt/pkg/idgen"
 )
 
 func packagePublish(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
 	payload := envelope.Payload
 	if draftID, _ := payload["draft_id"].(string); draftID != "" {
+		if err := validateDraftPluginSourceForTenant(r.Context(), appCore, caller.TenantID, draftID); err != nil {
+			return nil, err
+		}
 		release, err := appCore.Packages.PublishDraftForTenant(r.Context(), caller.TenantID, draftID, caller.CallerID)
 		if err != nil {
 			return nil, err
@@ -32,9 +44,15 @@ func packagePublish(r *http.Request, appCore *core.Core, envelope contracts.Agen
 	if agentID == "" || version == "" {
 		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.publish requires agent_id and version", nil)
 	}
-	source := agentPackageSourceFromPayload(payload)
+	source, err := agentPackageSourceFromPayload(payload)
+	if err != nil {
+		return nil, err
+	}
 	source.AgentsMD = agentsMD
 	source.Prompt = prompt
+	if err := validateAgentPluginSourceProvider(r.Context(), appCore, caller.TenantID, source); err != nil {
+		return nil, err
+	}
 	draft, err := appCore.Packages.CreateDraft(r.Context(), caller.TenantID, contracts.AgentID(agentID), contracts.AgentVersion(version), source, caller.CallerID)
 	if err != nil {
 		return nil, err
@@ -80,20 +98,468 @@ func packageDraftCreate(r *http.Request, appCore *core.Core, envelope contracts.
 	if agentID == "" || version == "" {
 		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.draft.create requires agent_id and version", nil)
 	}
-	source := agentPackageSourceFromPayload(envelope.Payload)
+	source, err := agentPackageSourceFromPayload(envelope.Payload)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateAgentPluginSourceProvider(r.Context(), appCore, caller.TenantID, source); err != nil {
+		return nil, err
+	}
 	return appCore.Packages.CreateDraft(r.Context(), caller.TenantID, contracts.AgentID(agentID), contracts.AgentVersion(version), source, caller.CallerID)
 }
 
-func agentPackageSourceFromPayload(payload map[string]any) agentpackage.AgentPackageSource {
-	return agentpackage.AgentPackageSource{
-		AgentsMD:      payloadString(payload, "agents_md"),
-		Prompt:        payloadString(payload, "prompt"),
-		ToolBindings:  parseToolsPayload(payload["tool_bindings"]),
-		Collaborators: parseCollaboratorsPayload(payload["collaborators"]),
-		Exports:       parseAgentExportsPayload(payload["exports"]),
-		RuntimeHooks:  parseRuntimeHooksPayload(payload["runtime_hooks"]),
-		Metadata:      parseMetadata(payload["metadata"]),
+func agentPackageSourceFromPayload(payload map[string]any) (agentpackage.AgentPackageSource, error) {
+	strategies, err := parseAgentStrategiesPayload(payload["strategies"])
+	if err != nil {
+		return agentpackage.AgentPackageSource{}, err
 	}
+	skills, err := parseSkillRefsPayload(payload["skills"])
+	if err != nil {
+		return agentpackage.AgentPackageSource{}, err
+	}
+	skillDefinitions, err := parseSkillDefinitionsPayload(payload["skill_definitions"])
+	if err != nil {
+		return agentpackage.AgentPackageSource{}, err
+	}
+	metadata := parseMetadata(payload["metadata"])
+	if err := agentpackage.ValidateSourceMetadata(metadata); err != nil {
+		return agentpackage.AgentPackageSource{}, err
+	}
+	return agentpackage.AgentPackageSource{
+		SourceKind:      contracts.AgentSourceKind(payloadString(payload, "source_kind")),
+		ProviderID:       payloadString(payload, "provider_id"),
+		ManifestVersion:  payloadString(payload, "manifest_version"),
+		AgentsMD:        payloadString(payload, "agents_md"),
+		Prompt:          payloadString(payload, "prompt"),
+		Strategies:      strategies,
+		ToolBindings:    parseToolsPayload(payload["tool_bindings"]),
+		Skills:          skills,
+		SkillDefinitions: skillDefinitions,
+		Collaborators:   parseCollaboratorsPayload(payload["collaborators"]),
+		Exports:         parseAgentExportsPayload(payload["exports"]),
+		RuntimeHooks:    parseRuntimeHooksPayload(payload["runtime_hooks"]),
+		Metadata:        metadata,
+	}, nil
+}
+
+func agentPluginSync(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
+	providerID := payloadString(envelope.Payload, "provider_id")
+	var manifest agentplugin.AgentPluginManifest
+	if envelope.Payload["manifest"] != nil {
+		parsed, err := parseAgentPluginManifestPayload(envelope.Payload["manifest"])
+		if err != nil {
+			return nil, err
+		}
+		manifest = parsed
+	} else {
+		if providerID == "" {
+			return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.plugin.sync requires provider_id when manifest is omitted", nil)
+		}
+		_, connection, err := agentPluginProviderConnection(r.Context(), appCore, caller.TenantID, providerID)
+		if err != nil {
+			return nil, err
+		}
+		manifest, err = agentplugin.FetchManifest(r.Context(), nil, connection)
+		if err != nil {
+			return agentPluginSyncToolCatalogFallback(r, appCore, envelope, caller, providerID, connection.ConnectionID, err)
+		}
+	}
+	if providerID != "" && manifest.ProviderID != "" && manifest.ProviderID != providerID {
+		return nil, contracts.NewRuntimeError(contracts.CodeToolArgumentInvalid, "agent plugin manifest provider_id does not match requested provider", map[string]any{"provider_id": providerID, "manifest_provider_id": manifest.ProviderID})
+	}
+	if providerID == "" {
+		providerID = manifest.ProviderID
+	}
+	overrides, err := agentPluginSourceOverridesFromPayload(envelope.Payload)
+	if err != nil {
+		return nil, err
+	}
+	source, err := agentplugin.BuildSource(agentplugin.SourceInput{
+		ProviderID: providerID,
+		Manifest:   manifest,
+		Overrides:  overrides,
+	})
+	if err != nil {
+		return nil, err
+	}
+	packageSource := agentpackage.PackageSourceFromPlugin(source)
+	if err := validateAgentPluginSourceProvider(r.Context(), appCore, caller.TenantID, packageSource); err != nil {
+		return nil, err
+	}
+	_, connection, err := agentPluginProviderConnection(r.Context(), appCore, caller.TenantID, packageSource.ProviderID)
+	if err != nil {
+		return nil, err
+	}
+	agentID := contracts.AgentID(payloadString(envelope.Payload, "agent_id"))
+	if agentID == "" {
+		agentID = manifest.Agent.AgentID
+	}
+	version := contracts.AgentVersion(payloadString(envelope.Payload, "version"))
+	if version == "" {
+		version = manifest.Agent.Version
+	}
+	if agentID == "" || version == "" {
+		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.plugin.sync requires agent_id and version in payload or manifest", nil)
+	}
+	draft, err := appCore.Packages.CreateDraft(r.Context(), caller.TenantID, agentID, version, packageSource, caller.CallerID)
+	if err != nil {
+		return nil, err
+	}
+	toolManifests := agentplugin.ToolManifests(source.ProviderID, manifest)
+	for i := range toolManifests {
+		toolManifests[i].TenantID = caller.TenantID
+		if _, err := appCore.ToolCatalog.UpsertManifest(r.Context(), toolManifests[i], caller.CallerID); err != nil {
+			return nil, err
+		}
+	}
+	hookManifests, err := syncAgentPluginHookManifests(r.Context(), appCore, caller.TenantID, agentID, version, source.ProviderID, connection, manifest)
+	if err != nil {
+		return nil, err
+	}
+	manifestHash := agentplugin.ManifestHash(manifest)
+	recordAgentPluginSyncedTrace(r, appCore, envelope, caller, agentID, version, source.ProviderID, connection.ConnectionID, manifestHash, len(toolManifests), len(hookManifests), "")
+	return map[string]any{
+		"draft":          draft,
+		"source_kind":    contracts.AgentSourceKindPlugin,
+		"provider_id":    source.ProviderID,
+		"manifest_hash":  manifestHash,
+		"manifest":       agentplugin.NormalizeManifest(manifest),
+		"tool_manifests": toolManifests,
+		"hook_manifests": hookManifests,
+	}, nil
+}
+
+func agentPluginSyncToolCatalogFallback(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity, providerID string, connectionID string, manifestErr error) (any, error) {
+	if appCore.ToolCatalog == nil {
+		return nil, manifestErr
+	}
+	toolManifests, err := appCore.ToolCatalog.SyncProviderCatalog(r.Context(), caller.TenantID, providerID, caller.CallerID)
+	if err != nil {
+		return nil, err
+	}
+	recordAgentPluginSyncedTrace(r, appCore, envelope, caller, "", "", providerID, connectionID, "", len(toolManifests), 0, "tool_catalog_fallback")
+	return map[string]any{
+		"source_kind":       contracts.AgentSourceKindPlugin,
+		"provider_id":       providerID,
+		"fallback":          "tool_catalog",
+		"draft_created":     false,
+		"manifest_error":    manifestErr.Error(),
+		"tool_manifests":    toolManifests,
+		"hook_manifests":    []runtimehook.HookManifest{},
+	}, nil
+}
+
+func recordAgentPluginSyncedTrace(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity, agentID contracts.AgentID, version contracts.AgentVersion, providerID string, connectionID string, manifestHash string, toolCount int, hookCount int, fallback string) {
+	if appCore.Trace == nil || envelope.TraceID == "" {
+		return
+	}
+	payload := map[string]any{
+		"source_kind":           contracts.AgentSourceKindPlugin,
+		"agent_id":              agentID,
+		"agent_version":         version,
+		"provider_id":           providerID,
+		"service_connection_id": connectionID,
+		"manifest_hash":         manifestHash,
+		"tool_count":            toolCount,
+		"hook_count":            hookCount,
+	}
+	if fallback != "" {
+		payload["fallback"] = fallback
+		payload["draft_created"] = false
+	}
+	_ = appCore.Trace.Record(r.Context(), contracts.TraceEvent{
+		TraceID:  envelope.TraceID,
+		TenantID: caller.TenantID,
+		SpanID:   contracts.SpanID(idgen.New("span")),
+		Type:     contracts.TraceAgentPluginSynced,
+		CreatedAt: time.Now().UTC(),
+		Payload: payload,
+	})
+}
+
+func parseAgentPluginManifestPayload(value any) (agentplugin.AgentPluginManifest, error) {
+	if value == nil {
+		return agentplugin.AgentPluginManifest{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.plugin.sync requires manifest", nil)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return agentplugin.AgentPluginManifest{}, err
+	}
+	manifest, err := agentplugin.DecodeManifest(data)
+	if err != nil {
+		return agentplugin.AgentPluginManifest{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid agent plugin manifest", map[string]any{"error": err.Error()})
+	}
+	return manifest, nil
+}
+
+func agentPluginSourceOverridesFromPayload(payload map[string]any) (agentpackage.AgentPluginSource, error) {
+	strategies, err := parseAgentStrategiesPayload(payload["strategies"])
+	if err != nil {
+		return agentpackage.AgentPluginSource{}, err
+	}
+	skills, err := parseSkillRefsPayload(payload["skills"])
+	if err != nil {
+		return agentpackage.AgentPluginSource{}, err
+	}
+	skillDefinitions, err := parseSkillDefinitionsPayload(payload["skill_definitions"])
+	if err != nil {
+		return agentpackage.AgentPluginSource{}, err
+	}
+	metadata := parseMetadata(payload["metadata"])
+	if err := agentpackage.ValidateSourceMetadata(metadata); err != nil {
+		return agentpackage.AgentPluginSource{}, err
+	}
+	return agentpackage.AgentPluginSource{
+		ProviderID:        payloadString(payload, "provider_id"),
+		ManifestVersion:   payloadString(payload, "manifest_version"),
+		AgentsMD:          payloadString(payload, "agents_md"),
+		Prompt:            payloadString(payload, "prompt"),
+		Strategies:        strategies,
+		ToolBindings:      parseToolsPayload(payload["tool_bindings"]),
+		Skills:            skills,
+		SkillDefinitions:  skillDefinitions,
+		Collaborators:     parseCollaboratorsPayload(payload["collaborators"]),
+		Exports:           parseAgentExportsPayload(payload["exports"]),
+		RuntimeHooks:      parseRuntimeHooksPayload(payload["runtime_hooks"]),
+		Metadata:          metadata,
+	}, nil
+}
+
+func parseAgentStrategiesPayload(value any) (contracts.AgentStrategies, error) {
+	if value == nil {
+		return contracts.AgentStrategies{}, nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return contracts.AgentStrategies{}, err
+	}
+	var strategies contracts.AgentStrategies
+	if err := decodeAgentStrategiesStrict(data, &strategies); err != nil {
+		return contracts.AgentStrategies{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid strategies payload", map[string]any{"error": err.Error()})
+	}
+	return strategies, nil
+}
+
+func mergeAgentStrategiesPayload(base contracts.AgentStrategies, value any) (contracts.AgentStrategies, error) {
+	if value == nil {
+		return contracts.AgentStrategies{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.draft.patch_strategies requires strategies", nil)
+	}
+	baseData, err := json.Marshal(base)
+	if err != nil {
+		return contracts.AgentStrategies{}, err
+	}
+	var merged map[string]any
+	if err := json.Unmarshal(baseData, &merged); err != nil {
+		return contracts.AgentStrategies{}, err
+	}
+	patchData, err := json.Marshal(value)
+	if err != nil {
+		return contracts.AgentStrategies{}, err
+	}
+	var patch map[string]any
+	if err := json.Unmarshal(patchData, &patch); err != nil {
+		return contracts.AgentStrategies{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid strategies payload", map[string]any{"error": err.Error()})
+	}
+	if len(patch) == 0 {
+		return contracts.AgentStrategies{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.draft.patch_strategies requires at least one strategy family", nil)
+	}
+	mergeJSONObjects(merged, patch)
+	data, err := json.Marshal(merged)
+	if err != nil {
+		return contracts.AgentStrategies{}, err
+	}
+	var strategies contracts.AgentStrategies
+	if err := decodeAgentStrategiesStrict(data, &strategies); err != nil {
+		return contracts.AgentStrategies{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid strategies payload", map[string]any{"error": err.Error()})
+	}
+	return strategies, nil
+}
+
+func decodeAgentStrategiesStrict(data []byte, target *contracts.AgentStrategies) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra struct{}
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("strategies payload contains multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func mergeJSONObjects(base map[string]any, patch map[string]any) {
+	for key, value := range patch {
+		patchObject, patchOK := value.(map[string]any)
+		baseObject, baseOK := base[key].(map[string]any)
+		if patchOK && baseOK {
+			mergeJSONObjects(baseObject, patchObject)
+			base[key] = baseObject
+			continue
+		}
+		base[key] = value
+	}
+}
+
+func validateDraftPluginSourceForTenant(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, draftID string) error {
+	draft, ok, err := appCore.Packages.GetDraft(ctx, draftID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "draft not found", map[string]any{"draft_id": draftID})
+	}
+	if draft.TenantID != tenantID {
+		return contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "draft tenant does not match caller tenant", nil)
+	}
+	return validateAgentPluginSourceProvider(ctx, appCore, tenantID, draft.Source)
+}
+
+func validateAgentPluginSourceProvider(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, source agentpackage.AgentPackageSource) error {
+	if source.SourceKind != contracts.AgentSourceKindPlugin {
+		return nil
+	}
+	if err := agentpackage.ValidateSourceMetadata(source.Metadata); err != nil {
+		return err
+	}
+	if err := agentpackage.ValidatePluginSourceMetadata(source.Metadata); err != nil {
+		return err
+	}
+	_, _, err := agentPluginProviderConnection(ctx, appCore, tenantID, source.ProviderID)
+	return err
+}
+
+func validatePackageReleasePluginSourceForTenant(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, release contracts.AgentPackageVersion) error {
+	if release.TenantID != tenantID {
+		return contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "agent package release tenant does not match caller tenant", nil)
+	}
+	if release.SourceKind != contracts.AgentSourceKindPlugin {
+		return nil
+	}
+	_, _, err := agentPluginProviderConnection(ctx, appCore, tenantID, release.SourceProviderID)
+	return err
+}
+
+func agentPluginProviderConnection(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, providerID string) (toolcatalog.ToolProvider, serviceconnection.ServiceConnection, error) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "plugin_service source requires provider_id", nil)
+	}
+	if appCore.ToolCatalog == nil {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "tool catalog service is unavailable", nil)
+	}
+	provider, ok := appCore.ToolCatalog.GetProvider(tenantID, providerID)
+	if !ok {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolNotFound, "agent plugin provider not found", map[string]any{"provider_id": providerID})
+	}
+	if provider.ProviderType != toolcatalog.ProviderTypeAgentPlugin {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolArgumentInvalid, "plugin source provider must be agent_plugin_service", map[string]any{"provider_id": provider.ProviderID, "provider_type": provider.ProviderType})
+	}
+	if provider.Status != toolcatalog.StatusEnabled {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "agent plugin provider is not enabled", map[string]any{"provider_id": provider.ProviderID, "status": provider.Status})
+	}
+	if provider.HealthStatus == toolcatalog.HealthUnhealthy {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "agent plugin provider is unhealthy", map[string]any{"provider_id": provider.ProviderID, "health_status": provider.HealthStatus})
+	}
+	if provider.ServiceConnectionID == "" {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolArgumentInvalid, "agent plugin provider requires service_connection_id", map[string]any{"provider_id": provider.ProviderID})
+	}
+	if appCore.ServiceConnections == nil {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "service connection service is unavailable", nil)
+	}
+	connection, ok, err := appCore.ServiceConnections.Get(ctx, tenantID, provider.ServiceConnectionID)
+	if err != nil {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, err
+	}
+	if !ok {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolNotFound, "agent plugin service connection not found", map[string]any{"provider_id": provider.ProviderID, "connection_id": provider.ServiceConnectionID})
+	}
+	if connection.Status != serviceconnection.StatusEnabled {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "agent plugin service connection is not enabled", map[string]any{"provider_id": provider.ProviderID, "connection_id": connection.ConnectionID, "status": connection.Status})
+	}
+	if connection.HealthStatus == serviceconnection.HealthUnhealthy {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "agent plugin service connection is unhealthy", map[string]any{"provider_id": provider.ProviderID, "connection_id": connection.ConnectionID, "health_status": connection.HealthStatus})
+	}
+	if connection.BaseURL == "" {
+		return toolcatalog.ToolProvider{}, serviceconnection.ServiceConnection{}, contracts.NewRuntimeError(contracts.CodeToolArgumentInvalid, "agent plugin service connection base_url is required", map[string]any{"provider_id": provider.ProviderID, "connection_id": connection.ConnectionID})
+	}
+	return provider, connection, nil
+}
+
+func syncAgentPluginHookManifests(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, providerID string, connection serviceconnection.ServiceConnection, manifest agentplugin.AgentPluginManifest) ([]runtimehook.HookManifest, error) {
+	manifest = agentplugin.NormalizeManifest(manifest)
+	if len(manifest.Hooks) == 0 {
+		return nil, nil
+	}
+	if appCore.RuntimeHooks == nil {
+		return nil, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "runtime hook service is unavailable", nil)
+	}
+	provider := runtimehook.Provider{
+		TenantID:            tenantID,
+		ProviderID:          providerID,
+		Name:                providerID,
+		ProviderType:        runtimehook.ProviderTypeStaticHookHost,
+		ServiceConnectionID: connection.ConnectionID,
+		Status:              runtimehook.StatusEnabled,
+		HealthStatus:        runtimehook.HealthUnknown,
+		Version:             manifest.ManifestVersion,
+	}
+	if provider.Version == "" {
+		provider.Version = "v1"
+	}
+	if err := appCore.RuntimeHooks.UpsertProvider(ctx, provider); err != nil {
+		return nil, err
+	}
+	synced := make([]runtimehook.HookManifest, 0, len(manifest.Hooks))
+	for _, hook := range manifest.Hooks {
+		hook.HookID = strings.TrimSpace(hook.HookID)
+		if hook.HookID == "" {
+			continue
+		}
+		hook.TenantID = tenantID
+		hook.ProviderID = providerID
+		if hook.Version == "" {
+			hook.Version = "v1"
+		}
+		if hook.Status == "" {
+			hook.Status = runtimehook.StatusEnabled
+		}
+		if hook.TimeoutMS == 0 {
+			hook.TimeoutMS = 300
+		}
+		if hook.FailurePolicy == "" {
+			hook.FailurePolicy = "ignore"
+		}
+		if err := appCore.RuntimeHooks.UpsertManifest(ctx, hook); err != nil {
+			return nil, err
+		}
+		synced = append(synced, hook)
+		if hook.Status != runtimehook.StatusEnabled {
+			continue
+		}
+		binding := runtimehook.Binding{
+			TenantID:         tenantID,
+			AgentID:          agentID,
+			AgentVersion:     version,
+			HookID:           hook.HookID,
+			ProviderType:     runtimehook.ProviderTypeStaticHookHost,
+			ProviderID:       providerID,
+			Phase:            hook.Phase,
+			Version:          hook.Version,
+			Enabled:          hook.Status == runtimehook.StatusEnabled,
+			TimeoutMS:        hook.TimeoutMS,
+			FailurePolicy:    hook.FailurePolicy,
+			RequiresApproval: hook.RequiresApproval,
+			ApprovalPolicy:   hook.ApprovalPolicy,
+		}
+		if err := appCore.RuntimeHooks.UpsertBinding(ctx, binding); err != nil {
+			return nil, err
+		}
+	}
+	return synced, nil
 }
 
 func packageCollaboratorUpsert(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
@@ -238,86 +704,42 @@ func packageExportedToolRemove(r *http.Request, appCore *core.Core, envelope con
 	return updated, nil
 }
 
-func packageDraftPatchPrompt(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
-	draftID := payloadString(envelope.Payload, "draft_id")
-	prompt := payloadString(envelope.Payload, "prompt")
-	if draftID == "" {
-		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.draft.patch_prompt requires draft_id", nil)
+func packageDraftPatchStrategies(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
+	if err := requirePayloadKeys(envelope.Command, envelope.Payload, "draft_id", "strategies"); err != nil {
+		return nil, err
 	}
-	draft, err := appCore.Packages.PatchPromptForTenant(r.Context(), caller.TenantID, draftID, prompt, caller.CallerID)
+	draftID := payloadString(envelope.Payload, "draft_id")
+	if draftID == "" {
+		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.draft.patch_strategies requires draft_id", nil)
+	}
+	draft, ok, err := appCore.Packages.GetDraft(r.Context(), draftID)
 	if err != nil {
 		return nil, err
 	}
-	return draft, nil
+	if !ok {
+		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "draft not found", map[string]any{"draft_id": draftID})
+	}
+	if draft.TenantID != caller.TenantID {
+		return nil, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "draft tenant does not match caller tenant", nil)
+	}
+	strategies, err := mergeAgentStrategiesPayload(draft.Source.Strategies, envelope.Payload["strategies"])
+	if err != nil {
+		return nil, err
+	}
+	return appCore.Packages.PatchStrategiesForTenant(r.Context(), caller.TenantID, draftID, strategies, caller.CallerID)
 }
 
-func packageDraftPatchDeveloperPrompt(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
-	draftID := payloadString(envelope.Payload, "draft_id")
-	developerPrompt := payloadString(envelope.Payload, "developer_prompt")
-	if developerPrompt == "" {
-		developerPrompt = payloadString(envelope.Payload, "prompt")
+func requirePayloadKeys(command string, payload map[string]any, allowed ...string) error {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, key := range allowed {
+		allowedSet[key] = struct{}{}
 	}
-	if draftID == "" {
-		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.draft.patch_developer_prompt requires draft_id", nil)
+	for key := range payload {
+		if _, ok := allowedSet[key]; !ok {
+			return contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unknown payload field", map[string]any{"command": command, "field": key})
+		}
 	}
-	draft, err := appCore.Packages.PatchDeveloperPromptForTenant(r.Context(), caller.TenantID, draftID, developerPrompt, caller.CallerID)
-	if err != nil {
-		return nil, err
-	}
-	return draft, nil
-}
-
-func packageDraftPatchSystemPrompt(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
-	draftID := payloadString(envelope.Payload, "draft_id")
-	systemPrompt := payloadString(envelope.Payload, "system_prompt")
-	if systemPrompt == "" {
-		systemPrompt = payloadString(envelope.Payload, "prompt")
-	}
-	if draftID == "" {
-		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.draft.patch_system_prompt requires draft_id", nil)
-	}
-	draft, err := appCore.Packages.PatchSystemPromptForTenant(r.Context(), caller.TenantID, draftID, systemPrompt, caller.CallerID)
-	if err != nil {
-		return nil, err
-	}
-	return draft, nil
-}
-
-func packageDraftPatchAgentsMD(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
-	draftID := payloadString(envelope.Payload, "draft_id")
-	agentsMD := payloadString(envelope.Payload, "agents_md")
-	if draftID == "" {
-		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.draft.patch_agents_md requires draft_id", nil)
-	}
-	draft, err := appCore.Packages.PatchAgentsMDForTenant(r.Context(), caller.TenantID, draftID, agentsMD, caller.CallerID)
-	if err != nil {
-		return nil, err
-	}
-	return draft, nil
-}
-
-func packageToolBindingUpdate(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
-	draftID := payloadString(envelope.Payload, "draft_id")
-	if draftID == "" {
-		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.tool_binding.update requires draft_id", nil)
-	}
-	draft, err := appCore.Packages.UpdateToolBindingForTenant(r.Context(), caller.TenantID, draftID, parseToolsPayload(envelope.Payload["tool_bindings"]), caller.CallerID)
-	if err != nil {
-		return nil, err
-	}
-	return draft, nil
-}
-
-func packageRuntimeHooksUpdate(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
-	draftID := payloadString(envelope.Payload, "draft_id")
-	if draftID == "" {
-		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.runtime_hooks.update requires draft_id", nil)
-	}
-	draft, err := appCore.Packages.PatchRuntimeHooksForTenant(r.Context(), caller.TenantID, draftID, parseRuntimeHooksPayload(envelope.Payload["runtime_hooks"]), caller.CallerID)
-	if err != nil {
-		return nil, err
-	}
-	return draft, nil
+	return nil
 }
 
 func packageSkillUpsert(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
@@ -353,6 +775,9 @@ func packageProposalCreate(r *http.Request, appCore *core.Core, envelope contrac
 	draftID := payloadString(envelope.Payload, "draft_id")
 	if draftID == "" {
 		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.proposal.create requires draft_id", nil)
+	}
+	if err := validateDraftPluginSourceForTenant(r.Context(), appCore, caller.TenantID, draftID); err != nil {
+		return nil, err
 	}
 	return appCore.Packages.CreateProposalForTenant(
 		r.Context(),
@@ -402,6 +827,9 @@ func packageProposalPublish(r *http.Request, appCore *core.Core, envelope contra
 	if !ok {
 		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "proposal not found", nil)
 	}
+	if err := validateDraftPluginSourceForTenant(r.Context(), appCore, caller.TenantID, proposal.DraftID); err != nil {
+		return nil, err
+	}
 	release, err := appCore.Packages.PublishProposalForTenant(r.Context(), caller.TenantID, proposalID, caller.CallerID)
 	if err != nil {
 		return nil, err
@@ -414,6 +842,9 @@ func packageDraftValidate(r *http.Request, appCore *core.Core, envelope contract
 	if draftID == "" {
 		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.draft.validate requires draft_id", nil)
 	}
+	if err := validateDraftPluginSourceForTenant(r.Context(), appCore, caller.TenantID, draftID); err != nil {
+		return nil, err
+	}
 	draft, err := appCore.Packages.ValidateDraftForTenant(r.Context(), caller.TenantID, draftID, caller.CallerID)
 	if err != nil {
 		return nil, err
@@ -425,6 +856,9 @@ func packageReview(r *http.Request, appCore *core.Core, envelope contracts.Agent
 	draftID := payloadString(envelope.Payload, "draft_id")
 	if draftID == "" {
 		return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.review requires draft_id", nil)
+	}
+	if err := validateDraftPluginSourceForTenant(r.Context(), appCore, caller.TenantID, draftID); err != nil {
+		return nil, err
 	}
 	draft, err := appCore.Packages.MarkReviewedForTenant(r.Context(), caller.TenantID, draftID, caller.CallerID)
 	if err != nil {
@@ -458,6 +892,11 @@ func packageReleaseAction(r *http.Request, appCore *core.Core, envelope contract
 	}
 	if _, err := policyengine.EvaluateReleaseAction(policySet.ReleasePolicy, releaseReq); err != nil {
 		return requestReleaseApprovalOnRequired(r, appCore, envelope, caller, err, "agent_package_version", packageVersionID, resourceAction, releaseReq)
+	}
+	if action == "canary" || action == "stable" {
+		if err := validatePackageReleasePluginSourceForTenant(r.Context(), appCore, caller.TenantID, current); err != nil {
+			return nil, err
+		}
 	}
 	if approved {
 		if err := consumeReleaseApproval(r, appCore, envelope, caller, "agent_package_version", packageVersionID, resourceAction); err != nil {
@@ -546,7 +985,13 @@ func ensureAgentVersionCanBeDefault(ctx context.Context, appCore *core.Core, ten
 	if appCore.AgentRegistry == nil {
 		return nil
 	}
-	_, err := appCore.AgentRegistry.Load(ctx, tenantID, agentID, version)
+	definition, err := appCore.AgentRegistry.Load(ctx, tenantID, agentID, version)
+	if err != nil {
+		return err
+	}
+	if definition.SourceKind == contracts.AgentSourceKindPlugin {
+		_, _, err = agentPluginProviderConnection(ctx, appCore, tenantID, definition.SourceProviderID)
+	}
 	return err
 }
 

@@ -28,8 +28,11 @@ func TestPackageDraftValidatePublishWritesAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if release.Status != contracts.ReleasePublished || release.SourceHash == "" || release.CompiledHash == "" {
+	if release.Status != contracts.ReleasePublished || release.SourceHash == "" || release.CompiledHash == "" || release.StrategyHash == "" {
 		t.Fatalf("unexpected release: %#v", release)
+	}
+	if release.SourceKind != contracts.AgentSourceKindPackage {
+		t.Fatalf("expected release source kind, got %#v", release)
 	}
 	events, err := auditLogger.Search(context.Background(), audit.Filter{Action: contracts.AuditAgentPackagePublish})
 	if err != nil {
@@ -119,33 +122,32 @@ func TestPublishDraftRejectsDuplicateAgentVersion(t *testing.T) {
 	}
 }
 
-func TestDraftPatchAgentsMDAndSkillLifecycle(t *testing.T) {
+func TestDraftPatchSourceAndSkillLifecycle(t *testing.T) {
 	service := NewService(nil)
 	draft, err := service.CreateDraft(context.Background(), "tenant_1", "agent_1", "v1", AgentPackageSource{Prompt: "prompt"}, "optimizer_1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	draft, err = service.PatchAgentsMDForTenant(context.Background(), "tenant_1", draft.DraftID, "agent markdown", "optimizer_1")
+	source := draft.Source
+	source.AgentsMD = "agent markdown"
+	source.Strategies.Prompt.DeveloperPrompt = "developer strategy"
+	source.Strategies.Prompt.SystemPrompt = "system contract"
+	draft, err = service.PatchSourceForTenant(context.Background(), "tenant_1", draft.DraftID, source, "optimizer_1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if draft.Source.AgentsMD != "agent markdown" {
 		t.Fatalf("expected agents_md update, got %#v", draft.Source)
 	}
-	draft, err = service.PatchDeveloperPromptForTenant(context.Background(), "tenant_1", draft.DraftID, "developer strategy", "optimizer_1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	draft, err = service.PatchSystemPromptForTenant(context.Background(), "tenant_1", draft.DraftID, "system contract", "optimizer_1")
-	if err != nil {
-		t.Fatal(err)
+	if draft.Source.Strategies.Prompt.DeveloperPrompt != "developer strategy" || draft.Source.Strategies.Prompt.SystemPrompt != "system contract" {
+		t.Fatalf("expected source patch to update structured prompt strategy, got %#v", draft.Source.Strategies.Prompt)
 	}
 	compiled, err := Compile(draft.AgentID, draft.Version, draft.Source)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if compiled.DeveloperPrompt != "developer strategy" || compiled.SystemPrompt != "system contract" {
-		t.Fatalf("expected metadata prompts to compile, got %#v", compiled)
+		t.Fatalf("expected structured prompt strategies to compile, got %#v", compiled)
 	}
 	draft, err = service.UpsertSkillForTenant(context.Background(), "tenant_1", draft.DraftID, SkillDraftInput{
 		SkillID:                 "pkg.review",
@@ -169,6 +171,9 @@ func TestDraftPatchAgentsMDAndSkillLifecycle(t *testing.T) {
 	}, "optimizer_1")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(draft.Source.SkillDefinitions) != 1 || draft.Source.Metadata["skill_definitions"] != nil {
+		t.Fatalf("expected skill draft to update structured source only, got source=%#v", draft.Source)
 	}
 	if _, err := service.ValidateDraft(context.Background(), draft.DraftID); err != nil {
 		t.Fatal(err)

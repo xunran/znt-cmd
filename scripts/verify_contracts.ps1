@@ -86,6 +86,13 @@ $configMap = @{
     model_temperature = "CLEAN_CORE_MODEL_TEMPERATURE"
     model_thinking = "CLEAN_CORE_MODEL_THINKING"
     model_reasoning_effort = "CLEAN_CORE_MODEL_REASONING_EFFORT"
+    context_default_mode = "CLEAN_CORE_CONTEXT_DEFAULT_MODE"
+    context_default_recent_message_limit = "CLEAN_CORE_CONTEXT_DEFAULT_RECENT_MESSAGE_LIMIT"
+    context_default_retrieval_max_results = "CLEAN_CORE_CONTEXT_DEFAULT_RETRIEVAL_MAX_RESULTS"
+    context_default_task_history_max_items = "CLEAN_CORE_CONTEXT_DEFAULT_TASK_HISTORY_MAX_ITEMS"
+    context_default_token_budget = "CLEAN_CORE_CONTEXT_DEFAULT_TOKEN_BUDGET"
+    context_compression_default_enabled = "CLEAN_CORE_CONTEXT_COMPRESSION_DEFAULT_ENABLED"
+    context_compression_default_mode = "CLEAN_CORE_CONTEXT_COMPRESSION_DEFAULT_MODE"
     external_bridge_base_url = "CLEAN_CORE_EXTERNAL_BRIDGE_BASE_URL"
     external_bridge_token = "CLEAN_CORE_EXTERNAL_BRIDGE_TOKEN"
     disabled_agent_ids = "CLEAN_CORE_DISABLED_AGENT_IDS"
@@ -127,6 +134,13 @@ $deploymentRequiredEnv = @(
     "CLEAN_CORE_MODEL_TEMPERATURE",
     "CLEAN_CORE_MODEL_THINKING",
     "CLEAN_CORE_MODEL_REASONING_EFFORT",
+    "CLEAN_CORE_CONTEXT_DEFAULT_MODE",
+    "CLEAN_CORE_CONTEXT_DEFAULT_RECENT_MESSAGE_LIMIT",
+    "CLEAN_CORE_CONTEXT_DEFAULT_RETRIEVAL_MAX_RESULTS",
+    "CLEAN_CORE_CONTEXT_DEFAULT_TASK_HISTORY_MAX_ITEMS",
+    "CLEAN_CORE_CONTEXT_DEFAULT_TOKEN_BUDGET",
+    "CLEAN_CORE_CONTEXT_COMPRESSION_DEFAULT_ENABLED",
+    "CLEAN_CORE_CONTEXT_COMPRESSION_DEFAULT_MODE",
     "CLEAN_CORE_EXTERNAL_BRIDGE_BASE_URL",
     "CLEAN_CORE_EXTERNAL_BRIDGE_TOKEN"
 )
@@ -220,6 +234,12 @@ $requiredPaths = @(
     "/v1/cross-group-share-policies/{policy_id}",
     "/v1/cross-groups/search",
     "/v1/tasks/start",
+    "/v1/runs",
+    "/v1/runs/{run_id}",
+    "/v1/runs/{run_id}/timeline",
+    "/v1/runs/{run_id}/diagnostics",
+    "/v1/runs/{run_id}/final-response",
+    "/v1/runs/{run_id}/replay",
     "/v1/readiness/report",
     "/v1/release/go-no-go",
     "/v1/usage/evidence",
@@ -227,6 +247,7 @@ $requiredPaths = @(
     "/v1/evals/results/{eval_run_id}",
     "/v1/traces/{trace_id}",
     "/v1/traces/{trace_id}/replay",
+    "/v1/traces/{trace_id}/diagnostics",
     "/v1/handoffs/{handoff_id}",
     "/v1/handoffs/{handoff_id}/trace"
 )
@@ -476,10 +497,31 @@ function Assert-SchemaHasNoRequired {
     }
 }
 
+function Assert-SchemaAdditionalPropertiesFalse {
+    param([string]$SchemaName)
+    $schemas = $openapi.components.schemas
+    if (-not ($schemas.PSObject.Properties.Name -contains $SchemaName)) {
+        Add-Failure "OpenAPI schema '$SchemaName' is missing"
+        return
+    }
+    $schema = $schemas.PSObject.Properties[$SchemaName].Value
+    if (-not ($schema.PSObject.Properties.Name -contains "additionalProperties") -or $schema.additionalProperties -ne $false) {
+        Add-Failure "OpenAPI schema '$SchemaName' must set additionalProperties=false"
+    }
+}
+
+Assert-PathQueryParameters "/v1/runs" "get" @("agent_id", "status", "trace_id", "task_id", "from", "to", "limit", "offset", "cursor")
 Assert-PathQueryParameters "/v1/tool-providers" "get" @("q", "provider_type", "status", "health_status", "include_managed", "page_size", "cursor")
 Assert-PathQueryParameters "/v1/tool-manifests" "get" @("q", "provider_id", "executor_type", "status", "risk_level", "visibility", "page_size", "cursor")
 Assert-PathQueryParameters "/v1/service-connections" "get" @("q", "connection_type", "status", "health_status", "environment", "page_size", "cursor")
 Assert-PathQueryParameters "/v1/service-connections/{connection_id}/usage" "get" @("trace_id", "limit", "from", "to")
+Assert-PathMethods "/v1/runs" @("get")
+Assert-PathMethods "/v1/runs/{run_id}" @("get")
+Assert-PathMethods "/v1/runs/{run_id}/timeline" @("get")
+Assert-PathMethods "/v1/runs/{run_id}/diagnostics" @("get")
+Assert-PathMethods "/v1/runs/{run_id}/final-response" @("get")
+Assert-PathMethods "/v1/runs/{run_id}/replay" @("get", "post")
+Assert-PathMethods "/v1/traces/{trace_id}/diagnostics" @("get")
 Assert-PathMethods "/v1/service-connections/{connection_id}" @("get", "put", "patch", "delete")
 Assert-PathMethods "/v1/tool-providers/{provider_id}" @("get", "put", "patch", "delete")
 Assert-PathMethods "/v1/tool-groups/{group_id}" @("get", "put", "patch", "delete")
@@ -516,6 +558,37 @@ Assert-SchemaPropertyEnumExactly "ToolGroup" "status" @("draft", "enabled", "dis
 Assert-SchemaPropertyEnum "ToolExecutorSpec" "type" @("static_tool_host", "agent_plugin_service", "mcp", "agent_tool", "http_api_adapter", "database_adapter")
 Assert-SchemaHasProperties "ToolProviderGovernanceSummary" @("agent_plugin_service_tools_total")
 Assert-SchemaHasProperties "ServiceConnectionUsage" @("trace_id", "from", "to", "summary", "providers", "tools", "recent_events")
+Assert-SchemaHasProperties "VersionSnapshot" @("source_kind", "source_provider_id", "manifest_version", "manifest_hash", "strategy_hash")
+Assert-SchemaHasProperties "RunRouteDiagnostic" @("source_kind", "source_provider_id", "manifest_version", "manifest_hash", "strategy_hash")
+Assert-SchemaHasProperties "RunStrategyDiagnostic" @("source_kind", "source_provider_id", "service_connection_id", "manifest_version", "manifest_hash", "strategy_hash", "context_mode", "context_sources")
+Assert-SchemaHasProperties "RunDiagnosticsSummary" @("error_code", "error_message", "strategy_limit_reason")
+Assert-SchemaHasProperties "RunDiagnosticsResponse" @("run", "summary", "routing", "strategy", "context", "prompt", "model", "runtime_hooks", "usage_evidence", "timeline")
+Assert-SchemaHasProperties "TraceDiagnosticsResponse" @("trace_id", "runs", "summary", "routing", "strategy", "context", "prompt", "model", "usage_evidence", "timeline")
+Assert-SchemaHasProperties "PromptPreviewResponse" @("effective_strategies", "strategy_hash", "hook_effects", "context_assembly_report", "compression_report")
+Assert-SchemaHasProperties "AgentPluginSyncPayload" @("provider_id", "manifest", "strategies")
+Assert-SchemaHasProperties "AgentPluginManifest" @("agent", "tools", "hooks", "strategies")
+Assert-SchemaAdditionalPropertiesFalse "AgentPackageDraftPatchStrategiesPayload"
+Assert-SchemaAdditionalPropertiesFalse "AgentStrategies"
+Assert-SchemaAdditionalPropertiesFalse "PromptStrategy"
+Assert-SchemaAdditionalPropertiesFalse "ModelStrategy"
+Assert-SchemaAdditionalPropertiesFalse "ContextStrategy"
+Assert-SchemaAdditionalPropertiesFalse "ContextCompressionStrategy"
+Assert-SchemaAdditionalPropertiesFalse "CompressionPromptProfile"
+Assert-SchemaAdditionalPropertiesFalse "ToolUseStrategy"
+Assert-SchemaAdditionalPropertiesFalse "SkillUseStrategy"
+Assert-SchemaAdditionalPropertiesFalse "KnowledgeUseStrategy"
+Assert-SchemaAdditionalPropertiesFalse "CollaborationStrategy"
+Assert-SchemaAdditionalPropertiesFalse "MemoryUseStrategy"
+Assert-SchemaAdditionalPropertiesFalse "RuntimeStrategy"
+Assert-SchemaAdditionalPropertiesFalse "RepairStrategy"
+Assert-SchemaAdditionalPropertiesFalse "OutputStrategy"
+Assert-SchemaAdditionalPropertiesFalse "AgentPluginManifest"
+Assert-SchemaAdditionalPropertiesFalse "AgentPluginAgentManifest"
+Assert-SchemaAdditionalPropertiesFalse "AgentPluginToolManifest"
+$hookEffectItems = $openapi.components.schemas.PromptPreviewResponse.properties.hook_effects.items
+if (-not ($hookEffectItems.PSObject.Properties.Name -contains "additionalProperties") -or $hookEffectItems.additionalProperties -ne $false) {
+    Add-Failure "OpenAPI PromptPreviewResponse.hook_effects items must set additionalProperties=false"
+}
 Assert-SchemaPropertyEnum "ServiceConnection" "auth_type" @("none", "api_key", "bearer", "basic", "oauth2", "signed_request", "mtls")
 Assert-SchemaPropertyEnum "ServiceConnectionSecretRotationRequest" "auth_type" @("api_key", "bearer", "basic", "oauth2", "signed_request", "mtls")
 Assert-SchemaPropertyEnum "ServiceConnectionSecretRotation" "auth_type" @("api_key", "bearer", "basic", "oauth2", "signed_request", "mtls")

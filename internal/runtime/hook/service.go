@@ -17,6 +17,7 @@ import (
 	tooldiscovery "znt/internal/discovery/tool"
 	"znt/internal/governance/audit"
 	"znt/internal/governance/trace"
+	serviceconnection "znt/internal/serviceconnection"
 	"znt/pkg/idgen"
 )
 
@@ -44,18 +45,19 @@ const (
 )
 
 type Provider struct {
-	TenantID          contracts.TenantID `json:"tenant_id,omitempty"`
-	ProviderID        string             `json:"provider_id"`
-	Name              string             `json:"name"`
-	Description       string             `json:"description,omitempty"`
-	ProviderType      ProviderType       `json:"provider_type"`
-	Endpoint          string             `json:"endpoint,omitempty"`
-	Status            string             `json:"status"`
-	HealthStatus      string             `json:"health_status,omitempty"`
-	LastHealthCheckAt *time.Time         `json:"last_health_check_at,omitempty"`
-	LastHealthError   string             `json:"last_health_error,omitempty"`
-	Version           string             `json:"version,omitempty"`
-	Config            map[string]any     `json:"config,omitempty"`
+	TenantID            contracts.TenantID `json:"tenant_id,omitempty"`
+	ProviderID          string             `json:"provider_id"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description,omitempty"`
+	ProviderType        ProviderType       `json:"provider_type"`
+	ServiceConnectionID string             `json:"service_connection_id,omitempty"`
+	Endpoint            string             `json:"endpoint,omitempty"`
+	Status              string             `json:"status"`
+	HealthStatus        string             `json:"health_status,omitempty"`
+	LastHealthCheckAt   *time.Time         `json:"last_health_check_at,omitempty"`
+	LastHealthError     string             `json:"last_health_error,omitempty"`
+	Version             string             `json:"version,omitempty"`
+	Config              map[string]any     `json:"config,omitempty"`
 }
 
 type ProviderCatalog struct {
@@ -232,13 +234,18 @@ type Store interface {
 	ListEvents(ctx context.Context, tenantID contracts.TenantID, traceID contracts.TraceID) ([]HookEvent, error)
 }
 
+type ServiceConnectionResolver interface {
+	Get(ctx context.Context, tenantID contracts.TenantID, connectionID string) (serviceconnection.ServiceConnection, bool, error)
+}
+
 type Service struct {
-	mu      sync.RWMutex
-	store   Store
-	trace   trace.Recorder
-	audit   audit.Logger
-	now     func() time.Time
-	clients map[string]*http.Client
+	mu                 sync.RWMutex
+	store              Store
+	trace              trace.Recorder
+	audit              audit.Logger
+	now                func() time.Time
+	clients            map[string]*http.Client
+	serviceConnections ServiceConnectionResolver
 }
 
 type InvokeRequest struct {
@@ -266,6 +273,15 @@ func NewService(store Store, traceRecorder trace.Recorder, auditLogger audit.Log
 		now:     func() time.Time { return time.Now().UTC() },
 		clients: map[string]*http.Client{},
 	}
+}
+
+func (s *Service) SetServiceConnections(resolver ServiceConnectionResolver) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.serviceConnections = resolver
 }
 
 func (s *Service) Observe(ctx context.Context, observation Observation) {
@@ -352,8 +368,13 @@ func (s *Service) UpsertProvider(ctx context.Context, provider Provider) error {
 	if !validProviderType(provider.ProviderType) {
 		return contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported hook provider type", map[string]any{"provider_type": provider.ProviderType})
 	}
-	if provider.ProviderType == ProviderTypeStaticHookHost && strings.TrimSpace(provider.Endpoint) == "" {
-		return contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "endpoint is required for static_hook_host providers", nil)
+	if provider.ProviderType == ProviderTypeStaticHookHost && provider.Endpoint == "" && provider.ServiceConnectionID == "" {
+		return contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "endpoint or service_connection_id is required for static_hook_host providers", nil)
+	}
+	if provider.ProviderType == ProviderTypeStaticHookHost && provider.ServiceConnectionID != "" {
+		if _, err := s.staticProviderConnection(ctx, provider.TenantID, provider, 0); err != nil {
+			return err
+		}
 	}
 	if provider.Status != StatusEnabled && provider.Status != StatusDisabled {
 		return contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported hook provider status", map[string]any{"status": provider.Status})
@@ -936,6 +957,10 @@ func (s *Service) Invoke(ctx context.Context, req InvokeRequest) (HookEvent, Inv
 			})
 		}
 		patch, result, invokeErr := s.invokeBinding(ctx, req, binding)
+		if invokeErr == nil {
+			patch = annotateContextBlockSources(req, binding, patch)
+			result.Patch = patch
+		}
 		event.Status = result.Status
 		event.Reason = result.Reason
 		event.Patch = patch
@@ -1122,7 +1147,11 @@ func (s *Service) invokeStatic(ctx context.Context, req InvokeRequest, binding B
 	if timeout <= 0 {
 		timeout = 300 * time.Millisecond
 	}
-	client := s.clientFor(provider.ProviderID, timeout)
+	connection, err := s.staticProviderConnection(ctx, req.TenantID, provider, timeout)
+	if err != nil {
+		return Patch{}, InvokeResult{Status: "rejected", Reason: err.Error()}, err
+	}
+	client := s.clientFor(provider.ProviderID, connection.Timeout)
 	payload := map[string]any{
 		"hook_id": binding.HookID,
 		"phase":   string(req.Phase),
@@ -1137,19 +1166,40 @@ func (s *Service) invokeStatic(ctx context.Context, req InvokeRequest, binding B
 		},
 	}
 	body, _ := json.Marshal(payload)
-	endpoint := strings.TrimRight(provider.Endpoint, "/") + "/runtime-hooks/invoke"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return Patch{}, InvokeResult{Status: "rejected", Reason: err.Error()}, err
+	endpoint := strings.TrimRight(connection.BaseURL, "/") + "/runtime-hooks/invoke"
+	attempts := connection.RetryMax + 1
+	var resp *http.Response
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return Patch{}, InvokeResult{Status: "rejected", Reason: err.Error()}, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if connection.AuthRef != "" {
+			httpReq.Header.Set("X-Origin-Provider-Auth-Ref", connection.AuthRef)
+		}
+		resp, err = client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode < 500 || attempt == attempts-1 {
+			break
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
+		_ = resp.Body.Close()
+		resp = nil
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(httpReq)
-	if err != nil {
+	if resp == nil {
+		if lastErr == nil {
+			lastErr = contracts.NewRuntimeError(contracts.CodeToolExecutionFailed, "hook provider request failed", map[string]any{"provider_id": provider.ProviderID})
+		}
 		status := "failed"
-		if isTimeoutError(err) {
+		if isTimeoutError(lastErr) {
 			status = "timeout"
 		}
-		return Patch{}, InvokeResult{Status: status, Reason: err.Error()}, err
+		return Patch{}, InvokeResult{Status: status, Reason: lastErr.Error()}, lastErr
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -1160,7 +1210,9 @@ func (s *Service) invokeStatic(ctx context.Context, req InvokeRequest, binding B
 		Reason string `json:"reason"`
 		Patch  Patch  `json:"patch"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&out); err != nil {
 		return Patch{}, InvokeResult{Status: "failed", Reason: err.Error()}, err
 	}
 	if out.Status == "" {
@@ -1182,6 +1234,75 @@ func (s *Service) clientFor(providerID string, timeout time.Duration) *http.Clie
 	client := &http.Client{Timeout: timeout}
 	s.clients[key] = client
 	return client
+}
+
+type staticProviderConnection struct {
+	BaseURL  string
+	AuthRef  string
+	Timeout  time.Duration
+	RetryMax int
+}
+
+func (s *Service) staticProviderConnection(ctx context.Context, tenantID contracts.TenantID, provider Provider, requestedTimeout time.Duration) (staticProviderConnection, error) {
+	if provider.ServiceConnectionID == "" {
+		if provider.Endpoint == "" {
+			return staticProviderConnection{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "endpoint or service_connection_id is required for static_hook_host providers", map[string]any{"provider_id": provider.ProviderID})
+		}
+		return staticProviderConnection{
+			BaseURL:  provider.Endpoint,
+			Timeout: defaultStaticHookTimeout(requestedTimeout),
+		}, nil
+	}
+	resolver := s.serviceConnectionResolver()
+	if resolver == nil {
+		return staticProviderConnection{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "service connection service is unavailable", map[string]any{"provider_id": provider.ProviderID, "connection_id": provider.ServiceConnectionID})
+	}
+	connection, ok, err := resolver.Get(ctx, tenantID, provider.ServiceConnectionID)
+	if err != nil {
+		return staticProviderConnection{}, err
+	}
+	if !ok {
+		return staticProviderConnection{}, contracts.NewRuntimeError(contracts.CodeToolNotFound, "runtime hook service connection not found", map[string]any{"provider_id": provider.ProviderID, "connection_id": provider.ServiceConnectionID})
+	}
+	if connection.Status != serviceconnection.StatusEnabled {
+		return staticProviderConnection{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "runtime hook service connection is not enabled", map[string]any{"provider_id": provider.ProviderID, "connection_id": connection.ConnectionID, "status": connection.Status})
+	}
+	if connection.HealthStatus == serviceconnection.HealthUnhealthy {
+		return staticProviderConnection{}, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "runtime hook service connection is unhealthy", map[string]any{"provider_id": provider.ProviderID, "connection_id": connection.ConnectionID, "health_status": connection.HealthStatus})
+	}
+	if strings.TrimSpace(connection.BaseURL) == "" {
+		return staticProviderConnection{}, contracts.NewRuntimeError(contracts.CodeToolArgumentInvalid, "runtime hook service connection base_url is required", map[string]any{"provider_id": provider.ProviderID, "connection_id": connection.ConnectionID})
+	}
+	timeout := requestedTimeout
+	if connection.TimeoutMS > 0 {
+		timeout = time.Duration(connection.TimeoutMS) * time.Millisecond
+	}
+	retryMax := connection.RetryMax
+	if retryMax < 0 {
+		retryMax = 0
+	}
+	return staticProviderConnection{
+		BaseURL:  strings.TrimSpace(connection.BaseURL),
+		AuthRef:  strings.TrimSpace(connection.AuthRef),
+		Timeout:  defaultStaticHookTimeout(timeout),
+		RetryMax: retryMax,
+	}, nil
+}
+
+func (s *Service) serviceConnectionResolver() ServiceConnectionResolver {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.serviceConnections
+}
+
+func defaultStaticHookTimeout(timeout time.Duration) time.Duration {
+	if timeout > 0 {
+		return timeout
+	}
+	return 300 * time.Millisecond
 }
 
 func (s *Service) provider(ctx context.Context, tenantID contracts.TenantID, providerID string) (Provider, error) {
@@ -1211,6 +1332,7 @@ func normalizeProvider(provider Provider) Provider {
 	provider.ProviderID = strings.TrimSpace(provider.ProviderID)
 	provider.Name = strings.TrimSpace(provider.Name)
 	provider.Description = strings.TrimSpace(provider.Description)
+	provider.ServiceConnectionID = strings.TrimSpace(provider.ServiceConnectionID)
 	provider.Endpoint = strings.TrimSpace(provider.Endpoint)
 	if provider.Name == "" {
 		provider.Name = provider.ProviderID
@@ -1243,33 +1365,73 @@ func (s *Service) probeProviderHealth(ctx context.Context, provider Provider) (s
 	if provider.ProviderType == ProviderTypeGo {
 		return HealthHealthy, ""
 	}
-	healthURL := strings.TrimRight(provider.Endpoint, "/") + "/healthz"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	connection, err := s.staticProviderConnection(ctx, provider.TenantID, provider, 2*time.Second)
 	if err != nil {
 		return HealthUnhealthy, err.Error()
 	}
-	client := s.clientFor(provider.ProviderID, 2*time.Second)
-	resp, err := client.Do(req)
-	if err != nil {
-		return HealthUnhealthy, err.Error()
+	healthURL := strings.TrimRight(connection.BaseURL, "/") + "/healthz"
+	client := s.clientFor(provider.ProviderID, connection.Timeout)
+	var lastErr string
+	for attempt := 0; attempt <= connection.RetryMax; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if err != nil {
+			return HealthUnhealthy, err.Error()
+		}
+		if connection.AuthRef != "" {
+			req.Header.Set("X-Origin-Provider-Auth-Ref", connection.AuthRef)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err.Error()
+			continue
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			return HealthHealthy, ""
+		}
+		lastErr = fmt.Sprintf("healthz returned %d", resp.StatusCode)
+		if resp.StatusCode < 500 {
+			break
+		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return HealthHealthy, ""
-	}
-	return HealthUnhealthy, fmt.Sprintf("healthz returned %d", resp.StatusCode)
+	return HealthUnhealthy, lastErr
 }
 
 func (s *Service) fetchProviderCatalog(ctx context.Context, provider Provider) (ProviderCatalog, error) {
-	catalogURL := strings.TrimRight(provider.Endpoint, "/") + "/runtime-hooks/catalog"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogURL, nil)
+	connection, err := s.staticProviderConnection(ctx, provider.TenantID, provider, 2*time.Second)
 	if err != nil {
 		return ProviderCatalog{}, err
 	}
-	client := s.clientFor(provider.ProviderID, 2*time.Second)
-	resp, err := client.Do(req)
-	if err != nil {
-		return ProviderCatalog{}, err
+	catalogURL := strings.TrimRight(connection.BaseURL, "/") + "/runtime-hooks/catalog"
+	client := s.clientFor(provider.ProviderID, connection.Timeout)
+	var resp *http.Response
+	var lastErr error
+	for attempt := 0; attempt <= connection.RetryMax; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogURL, nil)
+		if err != nil {
+			return ProviderCatalog{}, err
+		}
+		if connection.AuthRef != "" {
+			req.Header.Set("X-Origin-Provider-Auth-Ref", connection.AuthRef)
+		}
+		resp, err = client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode < 500 || attempt == connection.RetryMax {
+			break
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
+		_ = resp.Body.Close()
+		resp = nil
+	}
+	if resp == nil {
+		if lastErr == nil {
+			lastErr = contracts.NewRuntimeError(contracts.CodeToolExecutionFailed, "hook provider catalog request failed", map[string]any{"provider_id": provider.ProviderID})
+		}
+		return ProviderCatalog{}, lastErr
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -1820,6 +1982,59 @@ func patchFromConfig(config map[string]any) (Patch, error) {
 		return Patch{}, err
 	}
 	return patch, nil
+}
+
+func annotateContextBlockSources(req InvokeRequest, binding Binding, patch Patch) Patch {
+	if len(patch.AddContextBlocks) == 0 {
+		return patch
+	}
+	sourceType := "runtime_hook_context"
+	if req.Agent.SourceKind == contracts.AgentSourceKindPlugin &&
+		strings.TrimSpace(binding.ProviderID) != "" &&
+		strings.TrimSpace(binding.ProviderID) == strings.TrimSpace(req.Agent.SourceProviderID) {
+		sourceType = "agent_plugin_context"
+	}
+	providerID := strings.TrimSpace(binding.ProviderID)
+	hookID := strings.TrimSpace(binding.HookID)
+	for i := range patch.AddContextBlocks {
+		block := &patch.AddContextBlocks[i]
+		metadata := copyContextBlockMetadata(block.Metadata)
+		metadata["source_type"] = sourceType
+		metadata["trust_level"] = "untrusted_external_context"
+		if providerID != "" {
+			metadata["provider_id"] = providerID
+		}
+		if hookID != "" {
+			metadata["hook_id"] = hookID
+		}
+		if strings.TrimSpace(metadataString(metadata, "source_ref")) == "" {
+			blockID := strings.TrimSpace(block.ID)
+			if blockID == "" {
+				blockID = fmt.Sprintf("block_%d", i+1)
+			}
+			metadata["source_ref"] = strings.Join([]string{sourceType, providerID, hookID, blockID}, ":")
+		}
+		block.Metadata = metadata
+	}
+	return patch
+}
+
+func copyContextBlockMetadata(metadata map[string]any) map[string]any {
+	out := make(map[string]any, len(metadata)+4)
+	for key, value := range metadata {
+		out[key] = value
+	}
+	return out
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	if value, ok := metadata[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func mergeConfig(base map[string]any, override map[string]any) map[string]any {

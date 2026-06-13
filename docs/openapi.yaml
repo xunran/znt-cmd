@@ -1923,8 +1923,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/RunDiagnosticsResponse"
 
   /v1/runs/{run_id}/final-response:
     get:
@@ -2272,8 +2271,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/TraceDiagnosticsResponse"
 
   /v1/traces/{trace_id}/evidence:
     get:
@@ -4142,6 +4140,179 @@ components:
             $ref: "#/components/schemas/Run"
         meta:
           $ref: "#/components/schemas/ListMeta"
+
+    RunDiagnosticsSummary:
+      type: object
+      properties:
+        status:
+          type: string
+        error_code:
+          type: string
+        error_message:
+          type: string
+        strategy_limit_reason:
+          type: string
+          enum:
+            - runtime.max_steps
+            - runtime.max_duration_seconds
+            - prompt.max_prompt_tokens
+            - tools.max_tool_calls
+            - runtime.max_consecutive_tool_failures
+        duration_ms:
+          type: integer
+          format: int64
+        trace_events_total:
+          type: integer
+        task_events_total:
+          type: integer
+        tool_calls_total:
+          type: integer
+        tool_failures_total:
+          type: integer
+        runtime_hook_events_total:
+          type: integer
+        audit_events_total:
+          type: integer
+        model_calls_total:
+          type: integer
+        model_failures_total:
+          type: integer
+        prompt_tokens_total:
+          type: integer
+        completion_tokens_total:
+          type: integer
+        prompt_bundle_hashes:
+          type: array
+          items:
+            type: string
+        policy_versions:
+          type: array
+          items:
+            type: string
+        problems:
+          type: array
+          items:
+            type: string
+        first_at:
+          type: string
+          format: date-time
+        last_at:
+          type: string
+          format: date-time
+        run_ids:
+          type: array
+          items:
+            type: string
+
+    RunDiagnosticsResponse:
+      type: object
+      properties:
+        run:
+          $ref: "#/components/schemas/Run"
+        summary:
+          $ref: "#/components/schemas/RunDiagnosticsSummary"
+        routing:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        strategy:
+          type: object
+          additionalProperties: true
+        context:
+          type: object
+          additionalProperties: true
+        prompt:
+          type: object
+          additionalProperties: true
+        model:
+          type: object
+          additionalProperties: true
+        decisions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        runtime_hooks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        audit_events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
+        replay:
+          type: object
+          additionalProperties: true
+        usage_evidence:
+          $ref: "#/components/schemas/UsageEvidenceResponse"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimelineEvent"
+        artifacts:
+          type: array
+          items:
+            type: string
+        trace_endpoints:
+          type: object
+          additionalProperties:
+            type: string
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TraceDiagnosticsResponse:
+      type: object
+      properties:
+        trace_id:
+          type: string
+        tenant_id:
+          type: string
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Run"
+        summary:
+          $ref: "#/components/schemas/RunDiagnosticsSummary"
+        routing:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        strategy:
+          type: object
+          additionalProperties: true
+        context:
+          type: object
+          additionalProperties: true
+        prompt:
+          type: object
+          additionalProperties: true
+        model:
+          type: object
+          additionalProperties: true
+        decisions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        replay:
+          type: object
+          additionalProperties: true
+        usage_evidence:
+          $ref: "#/components/schemas/UsageEvidenceResponse"
+        timeline:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimelineEvent"
+        meta:
+          $ref: "#/components/schemas/Meta"
 
     Approval:
       type: object

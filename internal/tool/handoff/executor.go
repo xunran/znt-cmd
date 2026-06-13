@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"znt/internal/agentdef/loader"
+	agentstrategy "znt/internal/agentdef/strategy"
 	"znt/internal/contracts"
 	policyengine "znt/internal/policy/engine"
 	taskhandoff "znt/internal/task/handoff"
@@ -55,6 +56,16 @@ func (e Executor) Execute(ctx context.Context, call contracts.ToolCall) (map[str
 	if err != nil {
 		return nil, nil, err
 	}
+	policySet := e.policySet(ctx, call.TenantID, sourceAgent.PolicyRefs.PolicySetID)
+	effective, _, err := agentstrategy.Resolve(sourceAgent, policySet, agentstrategy.DefaultValues())
+	if err != nil {
+		return nil, nil, err
+	}
+	policySet = effective.Policy
+	sourceAgent = applyCollaborationStrategyToAgent(sourceAgent, effective.Collaboration)
+	if strings.TrimSpace(effective.Collaboration.DelegationMode) == "disabled" {
+		return nil, nil, contracts.NewRuntimeError(contracts.CodeHandoffDenied, "delegation is disabled by collaboration strategy", map[string]any{"agent_id": sourceAgent.AgentID})
+	}
 	targetAgentID := contracts.AgentID(strings.TrimSpace(toAgentID))
 	collaborator, ok := collaboratorFor(sourceAgent, targetAgentID)
 	if !ok {
@@ -74,11 +85,13 @@ func (e Executor) Execute(ctx context.Context, call contracts.ToolCall) (map[str
 	if err := e.validateTargetRunnable(ctx, call.TenantID, targetAgent.AgentID, targetAgent.Version); err != nil {
 		return nil, nil, err
 	}
-	policySet := e.policySet(ctx, call.TenantID, sourceAgent.PolicyRefs.PolicySetID)
 	policy := policySet.HandoffPolicy
 	mode := contracts.HandoffMode(stringValue(call.Arguments, "handoff_mode"))
 	if mode == "" {
 		mode = collaborator.DefaultHandoffMode
+	}
+	if mode == "" {
+		mode = policy.DefaultMode
 	}
 	if err := validateCollaboratorHandoffMode(collaborator, mode); err != nil {
 		return nil, nil, err
@@ -88,6 +101,9 @@ func (e Executor) Execute(ctx context.Context, call contracts.ToolCall) (map[str
 	}
 	if collaborator.RequiresApproval {
 		policy.RequireApprovalForCrossAgent = true
+	}
+	if err := e.validateChildTaskLimit(ctx, parent, sourceAgent.Runtime.MaxChildTasks); err != nil {
+		return nil, nil, err
 	}
 	if err := e.validateHandoffChain(ctx, parent, targetAgent.AgentID, sourceAgent.Runtime.MaxHandoffDepth); err != nil {
 		return nil, nil, err
@@ -214,6 +230,16 @@ func collaboratorEnabled(status string) bool {
 	}
 }
 
+func applyCollaborationStrategyToAgent(agent contracts.AgentDefinition, strategy contracts.CollaborationStrategy) contracts.AgentDefinition {
+	if strategy.MaxHandoffDepth != nil {
+		agent.Runtime.MaxHandoffDepth = *strategy.MaxHandoffDepth
+	}
+	if strategy.MaxChildTasks != nil {
+		agent.Runtime.MaxChildTasks = *strategy.MaxChildTasks
+	}
+	return agent
+}
+
 func validateCollaboratorHandoffMode(collaborator contracts.AgentCollaboratorRef, mode contracts.HandoffMode) error {
 	if mode == "" || len(collaborator.AllowedHandoffModes) == 0 {
 		return nil
@@ -259,6 +285,52 @@ func (e Executor) validateHandoffChain(ctx context.Context, parent contracts.Tas
 		return contracts.NewRuntimeError(contracts.CodeHandoffDenied, "max handoff depth exceeded", map[string]any{"max_handoff_depth": maxDepth, "handoff_depth": depth + 1})
 	}
 	return nil
+}
+
+func (e Executor) validateChildTaskLimit(ctx context.Context, parent contracts.Task, maxChildTasks int) error {
+	if e.Tasks == nil || maxChildTasks <= 0 {
+		return nil
+	}
+	count := 0
+	seen := map[contracts.TaskID]struct{}{}
+	for _, status := range allTaskStatuses() {
+		tasks, err := e.Tasks.ListByTenantStatus(ctx, parent.TenantID, status)
+		if err != nil {
+			return err
+		}
+		for _, task := range tasks {
+			if task.ParentTaskID == nil || *task.ParentTaskID != parent.TaskID {
+				continue
+			}
+			if _, ok := seen[task.TaskID]; ok {
+				continue
+			}
+			seen[task.TaskID] = struct{}{}
+			count++
+		}
+	}
+	if count+1 > maxChildTasks {
+		return contracts.NewRuntimeError(contracts.CodeHandoffDenied, "max child tasks exceeded", map[string]any{"max_child_tasks": maxChildTasks, "child_task_count": count})
+	}
+	return nil
+}
+
+func allTaskStatuses() []contracts.TaskStatus {
+	return []contracts.TaskStatus{
+		contracts.TaskCreated,
+		contracts.TaskAccepted,
+		contracts.TaskPlanning,
+		contracts.TaskRunning,
+		contracts.TaskWaitingInput,
+		contracts.TaskWaitingTool,
+		contracts.TaskWaitingApproval,
+		contracts.TaskBlocked,
+		contracts.TaskPaused,
+		contracts.TaskCompleted,
+		contracts.TaskFailed,
+		contracts.TaskCancelled,
+		contracts.TaskRejected,
+	}
 }
 
 func (e Executor) validateTargetRunnable(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion) error {

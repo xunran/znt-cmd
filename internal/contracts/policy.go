@@ -11,18 +11,18 @@ type PolicySet struct {
 
 	Version string `json:"version"`
 
-	RuntimePolicy     RuntimePolicy            `json:"runtime_policy"`
-	ToolPolicy        ToolPolicy               `json:"tool_policy"`
-	ToolRepairPolicy  ToolRepairPolicy         `json:"tool_repair_policy"`
-	ApprovalPolicy    ApprovalPolicy           `json:"approval_policy"`
-	PromptPolicy      PromptPolicy             `json:"prompt_policy"`
-	CompressionPolicy ContextCompressionPolicy `json:"compression_policy"`
-	RecoveryPolicy    TaskRecoveryPolicy       `json:"recovery_policy"`
-	TaskUpgradePolicy TaskUpgradePolicy        `json:"task_upgrade_policy"`
-	HandoffPolicy     HandoffPolicy            `json:"handoff_policy"`
-	ReleasePolicy     ReleasePolicy            `json:"release_policy"`
-	MemoryPolicy      MemoryPolicy             `json:"memory_policy"`
-	ArtifactPolicy    ArtifactPolicy           `json:"artifact_policy"`
+	RuntimePolicy          RuntimePolicy            `json:"runtime_policy"`
+	ToolPolicy             ToolPolicy               `json:"tool_policy"`
+	ToolRepairPolicy       ToolRepairPolicy         `json:"tool_repair_policy"`
+	ApprovalPolicy         ApprovalPolicy           `json:"approval_policy"`
+	PromptPolicy           PromptPolicy             `json:"prompt_policy"`
+	ContextGovernancePolicy ContextGovernancePolicy `json:"context_governance_policy,omitempty"`
+	RecoveryPolicy         TaskRecoveryPolicy       `json:"recovery_policy"`
+	TaskUpgradePolicy      TaskUpgradePolicy        `json:"task_upgrade_policy"`
+	HandoffPolicy          HandoffPolicy            `json:"handoff_policy"`
+	ReleasePolicy          ReleasePolicy            `json:"release_policy"`
+	MemoryPolicy           MemoryPolicy             `json:"memory_policy"`
+	ArtifactPolicy         ArtifactPolicy           `json:"artifact_policy"`
 
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -84,11 +84,6 @@ type ApprovalPolicy struct {
 type PromptPolicy struct {
 	MaxPromptTokens int      `json:"max_prompt_tokens,omitempty"`
 	BlockedPhrases  []string `json:"blocked_phrases,omitempty"`
-}
-
-type ContextCompressionPolicy struct {
-	Enabled         bool `json:"enabled"`
-	MaxContextItems int  `json:"max_context_items,omitempty"`
 }
 
 type TaskRecoveryPolicy struct {

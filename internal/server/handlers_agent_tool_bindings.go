@@ -152,7 +152,22 @@ func handleAgentToolBindings(w http.ResponseWriter, r *http.Request, appCore *co
 			writeJSON(w, map[string]any{"tool_bindings": projection.Bindings}, http.StatusOK)
 			return
 		}
-		draft, err := appCore.Packages.UpdateToolBindingForTenant(r.Context(), caller.TenantID, draftID, bindings, caller.CallerID)
+		draft, ok, err := appCore.Packages.GetDraft(r.Context(), draftID)
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		if !ok {
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "draft not found", map[string]any{"draft_id": draftID}), http.StatusBadRequest)
+			return
+		}
+		if draft.TenantID != caller.TenantID {
+			writeRuntimeError(w, contracts.NewRuntimeError(contracts.CodeToolPolicyDenied, "draft tenant does not match caller tenant", nil))
+			return
+		}
+		source := draft.Source
+		source.ToolBindings = bindings
+		draft, err = appCore.Packages.PatchSourceForTenant(r.Context(), caller.TenantID, draftID, source, caller.CallerID)
 		if err != nil {
 			writeRuntimeError(w, err)
 			return

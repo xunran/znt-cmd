@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,9 +21,13 @@ type Report struct {
 	RunIDs              []contracts.AgentRunID `json:"run_ids,omitempty"`
 	TaskIDs             []contracts.TaskID     `json:"task_ids,omitempty"`
 	PromptBundleHashes  []string               `json:"prompt_bundle_hashes,omitempty"`
+	ContextStrategyHashes []string              `json:"context_strategy_hashes,omitempty"`
 	PolicyVersions      []string               `json:"policy_versions,omitempty"`
 	ToolResultCount     int                    `json:"tool_result_count"`
 	HandoffCount        int                    `json:"handoff_count"`
+	ContextCompressionCount int                 `json:"context_compression_count,omitempty"`
+	ContextCompressionApplied int               `json:"context_compression_applied,omitempty"`
+	ContextCompressionFailures int              `json:"context_compression_failures,omitempty"`
 	RedactionViolations []string               `json:"redaction_violations,omitempty"`
 	Problems            []string               `json:"problems,omitempty"`
 }
@@ -43,6 +48,7 @@ func Build(events []contracts.TraceEvent) Report {
 	runIDs := map[contracts.AgentRunID]struct{}{}
 	taskIDs := map[contracts.TaskID]struct{}{}
 	promptHashes := map[string]struct{}{}
+	contextStrategyHashes := map[string]struct{}{}
 	policyVersions := map[string]struct{}{}
 	for i, event := range events {
 		if event.TraceID != report.TraceID {
@@ -63,6 +69,30 @@ func Build(events []contracts.TraceEvent) Report {
 		}
 		if value, ok := event.Payload["hash"].(string); ok && event.Type == contracts.TracePromptBundleBuilt && value != "" {
 			promptHashes[value] = struct{}{}
+		}
+		if event.Type == contracts.TraceContextCollectionCompleted {
+			if contextReport, ok := contextAssemblyReportFromAny(event.Payload["context_assembly_report"]); ok && contextReport.StrategyHash != "" {
+				contextStrategyHashes[contextReport.StrategyHash] = struct{}{}
+			}
+		}
+		if event.Type == contracts.TracePromptBundleBuilt {
+			if contextReport, ok := contextAssemblyReportFromAny(event.Payload["context_assembly_report"]); ok && contextReport.StrategyHash != "" {
+				contextStrategyHashes[contextReport.StrategyHash] = struct{}{}
+			}
+		}
+		if event.Type == contracts.TraceStrategyResolved {
+			if value, ok := event.Payload["strategy_hash"].(string); ok && value != "" {
+				contextStrategyHashes[value] = struct{}{}
+			}
+		}
+		if event.Type == contracts.TraceContextCompressionCompleted {
+			report.ContextCompressionCount++
+			if applied, _ := event.Payload["applied"].(bool); applied {
+				report.ContextCompressionApplied++
+			}
+			if reason, _ := event.Payload["failure_reason"].(string); reason != "" {
+				report.ContextCompressionFailures++
+			}
 		}
 		if value, ok := event.Payload["policy_set_version"].(string); ok && value != "" {
 			policyVersions[value] = struct{}{}
@@ -90,6 +120,7 @@ func Build(events []contracts.TraceEvent) Report {
 	report.RunIDs = sortedRunIDs(runIDs)
 	report.TaskIDs = sortedTaskIDs(taskIDs)
 	report.PromptBundleHashes = sortedStrings(promptHashes)
+	report.ContextStrategyHashes = sortedStrings(contextStrategyHashes)
 	report.PolicyVersions = sortedStrings(policyVersions)
 	if report.EventTypes[contracts.TraceRunCreated] == 0 {
 		report.Problems = append(report.Problems, "missing run.created event")
@@ -127,6 +158,30 @@ func Build(events []contracts.TraceEvent) Report {
 		report.Status = "incomplete"
 	}
 	return report
+}
+
+func contextAssemblyReportFromAny(value any) (contracts.ContextAssemblyReport, bool) {
+	if value == nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	if report, ok := value.(contracts.ContextAssemblyReport); ok {
+		return report, true
+	}
+	if report, ok := value.(*contracts.ContextAssemblyReport); ok && report != nil {
+		return *report, true
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	var report contracts.ContextAssemblyReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	if report.StrategyHash == "" && report.Mode == "" && len(report.Sources) == 0 {
+		return contracts.ContextAssemblyReport{}, false
+	}
+	return report, true
 }
 
 func sensitivePayloadPaths(value any, path string) []string {

@@ -68,7 +68,16 @@ func handleAgentDrafts(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 				writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent draft create requires version", nil), http.StatusBadRequest)
 				return
 			}
-			draft, err := appCore.Packages.CreateDraft(r.Context(), caller.TenantID, agentID, version, agentPackageSourceFromPayload(payload), caller.CallerID)
+			source, err := agentPackageSourceFromPayload(payload)
+			if err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			if err := validateAgentPluginSourceProvider(r.Context(), appCore, caller.TenantID, source); err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			draft, err := appCore.Packages.CreateDraft(r.Context(), caller.TenantID, agentID, version, source, caller.CallerID)
 			if err != nil {
 				writeRuntimeError(w, err)
 				return
@@ -108,6 +117,10 @@ func handleAgentDrafts(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 		}
 		switch parts[1] {
 		case "validate":
+			if err := validateDraftPluginSourceForTenant(r.Context(), appCore, caller.TenantID, draft.DraftID); err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
 			draft, err = appCore.Packages.ValidateDraftForTenant(r.Context(), caller.TenantID, draft.DraftID, caller.CallerID)
 			if err != nil {
 				writeRuntimeError(w, err)
@@ -115,6 +128,10 @@ func handleAgentDrafts(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 			}
 			writeJSON(w, map[string]any{"draft": draft}, http.StatusOK)
 		case "review":
+			if err := validateDraftPluginSourceForTenant(r.Context(), appCore, caller.TenantID, draft.DraftID); err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
 			draft, err = appCore.Packages.MarkReviewedForTenant(r.Context(), caller.TenantID, draft.DraftID, caller.CallerID)
 			if err != nil {
 				writeRuntimeError(w, err)
@@ -122,6 +139,10 @@ func handleAgentDrafts(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 			}
 			writeJSON(w, map[string]any{"draft": draft}, http.StatusOK)
 		case "publish":
+			if err := validateDraftPluginSourceForTenant(r.Context(), appCore, caller.TenantID, draft.DraftID); err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
 			release, err := appCore.Packages.PublishDraftForTenant(r.Context(), caller.TenantID, draft.DraftID, caller.CallerID)
 			if err != nil {
 				writeRuntimeError(w, err)
