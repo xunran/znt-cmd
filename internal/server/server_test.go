@@ -1207,8 +1207,8 @@ func TestPackageReleaseCommandsAndEvalRun(t *testing.T) {
 		"context": map[string]any{"tenant_id": "tenant_1"},
 	}
 	runPublished := doJSON(handler, "POST", "/v1/commands", runPublishedBody)
-	if runPublished.Code != http.StatusBadRequest {
-		t.Fatalf("expected published version to be blocked before canary, got %d body %s", runPublished.Code, runPublished.Body.String())
+	if runPublished.Code != http.StatusBadRequest || !bytes.Contains(runPublished.Body.Bytes(), []byte("before canary or stable")) {
+		t.Fatalf("expected published version to be rejected before canary, got %d body %s", runPublished.Code, runPublished.Body.String())
 	}
 	canaryBody := map[string]any{
 		"command": "agent.package.canary",
