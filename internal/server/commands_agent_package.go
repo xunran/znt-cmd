@@ -79,7 +79,7 @@ func releaseAndRegisterDraft(r *http.Request, appCore *core.Core, release contra
 		}
 		compiled.TenantID = caller.TenantID
 		compiled.PackageVersionID = release.PackageVersionID
-		appCore.AgentRegistry.Put(compiled)
+		appCore.AgentRegistry.PutVersion(compiled)
 		if appCore.ToolCatalog != nil {
 			if err := syncAgentExportedTools(r.Context(), appCore, compiled, caller.CallerID); err != nil {
 				return contracts.AgentPackageVersion{}, err

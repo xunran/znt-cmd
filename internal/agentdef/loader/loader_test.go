@@ -49,6 +49,25 @@ func TestStaticLoaderTenantOverride(t *testing.T) {
 	}
 }
 
+func TestStaticLoaderPutVersionDoesNotSetDefault(t *testing.T) {
+	static := NewStaticLoader()
+	definition := TestAgentDefinition()
+	definition.TenantID = "tenant_1"
+	definition.Version = "v2"
+	static.PutVersion(definition)
+
+	if got := static.DefaultVersionForTenant("tenant_1", "test-agent"); got != "" {
+		t.Fatalf("PutVersion must not set tenant default, got %s", got)
+	}
+	loaded, err := static.Load(context.Background(), "tenant_1", "test-agent", "v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Version != "v2" {
+		t.Fatalf("expected explicit version load to work, got %#v", loaded)
+	}
+}
+
 func contractsErrorAs(err error, target **contracts.RuntimeError) bool {
 	if err == nil {
 		return false

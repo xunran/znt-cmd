@@ -1178,6 +1178,28 @@ func TestPackageReleaseCommandsAndEvalRun(t *testing.T) {
 	if err := json.Unmarshal(publish.Body.Bytes(), &release); err != nil {
 		t.Fatal(err)
 	}
+	defaultRunAfterPublish := doJSON(handler, "POST", "/v1/commands", map[string]any{
+		"command": "agent.run",
+		"target":  map[string]any{"agent_id": "test-agent"},
+		"payload": map[string]any{"input": "hello"},
+		"context": map[string]any{"tenant_id": "tenant_1"},
+	})
+	if defaultRunAfterPublish.Code != http.StatusOK {
+		t.Fatalf("expected publish not to break default run, got %d body %s", defaultRunAfterPublish.Code, defaultRunAfterPublish.Body.String())
+	}
+	var defaultRun struct {
+		RunID contracts.AgentRunID `json:"run_id"`
+	}
+	if err := json.Unmarshal(defaultRunAfterPublish.Body.Bytes(), &defaultRun); err != nil {
+		t.Fatal(err)
+	}
+	defaultRunRecord, err := appCore.Runs.Get(context.Background(), defaultRun.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultRunRecord.AgentVersion != "v1" {
+		t.Fatalf("publish must not promote non-stable version to default, got %#v", defaultRunRecord)
+	}
 	runPublishedBody := map[string]any{
 		"command": "agent.run",
 		"target":  map[string]any{"agent_id": "test-agent", "version": "v2"},

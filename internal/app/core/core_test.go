@@ -149,8 +149,15 @@ func TestRestorePersistedAgentDefinitionsSkipsMissingAssetDefault(t *testing.T) 
 	if err := restorePersistedAgentDefinitions(ctx, registry, store); err != nil {
 		t.Fatal(err)
 	}
-	if got := registry.DefaultVersionForTenant("tenant_1", "test-agent"); got != "v1" {
+	if got := registry.DefaultVersionForTenant("tenant_1", "test-agent"); got != "" {
 		t.Fatalf("expected missing asset default to be skipped, got %s", got)
+	}
+	loaded, err := registry.Load(ctx, "tenant_1", "test-agent", "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.IdentityPrompt != "restored v1" {
+		t.Fatalf("expected restored definition to remain explicitly loadable, got %#v", loaded)
 	}
 }
 

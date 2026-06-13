@@ -489,7 +489,7 @@ func restorePersistedAgentDefinitions(ctx context.Context, registry *loader.Stat
 		if definition.AgentID == "" || definition.Version == "" {
 			continue
 		}
-		registry.Put(definition)
+		registry.PutVersion(definition)
 	}
 	assets, err := restoreStore.ListAgentAssets(ctx, "")
 	if err != nil {

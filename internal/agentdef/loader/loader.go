@@ -111,9 +111,21 @@ func NewStaticLoader(definitions ...contracts.AgentDefinition) *StaticLoader {
 }
 
 func (l *StaticLoader) Put(definition contracts.AgentDefinition) {
+	l.put(definition, true)
+}
+
+// PutVersion registers a definition for explicit version loads without changing default routing.
+func (l *StaticLoader) PutVersion(definition contracts.AgentDefinition) {
+	l.put(definition, false)
+}
+
+func (l *StaticLoader) put(definition contracts.AgentDefinition, setDefaultIfMissing bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.definitions[key(definition.TenantID, definition.AgentID, definition.Version)] = definition
+	if !setDefaultIfMissing {
+		return
+	}
 	defaultKey := defaultKey(definition.TenantID, definition.AgentID)
 	if _, ok := l.defaults[defaultKey]; !ok {
 		l.defaults[defaultKey] = definition.Version
