@@ -86,6 +86,24 @@ func TestCoreInitializesGroupExtensionServicesAndTools(t *testing.T) {
 	}
 }
 
+func TestCoreRegistersTestAgentOnlyInTestEnv(t *testing.T) {
+	productionCore, err := New(config.Config{Env: "production"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definitions := productionCore.AgentRegistry.ListByTenant("tenant_1"); len(definitions) != 0 {
+		t.Fatalf("expected production core to skip test agent, got %#v", definitions)
+	}
+
+	testCore, err := New(config.Config{Env: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testCore.AgentRegistry.Load(context.Background(), "tenant_1", "test-agent", "v1"); err != nil {
+		t.Fatalf("expected test env to register test agent, got %v", err)
+	}
+}
+
 func TestRestorePersistedAgentDefinitionsRestoresTenantDefaults(t *testing.T) {
 	ctx := context.Background()
 	registry := loader.NewStaticLoader()

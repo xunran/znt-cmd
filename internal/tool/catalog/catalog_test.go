@@ -879,6 +879,62 @@ func TestProviderSyncInstallsToolHostCatalog(t *testing.T) {
 	}
 }
 
+func TestProviderSyncReadsCatalogBeforeCancelingRequestContext(t *testing.T) {
+	reg := registry.NewInMemoryRegistry()
+	service := NewService(reg, nil)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/tools/catalog" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		flusher, _ := w.(http.Flusher)
+		_, _ = io.WriteString(w, `{"tools":[`)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		time.Sleep(20 * time.Millisecond)
+		for i := 0; i < 5; i++ {
+			if i > 0 {
+				_, _ = io.WriteString(w, ",")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tool_id":       fmt.Sprintf("crm.slow_%d", i),
+				"operation":     fmt.Sprintf("slow_%d", i),
+				"name":          fmt.Sprintf("CRM slow %d", i),
+				"description":   "Search CRM records from a streamed catalog.",
+				"input_schema":  map[string]any{"type": "object"},
+				"output_schema": map[string]any{"type": "object"},
+				"risk_level":    "low",
+				"visibility":    "protected",
+				"version":       "v1",
+			})
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		_, _ = io.WriteString(w, `]}`)
+	}))
+	defer remote.Close()
+
+	if _, err := service.UpsertProvider(context.Background(), ToolProvider{
+		ProviderID:          "crm",
+		ProviderType:        ProviderTypeStaticToolHost,
+		Name:                "CRM provider",
+		ServiceConnectionID: attachProviderConnection(t, service, "", "crm", remote.URL),
+	}, "optimizer_1"); err != nil {
+		t.Fatal(err)
+	}
+	manifests, err := service.SyncProviderCatalog(context.Background(), "tenant_1", "crm", "optimizer_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifests) != 5 {
+		t.Fatalf("expected streamed catalog tools to sync, got %#v", manifests)
+	}
+}
+
 func TestProviderSyncAcceptsAlternateToolHostCatalogShape(t *testing.T) {
 	reg := registry.NewInMemoryRegistry()
 	service := NewService(reg, nil)

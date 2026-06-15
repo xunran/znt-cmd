@@ -51,6 +51,11 @@ func evalRun(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelo
 			})
 		}
 	} else if target.AgentID == "" {
+		if !strings.EqualFold(strings.TrimSpace(appCore.Config.Env), "test") {
+			return nil, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "eval target is required when package_version_id is not provided", map[string]any{
+				"command": "eval.run",
+			})
+		}
 		target.AgentID = "test-agent"
 		target.Version = "v1"
 	}

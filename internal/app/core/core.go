@@ -132,7 +132,10 @@ func New(cfg config.Config) (*Core, error) {
 		}
 		pg = postgres.NewRepositories(db)
 	}
-	agents := loader.NewStaticLoader(loader.TestAgentDefinition())
+	agents := loader.NewStaticLoader()
+	if strings.EqualFold(strings.TrimSpace(cfg.Env), "test") {
+		agents.Put(loader.TestAgentDefinition())
+	}
 	var runs runrepo.Repository = runrepo.NewInMemoryRepository()
 	taskStore := taskrepo.NewInMemoryStore()
 	var taskRepo taskrepo.TaskRepository = taskStore

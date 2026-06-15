@@ -1,4 +1,5 @@
-FROM golang:1.22-bookworm AS build
+ARG GO_BASE_IMAGE=golang:1.22-bookworm
+FROM ${GO_BASE_IMAGE} AS build
 
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG GOSUMDB=sum.golang.org
