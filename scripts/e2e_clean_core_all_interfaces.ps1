@@ -515,9 +515,13 @@ try {
             denied_tool_ids = @()
             exposed_tool_ids = @()
         }
-        metadata = @{
-            max_tool_calls = 2
-            max_steps = 4
+        strategies = @{
+            runtime = @{
+                max_steps = 4
+            }
+            tools = @{
+                max_tool_calls = 2
+            }
         }
     }
     $draftID = [string]$agentCreate.Body.draft.draft_id
@@ -537,7 +541,10 @@ try {
         version = $stableVersion
         prompt = "Stable all-interface prompt."
         agents_md = "# Stable All Interface"
-        metadata = @{ max_tool_calls = 4; max_steps = 4 }
+        strategies = @{
+            runtime = @{ max_steps = 4 }
+            tools = @{ max_tool_calls = 4 }
+        }
     }
     $stableDraftID = [string]$stableDraft.Body.draft.draft_id
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/agents/$agentID/drafts/$stableDraftID/validate" -Operation "POST /v1/agents/{agent_id}/drafts/{draft_id}/validate" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
@@ -884,9 +891,9 @@ try {
         owner_id = "all-interface"
         version = "v1"
         prompt = "Collaborator."
-        metadata = @{ max_tool_calls = 0 }
+        strategies = @{ tools = @{ max_tool_calls = 0 } }
     } | Out-Null
-    $collabDraft = Invoke-AICommand -BaseUrl $baseUrl -Command "agent.package.draft.create" -Roles "optimizer" -Payload @{ agent_id = $collaboratorID; version = "v2"; prompt = "Collaborator v2"; metadata = @{ max_tool_calls = 0 } }
+    $collabDraft = Invoke-AICommand -BaseUrl $baseUrl -Command "agent.package.draft.create" -Roles "optimizer" -Payload @{ agent_id = $collaboratorID; version = "v2"; prompt = "Collaborator v2"; strategies = @{ tools = @{ max_tool_calls = 0 } } }
     Invoke-AICommand -BaseUrl $baseUrl -Command "agent.package.draft.validate" -Roles "optimizer" -Payload @{ draft_id = $collabDraft.draft_id } | Out-Null
     $collabPublished = Invoke-AICommand -BaseUrl $baseUrl -Command "agent.package.publish" -Roles "optimizer" -Payload @{ draft_id = $collabDraft.draft_id }
     Invoke-AICommand -BaseUrl $baseUrl -Command "agent.package.canary" -Roles "optimizer" -Payload @{ package_version_id = $collabPublished.package_version_id; canary_percent = 100 } | Out-Null
@@ -1072,8 +1079,18 @@ try {
     Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/agents/$agentID/runtime-hooks/preview" -Operation "POST /v1/agents/{agent_id}/runtime-hooks/preview" -ExpectedStatus @(200) -Roles "optimizer" -Body @{ agent_version = $stableVersion; phase = "before_model_call"; input = "preview"; trace_id = $traceID } | Out-Null
 
     $run = Invoke-AICommand -BaseUrl $baseUrl -Command "agent.run" -Roles "runtime_caller" -TraceID $traceID -Target @{ agent_id = $agentID; version = $stableVersion } -Payload @{ input = "hello all interfaces" }
+    $runID = [string]$run.run_id
     $taskID = [string]$run.task_id
+    Assert-AIStatus $runID "agent.run should return run_id"
     Assert-AIStatus $taskID "agent.run should return task_id"
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/runs?agent_id=$agentID&trace_id=$traceID&limit=10" -Operation "GET /v1/runs" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/runs/$runID" -Operation "GET /v1/runs/{run_id}" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/runs/$runID/timeline" -Operation "GET /v1/runs/{run_id}/timeline" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/runs/$runID/diagnostics" -Operation "GET /v1/runs/{run_id}/diagnostics" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/runs/$runID/final-response" -Operation "GET /v1/runs/{run_id}/final-response" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/runs/$runID/replay" -Operation "GET /v1/runs/{run_id}/replay" -ExpectedStatus @(200) | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Post" -Path "/v1/runs/$runID/replay" -Operation "POST /v1/runs/{run_id}/replay" -ExpectedStatus @(200) -Roles "optimizer" -Body @{} | Out-Null
+    Invoke-AIJson -BaseUrl $baseUrl -Method "Get" -Path "/v1/traces/$traceID/diagnostics" -Operation "GET /v1/traces/{trace_id}/diagnostics" -ExpectedStatus @(200) | Out-Null
     $toolResult = Invoke-AICommand -BaseUrl $baseUrl -Command "tools.invoke" -Roles "runtime_caller" -TraceID $toolTraceID -Target @{ agent_id = $agentID; version = $stableVersion } -Payload @{ tool_id = $toolID; arguments = @{ value = "ok" } }
     $toolCallID = [string]$toolResult.tool_call_id
     Assert-AIStatus $toolCallID "tools.invoke should return tool_call_id"

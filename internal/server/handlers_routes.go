@@ -68,6 +68,12 @@ func NewHandlerWithCore(appCore *core.Core, logger *slog.Logger) http.Handler {
 		}
 		writeJSON(w, result, http.StatusOK)
 	}))
+	mux.HandleFunc("/v1/approvals", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleApprovals(w, r, appCore, caller)
+	}))
+	mux.HandleFunc("/v1/approvals/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleApprovalResource(w, r, appCore, caller, contracts.ApprovalID(strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/approvals/"), "/")))
+	}))
 	mux.HandleFunc("/v1/traces/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		path := strings.TrimPrefix(r.URL.Path, "/v1/traces/")
 		traceIDRaw, suffix, _ := strings.Cut(path, "/")

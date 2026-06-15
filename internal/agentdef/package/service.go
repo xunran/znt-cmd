@@ -15,39 +15,39 @@ import (
 )
 
 type AgentPackageSource struct {
-	SourceKind     contracts.AgentSourceKind      `json:"source_kind,omitempty"`
-	ProviderID      string                         `json:"provider_id,omitempty"`
-	ManifestVersion string                         `json:"manifest_version,omitempty"`
-	AgentsMD        string                         `json:"agents_md"`
-	Prompt          string                         `json:"prompt"`
-	Strategies      contracts.AgentStrategies      `json:"strategies,omitempty"`
-	ToolBindings    contracts.AgentToolsConfig     `json:"tool_bindings"`
-	Skills          []contracts.SkillDefinitionRef `json:"skills,omitempty"`
-	SkillDefinitions []contracts.SkillDefinition   `json:"skill_definitions,omitempty"`
-	Collaborators   []contracts.AgentCollaboratorRef `json:"collaborators,omitempty"`
-	Exports         contracts.AgentExports         `json:"exports,omitempty"`
-	RuntimeHooks    contracts.AgentRuntimeHooks    `json:"runtime_hooks,omitempty"`
-	Metadata        map[string]any                 `json:"metadata,omitempty"`
+	SourceKind       contracts.AgentSourceKind        `json:"source_kind,omitempty"`
+	ProviderID       string                           `json:"provider_id,omitempty"`
+	ManifestVersion  string                           `json:"manifest_version,omitempty"`
+	AgentsMD         string                           `json:"agents_md"`
+	Prompt           string                           `json:"prompt"`
+	Strategies       contracts.AgentStrategies        `json:"strategies,omitempty"`
+	ToolBindings     contracts.AgentToolsConfig       `json:"tool_bindings"`
+	Skills           []contracts.SkillDefinitionRef   `json:"skills,omitempty"`
+	SkillDefinitions []contracts.SkillDefinition      `json:"skill_definitions,omitempty"`
+	Collaborators    []contracts.AgentCollaboratorRef `json:"collaborators,omitempty"`
+	Exports          contracts.AgentExports           `json:"exports,omitempty"`
+	RuntimeHooks     contracts.AgentRuntimeHooks      `json:"runtime_hooks,omitempty"`
+	Metadata         map[string]any                   `json:"metadata,omitempty"`
 }
 
 type AgentPluginSource struct {
-	ProviderID      string                           `json:"provider_id"`
-	ManifestVersion string                           `json:"manifest_version,omitempty"`
-	AgentsMD        string                           `json:"agents_md,omitempty"`
-	Prompt          string                           `json:"prompt,omitempty"`
-	Strategies      contracts.AgentStrategies        `json:"strategies,omitempty"`
-	ToolBindings    contracts.AgentToolsConfig       `json:"tool_bindings,omitempty"`
-	Skills          []contracts.SkillDefinitionRef   `json:"skills,omitempty"`
-	SkillDefinitions []contracts.SkillDefinition     `json:"skill_definitions,omitempty"`
-	Collaborators   []contracts.AgentCollaboratorRef `json:"collaborators,omitempty"`
-	Exports         contracts.AgentExports           `json:"exports,omitempty"`
-	RuntimeHooks    contracts.AgentRuntimeHooks      `json:"runtime_hooks,omitempty"`
-	Metadata        map[string]any                   `json:"metadata,omitempty"`
+	ProviderID       string                           `json:"provider_id"`
+	ManifestVersion  string                           `json:"manifest_version,omitempty"`
+	AgentsMD         string                           `json:"agents_md,omitempty"`
+	Prompt           string                           `json:"prompt,omitempty"`
+	Strategies       contracts.AgentStrategies        `json:"strategies,omitempty"`
+	ToolBindings     contracts.AgentToolsConfig       `json:"tool_bindings,omitempty"`
+	Skills           []contracts.SkillDefinitionRef   `json:"skills,omitempty"`
+	SkillDefinitions []contracts.SkillDefinition      `json:"skill_definitions,omitempty"`
+	Collaborators    []contracts.AgentCollaboratorRef `json:"collaborators,omitempty"`
+	Exports          contracts.AgentExports           `json:"exports,omitempty"`
+	RuntimeHooks     contracts.AgentRuntimeHooks      `json:"runtime_hooks,omitempty"`
+	Metadata         map[string]any                   `json:"metadata,omitempty"`
 }
 
 func PackageSourceFromPlugin(plugin AgentPluginSource) AgentPackageSource {
 	return AgentPackageSource{
-		SourceKind:      contracts.AgentSourceKindPlugin,
+		SourceKind:       contracts.AgentSourceKindPlugin,
 		ProviderID:       plugin.ProviderID,
 		ManifestVersion:  plugin.ManifestVersion,
 		AgentsMD:         plugin.AgentsMD,
@@ -76,18 +76,24 @@ const (
 )
 
 type AgentAsset struct {
-	TenantID       contracts.TenantID     `json:"tenant_id"`
-	AgentID        contracts.AgentID      `json:"agent_id"`
-	Name           string                 `json:"name,omitempty"`
-	Description    string                 `json:"description,omitempty"`
-	OwnerID        string                 `json:"owner_id,omitempty"`
-	Status         string                 `json:"status"`
-	ActiveVersion  contracts.AgentVersion `json:"active_version,omitempty"`
-	DefaultVersion contracts.AgentVersion `json:"default_version,omitempty"`
-	CreatedBy      string                 `json:"created_by,omitempty"`
-	CreatedAt      time.Time              `json:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at"`
-	DeletedAt      *time.Time             `json:"deleted_at,omitempty"`
+	TenantID          contracts.TenantID                 `json:"tenant_id"`
+	AgentID           contracts.AgentID                  `json:"agent_id"`
+	Name              string                             `json:"name,omitempty"`
+	Description       string                             `json:"description,omitempty"`
+	OwnerID           string                             `json:"owner_id,omitempty"`
+	Status            string                             `json:"status"`
+	ActiveVersion     contracts.AgentVersion             `json:"active_version,omitempty"`
+	DefaultVersion    contracts.AgentVersion             `json:"default_version,omitempty"`
+	CarrierKind       contracts.AgentCarrierKind         `json:"carrier_kind,omitempty"`
+	RuntimeContract   contracts.RuntimeContractKind      `json:"runtime_contract,omitempty"`
+	SourceKind        contracts.AgentSourceKind          `json:"source_kind,omitempty"`
+	SourceProviderID  string                             `json:"source_provider_id,omitempty"`
+	ManifestHash      string                             `json:"manifest_hash,omitempty"`
+	ConformanceStatus contracts.RuntimeConformanceStatus `json:"conformance_status,omitempty"`
+	CreatedBy         string                             `json:"created_by,omitempty"`
+	CreatedAt         time.Time                          `json:"created_at"`
+	UpdatedAt         time.Time                          `json:"updated_at"`
+	DeletedAt         *time.Time                         `json:"deleted_at,omitempty"`
 }
 
 type AgentAssetPatch struct {
@@ -341,15 +347,19 @@ func (s *Service) CreateAgentAssetForTenant(ctx context.Context, tenantID contra
 	}
 	now := s.now()
 	asset := AgentAsset{
-		TenantID:    tenantID,
-		AgentID:     agentID,
-		Name:        name,
-		Description: description,
-		OwnerID:     ownerID,
-		Status:      AgentAssetActive,
-		CreatedBy:   actorID,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		TenantID:          tenantID,
+		AgentID:           agentID,
+		Name:              name,
+		Description:       description,
+		OwnerID:           ownerID,
+		Status:            AgentAssetActive,
+		CarrierKind:       contracts.AgentCarrierKindNativeAgent,
+		RuntimeContract:   contracts.RuntimeContractManaged,
+		SourceKind:        contracts.AgentSourceKindPackage,
+		ConformanceStatus: contracts.RuntimeConformanceUnknown,
+		CreatedBy:         actorID,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	if asset.Name == "" {
 		asset.Name = string(agentID)
@@ -454,6 +464,7 @@ func (s *Service) EnsureAgentAssetVersionForTenant(ctx context.Context, tenantID
 	}
 	asset.ActiveVersion = version
 	asset.DefaultVersion = version
+	s.applyReleaseCarrierToAsset(ctx, &asset, version)
 	if asset.Status == "" || asset.Status == AgentAssetDeleted {
 		asset.Status = AgentAssetActive
 		asset.DeletedAt = nil
@@ -464,6 +475,57 @@ func (s *Service) EnsureAgentAssetVersionForTenant(ctx context.Context, tenantID
 	}
 	s.auditEvent(ctx, tenantID, actorID, "agent.asset.activate_version", string(agentID), "allowed", string(version))
 	return asset, nil
+}
+
+func (s *Service) applyReleaseCarrierToAsset(ctx context.Context, asset *AgentAsset, version contracts.AgentVersion) {
+	if asset == nil {
+		return
+	}
+	for _, release := range s.releases {
+		if release.TenantID == asset.TenantID && release.AgentID == asset.AgentID && release.Version == version {
+			applyReleaseCarrierSnapshot(asset, release)
+			return
+		}
+	}
+	if s.store == nil {
+		ensureAgentAssetCarrierDefaults(asset)
+		return
+	}
+	releases, err := s.store.ListReleases(ctx)
+	if err != nil {
+		ensureAgentAssetCarrierDefaults(asset)
+		return
+	}
+	for _, release := range releases {
+		if release.TenantID == asset.TenantID && release.AgentID == asset.AgentID && release.Version == version {
+			applyReleaseCarrierSnapshot(asset, release)
+			return
+		}
+	}
+	ensureAgentAssetCarrierDefaults(asset)
+}
+
+func applyReleaseCarrierSnapshot(asset *AgentAsset, release contracts.AgentPackageVersion) {
+	asset.CarrierKind = contracts.NormalizeCarrierKind(release.SourceKind, release.CarrierKind)
+	asset.RuntimeContract = contracts.NormalizeRuntimeContract(asset.CarrierKind, release.RuntimeContract)
+	asset.SourceKind = contracts.NormalizeSourceKind(release.SourceKind)
+	asset.SourceProviderID = release.SourceProviderID
+	asset.ManifestHash = release.ManifestHash
+	asset.ConformanceStatus = release.ConformanceStatus
+	if asset.ConformanceStatus == "" {
+		asset.ConformanceStatus = contracts.RuntimeConformanceUnknown
+	}
+}
+
+func ensureAgentAssetCarrierDefaults(asset *AgentAsset) {
+	if asset.SourceKind == "" {
+		asset.SourceKind = contracts.AgentSourceKindPackage
+	}
+	asset.CarrierKind = contracts.NormalizeCarrierKind(asset.SourceKind, asset.CarrierKind)
+	asset.RuntimeContract = contracts.NormalizeRuntimeContract(asset.CarrierKind, asset.RuntimeContract)
+	if asset.ConformanceStatus == "" {
+		asset.ConformanceStatus = contracts.RuntimeConformanceUnknown
+	}
 }
 
 func (s *Service) saveAgentAsset(ctx context.Context, asset AgentAsset) error {
@@ -861,21 +923,24 @@ func (s *Service) PublishDraft(ctx context.Context, draftID string, actorID stri
 	}
 	now := s.now()
 	release := contracts.AgentPackageVersion{
-		PackageVersionID: packageVersionID,
-		TenantID:         draft.TenantID,
-		AgentID:          draft.AgentID,
-		Version:          draft.Version,
-		Status:           contracts.ReleasePublished,
-		SourceHash:       sourceHash,
-		CompiledHash:     compiledHash,
-		StrategyHash:     strategyHash,
-		SourceKind:       compiled.SourceKind,
-		SourceProviderID: compiled.SourceProviderID,
-		ManifestVersion:  compiled.ManifestVersion,
-		ManifestHash:     compiled.ManifestHash,
-		CreatedBy:        draft.CreatedBy,
-		CreatedAt:        draft.CreatedAt,
-		PublishedAt:      &now,
+		PackageVersionID:  packageVersionID,
+		TenantID:          draft.TenantID,
+		AgentID:           draft.AgentID,
+		Version:           draft.Version,
+		Status:            contracts.ReleasePublished,
+		SourceHash:        sourceHash,
+		CompiledHash:      compiledHash,
+		StrategyHash:      strategyHash,
+		SourceKind:        compiled.SourceKind,
+		SourceProviderID:  compiled.SourceProviderID,
+		ManifestVersion:   compiled.ManifestVersion,
+		ManifestHash:      compiled.ManifestHash,
+		CarrierKind:       compiled.CarrierKind,
+		RuntimeContract:   compiled.RuntimeContract,
+		ConformanceStatus: compiled.ConformanceStatus,
+		CreatedBy:         draft.CreatedBy,
+		CreatedAt:         draft.CreatedAt,
+		PublishedAt:       &now,
 	}
 	s.releases[release.PackageVersionID] = release
 	draft.Status = contracts.ReleasePublished

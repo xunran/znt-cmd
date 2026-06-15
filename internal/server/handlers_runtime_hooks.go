@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -529,12 +528,7 @@ func handleRuntimeHookApprovals(w http.ResponseWriter, r *http.Request, appCore 
 		}
 		approvals = filtered
 	}
-	sort.SliceStable(approvals, func(i, j int) bool {
-		if approvals[i].CreatedAt.Equal(approvals[j].CreatedAt) {
-			return approvals[i].ApprovalID > approvals[j].ApprovalID
-		}
-		return approvals[i].CreatedAt.After(approvals[j].CreatedAt)
-	})
+	sortApprovals(approvals)
 	writeJSON(w, map[string]any{"approvals": approvals}, http.StatusOK)
 }
 

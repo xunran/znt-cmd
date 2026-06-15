@@ -307,7 +307,7 @@ const (
 	TraceMemoryStrategyApplied                 = "memory.strategy.applied"
 	TraceRuntimeStrategyApplied                = "runtime.strategy.applied"
 	TraceRepairStrategyApplied                 = "repair.strategy.applied"
-	TraceContextCollectionCompleted           = "context.collection.completed"
+	TraceContextCollectionCompleted            = "context.collection.completed"
 	TraceContextCompressionRequested           = "context.compression.requested"
 	TraceContextCompressionCompleted           = "context.compression.completed"
 	TraceContextCompressionFailed              = "context.compression.failed"

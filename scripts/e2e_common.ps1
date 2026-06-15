@@ -342,8 +342,6 @@ function Read-AgentPackage {
     }
     $system = (Read-TextFileUtf8 -Path (Join-Path $dir "system.md")).Trim()
     $developer = (Read-TextFileUtf8 -Path (Join-Path $dir "developer.md")).Trim()
-    $metadata["system_prompt"] = $system
-    $metadata["developer_prompt"] = $developer
     return [pscustomobject]@{
         PackageDir = $dir
         AgentID = [string](Get-ObjectValue $manifest "agent_id" "")
@@ -358,6 +356,12 @@ function Read-AgentPackage {
             denied_tool_ids = @((Get-ObjectValue $toolBindings "denied_tool_ids" @()))
         }
         Metadata = $metadata
+        Strategies = @{
+            prompt = @{
+                system_prompt = $system
+                developer_prompt = $developer
+            }
+        }
         Manifest = $manifest
     }
 }
@@ -1138,6 +1142,77 @@ function ConvertFrom-CodePoints {
     return $builder.ToString()
 }
 
+function Convert-AgentDraftMetadataToStrategies {
+    param(
+        [AllowNull()] $Metadata = @{},
+        [AllowNull()] $Strategies = @{}
+    )
+    $cleanMetadata = [ordered]@{}
+    if ($null -ne $Metadata) {
+        if ($Metadata -is [System.Collections.IDictionary]) {
+            foreach ($key in @($Metadata.Keys)) {
+                $cleanMetadata[[string]$key] = $Metadata[$key]
+            }
+        } else {
+            foreach ($property in @($Metadata.PSObject.Properties)) {
+                $cleanMetadata[$property.Name] = $property.Value
+            }
+        }
+    }
+    $mergedStrategies = [ordered]@{}
+    if ($null -ne $Strategies) {
+        if ($Strategies -is [System.Collections.IDictionary]) {
+            foreach ($key in @($Strategies.Keys)) {
+                $mergedStrategies[[string]$key] = $Strategies[$key]
+            }
+        } else {
+            foreach ($property in @($Strategies.PSObject.Properties)) {
+                $mergedStrategies[$property.Name] = $property.Value
+            }
+        }
+    }
+    foreach ($key in @("identity_prompt", "system_prompt", "developer_prompt")) {
+        if ($cleanMetadata.Contains($key)) {
+            if (-not $mergedStrategies.Contains("prompt") -or $null -eq $mergedStrategies["prompt"]) {
+                $mergedStrategies["prompt"] = [ordered]@{}
+            }
+            $mergedStrategies["prompt"][$key] = $cleanMetadata[$key]
+            $cleanMetadata.Remove($key)
+        }
+    }
+    foreach ($key in @("max_tool_calls")) {
+        if ($cleanMetadata.Contains($key)) {
+            if (-not $mergedStrategies.Contains("tools") -or $null -eq $mergedStrategies["tools"]) {
+                $mergedStrategies["tools"] = [ordered]@{}
+            }
+            $mergedStrategies["tools"][$key] = [int]$cleanMetadata[$key]
+            $cleanMetadata.Remove($key)
+        }
+    }
+    foreach ($key in @("max_steps", "max_duration_seconds", "max_model_retries", "max_consecutive_tool_failures")) {
+        if ($cleanMetadata.Contains($key)) {
+            if (-not $mergedStrategies.Contains("runtime") -or $null -eq $mergedStrategies["runtime"]) {
+                $mergedStrategies["runtime"] = [ordered]@{}
+            }
+            $mergedStrategies["runtime"][$key] = [int]$cleanMetadata[$key]
+            $cleanMetadata.Remove($key)
+        }
+    }
+    foreach ($key in @("max_repair_attempts")) {
+        if ($cleanMetadata.Contains($key)) {
+            if (-not $mergedStrategies.Contains("repair") -or $null -eq $mergedStrategies["repair"]) {
+                $mergedStrategies["repair"] = [ordered]@{}
+            }
+            $mergedStrategies["repair"][$key] = [int]$cleanMetadata[$key]
+            $cleanMetadata.Remove($key)
+        }
+    }
+    return [pscustomobject]@{
+        Metadata = $cleanMetadata
+        Strategies = $mergedStrategies
+    }
+}
+
 function Get-SmokeText {
     param(
         [Parameter(Mandatory = $true)] [string]$Name
@@ -1180,6 +1255,7 @@ function Publish-OriginCoordinatorPackage {
             $Version = "v" + (Get-Date -Format "yyyyMMddHHmmss")
         }
     }
+    $strategies = @{}
     if ($null -eq $package) {
         $prompts = New-OriginCoordinatorPrompts
         $prompt = $prompts.Identity
@@ -1209,14 +1285,20 @@ function Publish-OriginCoordinatorPackage {
         $agentsMD = $package.AgentsMD
         $toolBindings = $package.ToolBindings
         $metadata = $package.Metadata
+        $strategies = $package.Strategies
     }
+    if ($null -eq $strategies) {
+        $strategies = @{}
+    }
+    $normalizedDraft = Convert-AgentDraftMetadataToStrategies -Metadata $metadata -Strategies $strategies
     $draft = Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.draft.create" -Roles "optimizer" -Payload @{
         agent_id = $AgentID
         version = $Version
         prompt = $prompt
         agents_md = $agentsMD
         tool_bindings = $toolBindings
-        metadata = $metadata
+        metadata = $normalizedDraft.Metadata
+        strategies = $normalizedDraft.Strategies
     }
     $draftID = $draft.draft_id
     Invoke-CleanCoreCommand -BaseUrl $BaseUrl -Command "agent.package.draft.validate" -Roles "optimizer" -Payload @{ draft_id = $draftID } | Out-Null

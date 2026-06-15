@@ -335,11 +335,17 @@ try {
         version = "v1"
         prompt = "You are an async resilience test agent."
         agents_md = "# Async Resilience Agent"
-        metadata = @{
-            system_prompt = "Return concise test replies."
-            developer_prompt = "Use only configured tools."
-            max_steps = 3
-            max_tool_calls = 2
+        strategies = @{
+            prompt = @{
+                system_prompt = "Return concise test replies."
+                developer_prompt = "Use only configured tools."
+            }
+            runtime = @{
+                max_steps = 3
+            }
+            tools = @{
+                max_tool_calls = 2
+            }
         }
         tool_bindings = @{
             exposed_tool_ids = @()

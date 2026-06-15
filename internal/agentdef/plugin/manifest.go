@@ -27,8 +27,8 @@ type AgentPluginManifest struct {
 	ManifestVersion string `json:"manifest_version,omitempty"`
 	ProviderID      string `json:"provider_id,omitempty"`
 
-	Agent AgentPluginAgentManifest `json:"agent"`
-	Tools []AgentPluginToolManifest `json:"tools,omitempty"`
+	Agent AgentPluginAgentManifest   `json:"agent"`
+	Tools []AgentPluginToolManifest  `json:"tools,omitempty"`
 	Hooks []runtimehook.HookManifest `json:"hooks,omitempty"`
 
 	Collaborators []contracts.AgentCollaboratorRef `json:"collaborators,omitempty"`
@@ -191,18 +191,18 @@ func BuildSource(input SourceInput) (agentpackage.AgentPluginSource, error) {
 	}
 	metadata["manifest_hash"] = ManifestHash(manifest)
 	source := agentpackage.AgentPluginSource{
-		ProviderID:      providerID,
-		ManifestVersion: firstNonEmpty(input.Overrides.ManifestVersion, manifest.ManifestVersion),
-		AgentsMD:        firstNonEmpty(input.Overrides.AgentsMD, manifest.Agent.AgentsMD),
-		Prompt:          firstNonEmpty(input.Overrides.Prompt, manifest.Agent.Prompt),
-		Strategies:      mergeStrategies(manifest.Strategies, input.Overrides.Strategies),
-		ToolBindings:    mergeToolBindings(toolBindingsForManifest(manifest.Tools), input.Overrides.ToolBindings),
-		Skills:          append([]contracts.SkillDefinitionRef(nil), input.Overrides.Skills...),
+		ProviderID:       providerID,
+		ManifestVersion:  firstNonEmpty(input.Overrides.ManifestVersion, manifest.ManifestVersion),
+		AgentsMD:         firstNonEmpty(input.Overrides.AgentsMD, manifest.Agent.AgentsMD),
+		Prompt:           firstNonEmpty(input.Overrides.Prompt, manifest.Agent.Prompt),
+		Strategies:       mergeStrategies(manifest.Strategies, input.Overrides.Strategies),
+		ToolBindings:     mergeToolBindings(toolBindingsForManifest(manifest.Tools), input.Overrides.ToolBindings),
+		Skills:           append([]contracts.SkillDefinitionRef(nil), input.Overrides.Skills...),
 		SkillDefinitions: append([]contracts.SkillDefinition(nil), input.Overrides.SkillDefinitions...),
-		Collaborators:   firstCollaborators(input.Overrides.Collaborators, manifest.Collaborators),
-		Exports:         firstExports(input.Overrides.Exports, manifest.Exports),
-		RuntimeHooks:    firstRuntimeHooks(input.Overrides.RuntimeHooks, runtimeHooksForManifest(providerID, manifest.Hooks)),
-		Metadata:        metadata,
+		Collaborators:    firstCollaborators(input.Overrides.Collaborators, manifest.Collaborators),
+		Exports:          firstExports(input.Overrides.Exports, manifest.Exports),
+		RuntimeHooks:     firstRuntimeHooks(input.Overrides.RuntimeHooks, runtimeHooksForManifest(providerID, manifest.Hooks)),
+		Metadata:         metadata,
 	}
 	if strings.TrimSpace(source.ProviderID) == "" {
 		return agentpackage.AgentPluginSource{}, agentpackage.CompileError{Path: "plugin.provider_id", Message: "provider_id is required"}

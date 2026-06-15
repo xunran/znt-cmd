@@ -71,9 +71,9 @@ type traceDiagnosticsResponse struct {
 
 type runDiagnosticsSummary struct {
 	Status                 contracts.RunStatus    `json:"status,omitempty"`
-	ErrorCode              contracts.ErrorCode     `json:"error_code,omitempty"`
-	ErrorMessage           string                  `json:"error_message,omitempty"`
-	StrategyLimitReason    string                  `json:"strategy_limit_reason,omitempty"`
+	ErrorCode              contracts.ErrorCode    `json:"error_code,omitempty"`
+	ErrorMessage           string                 `json:"error_message,omitempty"`
+	StrategyLimitReason    string                 `json:"strategy_limit_reason,omitempty"`
 	DurationMS             int64                  `json:"duration_ms,omitempty"`
 	TraceEventsTotal       int                    `json:"trace_events_total"`
 	TaskEventsTotal        int                    `json:"task_events_total"`
@@ -94,21 +94,23 @@ type runDiagnosticsSummary struct {
 }
 
 type runRouteDiagnostic struct {
-	AgentID           contracts.AgentID          `json:"agent_id,omitempty"`
-	RequestedVersion  contracts.AgentVersion     `json:"requested_version,omitempty"`
-	ResolvedVersion   contracts.AgentVersion     `json:"resolved_version,omitempty"`
-	ReleaseStatus     contracts.ReleaseStatus    `json:"release_status,omitempty"`
-	PackageVersionID  contracts.PackageVersionID `json:"package_version_id,omitempty"`
-	SourceKind        contracts.AgentSourceKind  `json:"source_kind,omitempty"`
-	SourceProviderID  string                     `json:"source_provider_id,omitempty"`
-	ManifestVersion   string                     `json:"manifest_version,omitempty"`
-	ManifestHash      string                     `json:"manifest_hash,omitempty"`
-	StrategyHash      string                     `json:"strategy_hash,omitempty"`
-	RouteReason       string                     `json:"route_reason,omitempty"`
-	Canary            bool                       `json:"canary"`
-	CanaryPercent     int                        `json:"canary_percent,omitempty"`
-	AssignmentKeyHash string                     `json:"assignment_key_hash,omitempty"`
-	CreatedAt         time.Time                  `json:"created_at"`
+	AgentID           contracts.AgentID             `json:"agent_id,omitempty"`
+	RequestedVersion  contracts.AgentVersion        `json:"requested_version,omitempty"`
+	ResolvedVersion   contracts.AgentVersion        `json:"resolved_version,omitempty"`
+	ReleaseStatus     contracts.ReleaseStatus       `json:"release_status,omitempty"`
+	PackageVersionID  contracts.PackageVersionID    `json:"package_version_id,omitempty"`
+	CarrierKind       contracts.AgentCarrierKind    `json:"carrier_kind,omitempty"`
+	RuntimeContract   contracts.RuntimeContractKind `json:"runtime_contract,omitempty"`
+	SourceKind        contracts.AgentSourceKind     `json:"source_kind,omitempty"`
+	SourceProviderID  string                        `json:"source_provider_id,omitempty"`
+	ManifestVersion   string                        `json:"manifest_version,omitempty"`
+	ManifestHash      string                        `json:"manifest_hash,omitempty"`
+	StrategyHash      string                        `json:"strategy_hash,omitempty"`
+	RouteReason       string                        `json:"route_reason,omitempty"`
+	Canary            bool                          `json:"canary"`
+	CanaryPercent     int                           `json:"canary_percent,omitempty"`
+	AssignmentKeyHash string                        `json:"assignment_key_hash,omitempty"`
+	CreatedAt         time.Time                     `json:"created_at"`
 }
 
 type runPromptDiagnostic struct {
@@ -131,39 +133,41 @@ type runModelDiagnostic struct {
 }
 
 type runStrategyDiagnostic struct {
-	SourceKind          contracts.AgentSourceKind  `json:"source_kind,omitempty"`
-	SourceProviderID    string                     `json:"source_provider_id,omitempty"`
-	ServiceConnectionID string                     `json:"service_connection_id,omitempty"`
-	ManifestVersion     string                     `json:"manifest_version,omitempty"`
-	ManifestHash        string                     `json:"manifest_hash,omitempty"`
-	StrategyHash        string                     `json:"strategy_hash,omitempty"`
-	ContextMode         string                     `json:"context_mode,omitempty"`
-	ContextSources      []string                   `json:"context_sources,omitempty"`
-	Model               any                        `json:"model,omitempty"`
-	Runtime             any                        `json:"runtime,omitempty"`
-	Tools               any                        `json:"tools,omitempty"`
-	Skills              any                        `json:"skills,omitempty"`
-	Collaboration       any                        `json:"collaboration,omitempty"`
-	Memory              any                        `json:"memory,omitempty"`
-	Knowledge           any                        `json:"knowledge,omitempty"`
-	Repair              any                        `json:"repair,omitempty"`
-	Output              any                        `json:"output,omitempty"`
-	GuardrailAdjustments []any                      `json:"guardrail_adjustments,omitempty"`
-	AgentPackage        contracts.PackageVersionID `json:"agent_package,omitempty"`
-	ResolvedAt          *time.Time                 `json:"resolved_at,omitempty"`
+	SourceKind           contracts.AgentSourceKind     `json:"source_kind,omitempty"`
+	SourceProviderID     string                        `json:"source_provider_id,omitempty"`
+	ServiceConnectionID  string                        `json:"service_connection_id,omitempty"`
+	CarrierKind          contracts.AgentCarrierKind    `json:"carrier_kind,omitempty"`
+	RuntimeContract      contracts.RuntimeContractKind `json:"runtime_contract,omitempty"`
+	ManifestVersion      string                        `json:"manifest_version,omitempty"`
+	ManifestHash         string                        `json:"manifest_hash,omitempty"`
+	StrategyHash         string                        `json:"strategy_hash,omitempty"`
+	ContextMode          string                        `json:"context_mode,omitempty"`
+	ContextSources       []string                      `json:"context_sources,omitempty"`
+	Model                any                           `json:"model,omitempty"`
+	Runtime              any                           `json:"runtime,omitempty"`
+	Tools                any                           `json:"tools,omitempty"`
+	Skills               any                           `json:"skills,omitempty"`
+	Collaboration        any                           `json:"collaboration,omitempty"`
+	Memory               any                           `json:"memory,omitempty"`
+	Knowledge            any                           `json:"knowledge,omitempty"`
+	Repair               any                           `json:"repair,omitempty"`
+	Output               any                           `json:"output,omitempty"`
+	GuardrailAdjustments []any                         `json:"guardrail_adjustments,omitempty"`
+	AgentPackage         contracts.PackageVersionID    `json:"agent_package,omitempty"`
+	ResolvedAt           *time.Time                    `json:"resolved_at,omitempty"`
 }
 
 type runContextDiagnostic struct {
-	StrategyHash       string                              `json:"strategy_hash,omitempty"`
-	Mode               string                              `json:"mode,omitempty"`
-	TokenBudget        int                                 `json:"token_budget,omitempty"`
-	EstimatedTokensIn  int                                 `json:"estimated_tokens_in,omitempty"`
-	EstimatedTokensOut int                                 `json:"estimated_tokens_out,omitempty"`
-	Sources            []contracts.ContextSourceReport     `json:"sources,omitempty"`
-	ExternalSources    []contracts.ContextSourceReport     `json:"external_sources,omitempty"`
-	Compression        *contracts.ContextCompressionReport `json:"compression,omitempty"`
+	StrategyHash       string                               `json:"strategy_hash,omitempty"`
+	Mode               string                               `json:"mode,omitempty"`
+	TokenBudget        int                                  `json:"token_budget,omitempty"`
+	EstimatedTokensIn  int                                  `json:"estimated_tokens_in,omitempty"`
+	EstimatedTokensOut int                                  `json:"estimated_tokens_out,omitempty"`
+	Sources            []contracts.ContextSourceReport      `json:"sources,omitempty"`
+	ExternalSources    []contracts.ContextSourceReport      `json:"external_sources,omitempty"`
+	Compression        *contracts.ContextCompressionReport  `json:"compression,omitempty"`
 	CompressionEvents  []contracts.ContextCompressionReport `json:"compression_events,omitempty"`
-	PromptBundleHash   string                              `json:"prompt_bundle_hash,omitempty"`
+	PromptBundleHash   string                               `json:"prompt_bundle_hash,omitempty"`
 }
 
 type runModelCallDiagnostic struct {
@@ -921,6 +925,8 @@ func routeDiagnostics(events []contracts.TraceEvent) []runRouteDiagnostic {
 				ResolvedVersion:   contracts.AgentVersion(stringFromMap(event.Payload, "resolved_version")),
 				ReleaseStatus:     contracts.ReleaseStatus(stringFromMap(event.Payload, "release_status")),
 				PackageVersionID:  contracts.PackageVersionID(stringFromMap(event.Payload, "package_version_id")),
+				CarrierKind:       contracts.AgentCarrierKind(stringFromMap(event.Payload, "carrier_kind")),
+				RuntimeContract:   contracts.RuntimeContractKind(stringFromMap(event.Payload, "runtime_contract")),
 				SourceKind:        contracts.AgentSourceKind(stringFromMap(event.Payload, "source_kind")),
 				SourceProviderID:  stringFromMap(event.Payload, "source_provider_id"),
 				ManifestVersion:   stringFromMap(event.Payload, "manifest_version"),
@@ -938,6 +944,8 @@ func routeDiagnostics(events []contracts.TraceEvent) []runRouteDiagnostic {
 				ResolvedVersion:  contracts.AgentVersion(firstNonEmpty(stringFromMap(event.Payload, "resolved_version"), stringFromMap(event.Payload, "agent_version"))),
 				ReleaseStatus:    contracts.ReleaseCanary,
 				PackageVersionID: contracts.PackageVersionID(stringFromMap(event.Payload, "package_version_id")),
+				CarrierKind:      contracts.AgentCarrierKind(stringFromMap(event.Payload, "carrier_kind")),
+				RuntimeContract:  contracts.RuntimeContractKind(stringFromMap(event.Payload, "runtime_contract")),
 				SourceKind:       contracts.AgentSourceKind(stringFromMap(event.Payload, "source_kind")),
 				SourceProviderID: stringFromMap(event.Payload, "source_provider_id"),
 				ManifestVersion:  stringFromMap(event.Payload, "manifest_version"),
@@ -955,6 +963,8 @@ func routeDiagnostics(events []contracts.TraceEvent) []runRouteDiagnostic {
 
 func strategyDiagnostics(run contracts.AgentRun, events []contracts.TraceEvent, appCore *core.Core) runStrategyDiagnostic {
 	out := runStrategyDiagnostic{
+		CarrierKind:      run.VersionSnapshot.CarrierKind,
+		RuntimeContract:  run.VersionSnapshot.RuntimeContract,
 		SourceKind:       run.VersionSnapshot.SourceKind,
 		SourceProviderID: run.VersionSnapshot.SourceProviderID,
 		ManifestVersion:  run.VersionSnapshot.ManifestVersion,
@@ -974,6 +984,12 @@ func strategyDiagnostics(run contracts.AgentRun, events []contracts.TraceEvent, 
 		}
 		if out.StrategyHash == "" {
 			out.StrategyHash = stringFromMap(event.Payload, "strategy_hash")
+		}
+		if out.CarrierKind == "" {
+			out.CarrierKind = contracts.AgentCarrierKind(stringFromMap(event.Payload, "carrier_kind"))
+		}
+		if out.RuntimeContract == "" {
+			out.RuntimeContract = contracts.RuntimeContractKind(stringFromMap(event.Payload, "runtime_contract"))
 		}
 		if out.SourceKind == "" {
 			out.SourceKind = contracts.AgentSourceKind(stringFromMap(event.Payload, "source_kind"))

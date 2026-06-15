@@ -36,53 +36,53 @@ const (
 )
 
 type Config struct {
-	ServiceName                  string   `json:"service_name"`
-	Version                      string   `json:"version"`
-	Env                          string   `json:"env"`
-	HTTPAddr                     string   `json:"http_addr"`
-	LogLevel                     string   `json:"log_level"`
-	DatabaseURL                  string   `json:"database_url,omitempty"`
-	Readiness                    bool     `json:"readiness"`
-	ReadinessMode                string   `json:"readiness_mode,omitempty"`
-	MetricsAuthMode              string   `json:"metrics_auth_mode,omitempty"`
-	ServiceToken                 string   `json:"service_token,omitempty"`
-	DBMaxOpenConns               int      `json:"db_max_open_conns,omitempty"`
-	DBMaxIdleConns               int      `json:"db_max_idle_conns,omitempty"`
-	DBReadinessMaxOpenConns      int      `json:"db_readiness_max_open_conns,omitempty"`
-	DBReadinessMaxIdleConns      int      `json:"db_readiness_max_idle_conns,omitempty"`
-	DBConnMaxLifetimeSeconds     int      `json:"db_conn_max_lifetime_seconds,omitempty"`
-	DBConnMaxIdleTimeSeconds     int      `json:"db_conn_max_idle_time_seconds,omitempty"`
-	HTTPReadHeaderTimeoutSeconds int      `json:"http_read_header_timeout_seconds,omitempty"`
-	HTTPReadTimeoutSeconds       int      `json:"http_read_timeout_seconds,omitempty"`
-	HTTPWriteTimeoutSeconds      int      `json:"http_write_timeout_seconds,omitempty"`
-	HTTPIdleTimeoutSeconds       int      `json:"http_idle_timeout_seconds,omitempty"`
-	HTTPMaxBodyBytes             int64    `json:"http_max_body_bytes,omitempty"`
-	RunMaxConcurrent             int      `json:"run_max_concurrent,omitempty"`
-	TenantRunMaxConcurrent       int      `json:"tenant_run_max_concurrent,omitempty"`
-	AgentRunMaxConcurrent        int      `json:"agent_run_max_concurrent,omitempty"`
-	AgentRunExecutionMode        string   `json:"agent_run_execution_mode,omitempty"`
-	ModelProvider                string   `json:"model_provider,omitempty"`
-	ModelBaseURL                 string   `json:"model_base_url,omitempty"`
-	ModelAPIKey                  string   `json:"model_api_key,omitempty"`
-	ModelName                    string   `json:"model_name,omitempty"`
-	ModelMaxTokens               int      `json:"model_max_tokens,omitempty"`
-	ModelTemperature             *float64 `json:"model_temperature,omitempty"`
-	ModelThinking                string   `json:"model_thinking,omitempty"`
-	ModelReasoningEffort         string   `json:"model_reasoning_effort,omitempty"`
-	ConversationJudgeMode            string `json:"conversation_judge_mode,omitempty"`
-	ConversationJudgeTimeoutMS       int    `json:"conversation_judge_timeout_ms,omitempty"`
-	ConversationDirectEnabled        bool   `json:"conversation_direct_enabled,omitempty"`
-	ConversationRetrievalEnabled     bool   `json:"conversation_retrieval_enabled,omitempty"`
-	ContextDefaultMode               string `json:"context_default_mode,omitempty"`
-	ContextDefaultRecentMessageLimit int    `json:"context_default_recent_message_limit,omitempty"`
-	ContextDefaultRetrievalMaxResults int   `json:"context_default_retrieval_max_results,omitempty"`
-	ContextDefaultTaskHistoryMaxItems int   `json:"context_default_task_history_max_items,omitempty"`
-	ContextDefaultTokenBudget         int   `json:"context_default_token_budget,omitempty"`
-	ContextCompressionDefaultEnabled  bool  `json:"context_compression_default_enabled,omitempty"`
-	ContextCompressionDefaultMode     string `json:"context_compression_default_mode,omitempty"`
-	ExternalBridgeProvider       string   `json:"external_bridge_provider,omitempty"`
-	ExternalBridgeBaseURL        string   `json:"external_bridge_base_url,omitempty"`
-	ExternalBridgeToken          string   `json:"external_bridge_token,omitempty"`
+	ServiceName                       string   `json:"service_name"`
+	Version                           string   `json:"version"`
+	Env                               string   `json:"env"`
+	HTTPAddr                          string   `json:"http_addr"`
+	LogLevel                          string   `json:"log_level"`
+	DatabaseURL                       string   `json:"database_url,omitempty"`
+	Readiness                         bool     `json:"readiness"`
+	ReadinessMode                     string   `json:"readiness_mode,omitempty"`
+	MetricsAuthMode                   string   `json:"metrics_auth_mode,omitempty"`
+	ServiceToken                      string   `json:"service_token,omitempty"`
+	DBMaxOpenConns                    int      `json:"db_max_open_conns,omitempty"`
+	DBMaxIdleConns                    int      `json:"db_max_idle_conns,omitempty"`
+	DBReadinessMaxOpenConns           int      `json:"db_readiness_max_open_conns,omitempty"`
+	DBReadinessMaxIdleConns           int      `json:"db_readiness_max_idle_conns,omitempty"`
+	DBConnMaxLifetimeSeconds          int      `json:"db_conn_max_lifetime_seconds,omitempty"`
+	DBConnMaxIdleTimeSeconds          int      `json:"db_conn_max_idle_time_seconds,omitempty"`
+	HTTPReadHeaderTimeoutSeconds      int      `json:"http_read_header_timeout_seconds,omitempty"`
+	HTTPReadTimeoutSeconds            int      `json:"http_read_timeout_seconds,omitempty"`
+	HTTPWriteTimeoutSeconds           int      `json:"http_write_timeout_seconds,omitempty"`
+	HTTPIdleTimeoutSeconds            int      `json:"http_idle_timeout_seconds,omitempty"`
+	HTTPMaxBodyBytes                  int64    `json:"http_max_body_bytes,omitempty"`
+	RunMaxConcurrent                  int      `json:"run_max_concurrent,omitempty"`
+	TenantRunMaxConcurrent            int      `json:"tenant_run_max_concurrent,omitempty"`
+	AgentRunMaxConcurrent             int      `json:"agent_run_max_concurrent,omitempty"`
+	AgentRunExecutionMode             string   `json:"agent_run_execution_mode,omitempty"`
+	ModelProvider                     string   `json:"model_provider,omitempty"`
+	ModelBaseURL                      string   `json:"model_base_url,omitempty"`
+	ModelAPIKey                       string   `json:"model_api_key,omitempty"`
+	ModelName                         string   `json:"model_name,omitempty"`
+	ModelMaxTokens                    int      `json:"model_max_tokens,omitempty"`
+	ModelTemperature                  *float64 `json:"model_temperature,omitempty"`
+	ModelThinking                     string   `json:"model_thinking,omitempty"`
+	ModelReasoningEffort              string   `json:"model_reasoning_effort,omitempty"`
+	ConversationJudgeMode             string   `json:"conversation_judge_mode,omitempty"`
+	ConversationJudgeTimeoutMS        int      `json:"conversation_judge_timeout_ms,omitempty"`
+	ConversationDirectEnabled         bool     `json:"conversation_direct_enabled,omitempty"`
+	ConversationRetrievalEnabled      bool     `json:"conversation_retrieval_enabled,omitempty"`
+	ContextDefaultMode                string   `json:"context_default_mode,omitempty"`
+	ContextDefaultRecentMessageLimit  int      `json:"context_default_recent_message_limit,omitempty"`
+	ContextDefaultRetrievalMaxResults int      `json:"context_default_retrieval_max_results,omitempty"`
+	ContextDefaultTaskHistoryMaxItems int      `json:"context_default_task_history_max_items,omitempty"`
+	ContextDefaultTokenBudget         int      `json:"context_default_token_budget,omitempty"`
+	ContextCompressionDefaultEnabled  bool     `json:"context_compression_default_enabled,omitempty"`
+	ContextCompressionDefaultMode     string   `json:"context_compression_default_mode,omitempty"`
+	ExternalBridgeProvider            string   `json:"external_bridge_provider,omitempty"`
+	ExternalBridgeBaseURL             string   `json:"external_bridge_base_url,omitempty"`
+	ExternalBridgeToken               string   `json:"external_bridge_token,omitempty"`
 
 	DisabledAgentIDs           []string `json:"disabled_agent_ids,omitempty"`
 	DisabledToolIDs            []string `json:"disabled_tool_ids,omitempty"`
@@ -125,29 +125,29 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 func Default() Config {
 	return Config{
-		ServiceName:                  DefaultServiceName,
-		Version:                      DefaultVersion,
-		Env:                          DefaultEnv,
-		HTTPAddr:                     DefaultHTTPAddr,
-		LogLevel:                     DefaultLogLevel,
-		Readiness:                    true,
-		ReadinessMode:                DefaultReadinessMode,
-		MetricsAuthMode:              DefaultMetricsAuthMode,
-		DBMaxOpenConns:               DefaultDBMaxOpenConns,
-		DBMaxIdleConns:               DefaultDBMaxIdleConns,
-		DBReadinessMaxOpenConns:      DefaultDBReadinessMaxOpenConns,
-		DBReadinessMaxIdleConns:      DefaultDBReadinessMaxIdleConns,
-		DBConnMaxLifetimeSeconds:     DefaultDBConnMaxLifetimeSeconds,
-		DBConnMaxIdleTimeSeconds:     DefaultDBConnMaxIdleTimeSeconds,
-		HTTPReadHeaderTimeoutSeconds: DefaultHTTPReadHeaderTimeoutSeconds,
-		HTTPReadTimeoutSeconds:       DefaultHTTPReadTimeoutSeconds,
-		HTTPWriteTimeoutSeconds:      DefaultHTTPWriteTimeoutSeconds,
-		HTTPIdleTimeoutSeconds:       DefaultHTTPIdleTimeoutSeconds,
-		HTTPMaxBodyBytes:             DefaultHTTPMaxBodyBytes,
-		AgentRunExecutionMode:        DefaultAgentRunExecutionMode,
-		ConversationRetrievalEnabled: true,
-		ContextDefaultMode:               "balanced",
-		ContextDefaultRecentMessageLimit: 20,
+		ServiceName:                       DefaultServiceName,
+		Version:                           DefaultVersion,
+		Env:                               DefaultEnv,
+		HTTPAddr:                          DefaultHTTPAddr,
+		LogLevel:                          DefaultLogLevel,
+		Readiness:                         true,
+		ReadinessMode:                     DefaultReadinessMode,
+		MetricsAuthMode:                   DefaultMetricsAuthMode,
+		DBMaxOpenConns:                    DefaultDBMaxOpenConns,
+		DBMaxIdleConns:                    DefaultDBMaxIdleConns,
+		DBReadinessMaxOpenConns:           DefaultDBReadinessMaxOpenConns,
+		DBReadinessMaxIdleConns:           DefaultDBReadinessMaxIdleConns,
+		DBConnMaxLifetimeSeconds:          DefaultDBConnMaxLifetimeSeconds,
+		DBConnMaxIdleTimeSeconds:          DefaultDBConnMaxIdleTimeSeconds,
+		HTTPReadHeaderTimeoutSeconds:      DefaultHTTPReadHeaderTimeoutSeconds,
+		HTTPReadTimeoutSeconds:            DefaultHTTPReadTimeoutSeconds,
+		HTTPWriteTimeoutSeconds:           DefaultHTTPWriteTimeoutSeconds,
+		HTTPIdleTimeoutSeconds:            DefaultHTTPIdleTimeoutSeconds,
+		HTTPMaxBodyBytes:                  DefaultHTTPMaxBodyBytes,
+		AgentRunExecutionMode:             DefaultAgentRunExecutionMode,
+		ConversationRetrievalEnabled:      true,
+		ContextDefaultMode:                "balanced",
+		ContextDefaultRecentMessageLimit:  20,
 		ContextDefaultRetrievalMaxResults: 8,
 		ContextDefaultTaskHistoryMaxItems: 30,
 		ContextDefaultTokenBudget:         4000,

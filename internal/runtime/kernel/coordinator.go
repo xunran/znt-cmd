@@ -506,21 +506,28 @@ func (c Coordinator) prepareNewTaskRun(ctx context.Context, envelope contracts.A
 		"agent_version": task.AgentVersion,
 		"policy_set_id": task.PolicySetID,
 	})
+	snapshot := c.versionSnapshot(ctx, envelope.Context.TenantID, definition, userInput)
 	run := contracts.AgentRun{
-		RunID:           contracts.AgentRunID(idgen.New("run")),
-		TraceID:         envelope.TraceID,
-		TenantID:        envelope.Context.TenantID,
-		AgentID:         definition.AgentID,
-		AgentVersion:    definition.Version,
-		TaskID:          task.TaskID,
-		Input:           userInput,
-		ConversationID:  runtimeConversationID(envelope),
-		ThreadID:        runtimeConversationThreadID(envelope),
-		MessageID:       runtimeConversationMessageID(envelope),
-		Status:          contracts.RunCreated,
-		PolicySetID:     definition.PolicyRefs.PolicySetID,
-		VersionSnapshot: c.versionSnapshot(ctx, envelope.Context.TenantID, definition, userInput),
-		StartedAt:       now,
+		RunID:            contracts.AgentRunID(idgen.New("run")),
+		TraceID:          envelope.TraceID,
+		TenantID:         envelope.Context.TenantID,
+		AgentID:          definition.AgentID,
+		AgentVersion:     definition.Version,
+		CarrierKind:      snapshot.CarrierKind,
+		RuntimeContract:  snapshot.RuntimeContract,
+		SourceKind:       snapshot.SourceKind,
+		SourceProviderID: snapshot.SourceProviderID,
+		CarrierVersion:   snapshot.CarrierVersion,
+		ManifestHash:     snapshot.ManifestHash,
+		TaskID:           task.TaskID,
+		Input:            userInput,
+		ConversationID:   runtimeConversationID(envelope),
+		ThreadID:         runtimeConversationThreadID(envelope),
+		MessageID:        runtimeConversationMessageID(envelope),
+		Status:           contracts.RunCreated,
+		PolicySetID:      definition.PolicyRefs.PolicySetID,
+		VersionSnapshot:  snapshot,
+		StartedAt:        now,
 	}
 	if err := c.Runs.Create(ctx, run); err != nil {
 		return PreparedRun{}, err
@@ -539,6 +546,13 @@ func (c Coordinator) prepareNewTaskRun(ctx context.Context, envelope contracts.A
 		Payload: map[string]any{
 			"agent_id":             definition.AgentID,
 			"agent_version":        definition.Version,
+			"carrier_kind":         run.VersionSnapshot.CarrierKind,
+			"runtime_contract":     run.VersionSnapshot.RuntimeContract,
+			"carrier_version":      run.VersionSnapshot.CarrierVersion,
+			"source_kind":          run.VersionSnapshot.SourceKind,
+			"source_provider_id":   run.VersionSnapshot.SourceProviderID,
+			"manifest_version":     run.VersionSnapshot.ManifestVersion,
+			"manifest_hash":        run.VersionSnapshot.ManifestHash,
 			"policy_set_id":        run.VersionSnapshot.PolicySet,
 			"policy_version_id":    run.VersionSnapshot.PolicyVersionID,
 			"policy_set_version":   run.VersionSnapshot.PolicySetVersion,
@@ -663,21 +677,28 @@ func (c Coordinator) prepareTaskRun(ctx context.Context, envelope contracts.Agen
 		"agent_version": task.AgentVersion,
 	})
 	now := c.Now()
+	snapshot := c.versionSnapshot(ctx, task.TenantID, definition, task.Objective)
 	run := contracts.AgentRun{
-		RunID:           contracts.AgentRunID(idgen.New("run")),
-		TraceID:         envelope.TraceID,
-		TenantID:        task.TenantID,
-		AgentID:         definition.AgentID,
-		AgentVersion:    definition.Version,
-		TaskID:          task.TaskID,
-		Input:           userInput,
-		ConversationID:  runtimeConversationID(envelope),
-		ThreadID:        runtimeConversationThreadID(envelope),
-		MessageID:       runtimeConversationMessageID(envelope),
-		Status:          contracts.RunCreated,
-		PolicySetID:     definition.PolicyRefs.PolicySetID,
-		VersionSnapshot: c.versionSnapshot(ctx, task.TenantID, definition, task.Objective),
-		StartedAt:       now,
+		RunID:            contracts.AgentRunID(idgen.New("run")),
+		TraceID:          envelope.TraceID,
+		TenantID:         task.TenantID,
+		AgentID:          definition.AgentID,
+		AgentVersion:     definition.Version,
+		CarrierKind:      snapshot.CarrierKind,
+		RuntimeContract:  snapshot.RuntimeContract,
+		SourceKind:       snapshot.SourceKind,
+		SourceProviderID: snapshot.SourceProviderID,
+		CarrierVersion:   snapshot.CarrierVersion,
+		ManifestHash:     snapshot.ManifestHash,
+		TaskID:           task.TaskID,
+		Input:            userInput,
+		ConversationID:   runtimeConversationID(envelope),
+		ThreadID:         runtimeConversationThreadID(envelope),
+		MessageID:        runtimeConversationMessageID(envelope),
+		Status:           contracts.RunCreated,
+		PolicySetID:      definition.PolicyRefs.PolicySetID,
+		VersionSnapshot:  snapshot,
+		StartedAt:        now,
 	}
 	if err := c.Runs.Create(ctx, run); err != nil {
 		return PreparedRun{}, err
@@ -696,6 +717,13 @@ func (c Coordinator) prepareTaskRun(ctx context.Context, envelope contracts.Agen
 		Payload: map[string]any{
 			"agent_id":           definition.AgentID,
 			"agent_version":      definition.Version,
+			"carrier_kind":       run.VersionSnapshot.CarrierKind,
+			"runtime_contract":   run.VersionSnapshot.RuntimeContract,
+			"carrier_version":    run.VersionSnapshot.CarrierVersion,
+			"source_kind":        run.VersionSnapshot.SourceKind,
+			"source_provider_id": run.VersionSnapshot.SourceProviderID,
+			"manifest_version":   run.VersionSnapshot.ManifestVersion,
+			"manifest_hash":      run.VersionSnapshot.ManifestHash,
 			"source":             "existing_task",
 			"policy_set_id":      run.VersionSnapshot.PolicySet,
 			"policy_version_id":  run.VersionSnapshot.PolicyVersionID,
@@ -816,20 +844,20 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 		"context_sources":       effective.Context.EnabledSources,
 		"context_token_budget":  contracts.IntValue(effective.Context.ContextTokenBudget),
 		"model":                 effective.Model,
-		"runtime":              activeDefinition.Runtime,
-		"tools":                effective.Tools,
-		"skills":               effective.Skills,
-		"collaboration":        effective.Collaboration,
-		"memory":               effective.Memory,
-		"knowledge":            effective.Knowledge,
-		"repair":               effective.Repair,
-		"output":               effective.Output,
+		"runtime":               activeDefinition.Runtime,
+		"tools":                 effective.Tools,
+		"skills":                effective.Skills,
+		"collaboration":         effective.Collaboration,
+		"memory":                effective.Memory,
+		"knowledge":             effective.Knowledge,
+		"repair":                effective.Repair,
+		"output":                effective.Output,
 	})
 	if len(strategyReport.Adjustments) > 0 {
 		c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceStrategyGuardrailApplied, map[string]any{
-			"strategy_hash":     strategyReport.StrategyHash,
-			"adjustment_count":  len(strategyReport.Adjustments),
-			"adjustments":       strategyReport.Adjustments,
+			"strategy_hash":    strategyReport.StrategyHash,
+			"adjustment_count": len(strategyReport.Adjustments),
+			"adjustments":      strategyReport.Adjustments,
 		})
 	}
 	c.recordModelStrategySelected(ctx, envelope, activeDefinition, runID, taskID, strategyReport.StrategyHash)
@@ -982,12 +1010,12 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 		return RunResult{}, true, err
 	}
 	_ = c.Trace.Record(ctx, contracts.TraceEvent{
-		TraceID:   envelope.TraceID,
-		TenantID:  envelope.Context.TenantID,
-		SpanID:    contracts.SpanID(stepID),
-		RunID:     runID,
-		TaskID:    taskID,
-		Type:      contracts.TracePromptBundleBuilt,
+		TraceID:  envelope.TraceID,
+		TenantID: envelope.Context.TenantID,
+		SpanID:   contracts.SpanID(stepID),
+		RunID:    runID,
+		TaskID:   taskID,
+		Type:     contracts.TracePromptBundleBuilt,
 		Payload: map[string]any{
 			"hash":                    bundle.Hash,
 			"context_assembly_report": bundle.ContextAssemblyReport,
@@ -1247,16 +1275,16 @@ func (c Coordinator) recordRepairStrategyApplied(ctx context.Context, envelope c
 
 func (c Coordinator) recordToolStrategyApplied(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, strategyHash string, toolStrategy contracts.ToolUseStrategy, knowledgeStrategy contracts.KnowledgeUseStrategy, before tooldiscovery.CandidateSet, after tooldiscovery.CandidateSet) {
 	payload := map[string]any{
-		"strategy_hash":            strategyHash,
-		"tool_choice_mode":         toolStrategy.ToolChoiceMode,
-		"candidate_tool_count":     len(before.Tools),
-		"selected_tool_count":      len(after.Tools),
+		"strategy_hash":              strategyHash,
+		"tool_choice_mode":           toolStrategy.ToolChoiceMode,
+		"candidate_tool_count":       len(before.Tools),
+		"selected_tool_count":        len(after.Tools),
 		"candidate_capability_count": len(before.Capabilities),
 		"selected_capability_count":  len(after.Capabilities),
-		"allowed_tool_count":       len(toolStrategy.AllowedToolIDs),
-		"denied_tool_count":        len(toolStrategy.DeniedToolIDs),
-		"preferred_tool_count":     len(toolStrategy.PreferredToolIDs),
-		"selected_tool_ids":        toolCardIDs(after.Tools),
+		"allowed_tool_count":         len(toolStrategy.AllowedToolIDs),
+		"denied_tool_count":          len(toolStrategy.DeniedToolIDs),
+		"preferred_tool_count":       len(toolStrategy.PreferredToolIDs),
+		"selected_tool_ids":          toolCardIDs(after.Tools),
 	}
 	if toolStrategy.MaxToolCalls != nil {
 		payload["max_tool_calls"] = *toolStrategy.MaxToolCalls
@@ -1308,13 +1336,13 @@ func (c Coordinator) recordCollaborationStrategyApplied(ctx context.Context, env
 
 func (c Coordinator) recordMemoryStrategyApplied(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, strategyHash string, strategy contracts.MemoryUseStrategy, summaries []contracts.MemorySummary) {
 	payload := map[string]any{
-		"strategy_hash":          strategyHash,
-		"read_enabled":           memoryStrategyEnabled(strategy.ReadEnabled),
-		"write_enabled":          memoryStrategyEnabled(strategy.WriteEnabled),
-		"auto_write_mode":        strategy.AutoWriteMode,
-		"selected_memory_count":  len(summaries),
-		"read_scope_count":       len(strategy.ReadScopes),
-		"write_scope_count":      len(strategy.WriteScopes),
+		"strategy_hash":           strategyHash,
+		"read_enabled":            memoryStrategyEnabled(strategy.ReadEnabled),
+		"write_enabled":           memoryStrategyEnabled(strategy.WriteEnabled),
+		"auto_write_mode":         strategy.AutoWriteMode,
+		"selected_memory_count":   len(summaries),
+		"read_scope_count":        len(strategy.ReadScopes),
+		"write_scope_count":       len(strategy.WriteScopes),
 		"write_prompt_profile_id": strategy.WritePromptProfileID,
 	}
 	if strategy.MaxMemoryItems != nil {
@@ -1984,11 +2012,17 @@ func (c Coordinator) versionSnapshot(ctx context.Context, tenantID contracts.Ten
 			additional["strategy_hash"] = strategyHash
 		}
 	}
+	sourceKind := contracts.NormalizeSourceKind(definition.SourceKind)
+	carrierKind := contracts.NormalizeCarrierKind(sourceKind, definition.CarrierKind)
+	runtimeContract := contracts.NormalizeRuntimeContract(carrierKind, definition.RuntimeContract)
 	return contracts.VersionSnapshot{
 		ContractVersion:      contractVersion(definition),
 		AgentDefinition:      definition.Version,
 		AgentPackage:         definition.PackageVersionID,
-		SourceKind:           definition.SourceKind,
+		CarrierKind:          carrierKind,
+		RuntimeContract:      runtimeContract,
+		CarrierVersion:       definition.Version,
+		SourceKind:           sourceKind,
 		SourceProviderID:     definition.SourceProviderID,
 		ManifestVersion:      definition.ManifestVersion,
 		ManifestHash:         definition.ManifestHash,

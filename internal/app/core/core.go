@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	policyengine "znt/internal/policy/engine"
 	"znt/internal/policy/toolpolicy"
 	"znt/internal/runtime/admission"
+	runtimedriver "znt/internal/runtime/driver"
 	runtimehook "znt/internal/runtime/hook"
 	"znt/internal/runtime/kernel"
 	runrepo "znt/internal/runtime/run"
@@ -102,11 +104,12 @@ type Core struct {
 	Tones             *tone.Service
 	Intake            *intake.Service
 
-	Model       modelclient.ModelClient
-	Coordinator kernel.Coordinator
-	Admission   *admission.Limiter
-	EvalRunner  eval.Runner
-	Evals       *eval.Store
+	Model          modelclient.ModelClient
+	Coordinator    kernel.Coordinator
+	RuntimeDrivers *runtimedriver.Registry
+	Admission      *admission.Limiter
+	EvalRunner     eval.Runner
+	Evals          *eval.Store
 
 	ArrayBridge *array.Bridge
 	Packages    *agentpackage.Service
@@ -269,6 +272,7 @@ func New(cfg config.Config) (*Core, error) {
 	coordinator.Memory = memory
 	coordinator.DisabledToolIDs = stringSet(cfg.DisabledToolIDs)
 	coordinator.RuntimeHooks = runtimeHooks
+	var runtimeDrivers *runtimedriver.Registry
 	toolCatalog.SetAgentToolHandler(agenttool.Handler{
 		Agents: agentLoader,
 		AgentRunnable: func(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID) error {
@@ -285,7 +289,11 @@ func New(cfg config.Config) (*Core, error) {
 			})
 		},
 		StartAgentRun: func(ctx context.Context, envelope contracts.AgentEnvelope) (agenttool.RunResult, error) {
-			result, err := coordinator.HandleEnvelope(ctx, envelope)
+			driver, err := runtimeDrivers.DefaultNative()
+			if err != nil {
+				return agenttool.RunResult{}, err
+			}
+			result, err := driver.StartRun(ctx, runtimedriver.StartRunRequest{Envelope: envelope})
 			return agenttool.RunResult{
 				RunID:        result.RunID,
 				TaskID:       result.TaskID,
@@ -422,7 +430,7 @@ func New(cfg config.Config) (*Core, error) {
 		TenantMaxRunningRuns: cfg.TenantRunMaxConcurrent,
 		AgentMaxRunningRuns:  cfg.AgentRunMaxConcurrent,
 	})
-	return &Core{
+	app := &Core{
 		Config:              cfg,
 		DB:                  dbFromRepositories(pg),
 		ReadinessDB:         readinessDB,
@@ -465,12 +473,19 @@ func New(cfg config.Config) (*Core, error) {
 		Intake:              intakeService,
 		Model:               model,
 		Coordinator:         coordinator,
+		RuntimeDrivers:      runtimeDrivers,
 		Admission:           admissionLimiter,
 		EvalRunner:          eval.NewRunner(coordinator),
 		Evals:               evalStore,
 		ArrayBridge:         arrayBridge,
 		Packages:            packageService,
-	}, nil
+	}
+	app.RuntimeDrivers = runtimedriver.MustRegistry(
+		runtimedriver.NewNativeRef(&app.Coordinator),
+		runtimedriver.NewManagedCoordinatorRef(contracts.AgentCarrierKindAgentPluginSource, &app.Coordinator),
+	)
+	runtimeDrivers = app.RuntimeDrivers
+	return app, nil
 }
 
 func restorePersistedAgentDefinitions(ctx context.Context, registry *loader.StaticLoader, store any) error {
@@ -483,6 +498,9 @@ func restorePersistedAgentDefinitions(ctx context.Context, registry *loader.Stat
 	}
 	definitions, err := restoreStore.ListAgentDefinitions(ctx)
 	if err != nil {
+		if isMigrationNotReadyError(err) {
+			return nil
+		}
 		return err
 	}
 	for _, definition := range definitions {
@@ -493,6 +511,9 @@ func restorePersistedAgentDefinitions(ctx context.Context, registry *loader.Stat
 	}
 	assets, err := restoreStore.ListAgentAssets(ctx, "")
 	if err != nil {
+		if isMigrationNotReadyError(err) {
+			return nil
+		}
 		return err
 	}
 	for _, asset := range assets {
@@ -511,6 +532,16 @@ func restorePersistedAgentDefinitions(ctx context.Context, registry *loader.Stat
 		}
 	}
 	return nil
+}
+
+func isMigrationNotReadyError(err error) bool {
+	if err == nil || errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sqlstate 42p01") ||
+		strings.Contains(message, "undefined_table") ||
+		strings.Contains(message, "relation ") && strings.Contains(message, " does not exist")
 }
 
 func dbFromRepositories(pg *postgres.Repositories) *sql.DB {

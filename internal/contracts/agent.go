@@ -14,10 +14,13 @@ type AgentPackageVersion struct {
 	CompiledHash string `json:"compiled_hash"`
 	StrategyHash string `json:"strategy_hash,omitempty"`
 
-	SourceKind       AgentSourceKind `json:"source_kind,omitempty"`
-	SourceProviderID string          `json:"source_provider_id,omitempty"`
-	ManifestVersion  string          `json:"manifest_version,omitempty"`
-	ManifestHash     string          `json:"manifest_hash,omitempty"`
+	SourceKind        AgentSourceKind          `json:"source_kind,omitempty"`
+	SourceProviderID  string                   `json:"source_provider_id,omitempty"`
+	ManifestVersion   string                   `json:"manifest_version,omitempty"`
+	ManifestHash      string                   `json:"manifest_hash,omitempty"`
+	CarrierKind       AgentCarrierKind         `json:"carrier_kind,omitempty"`
+	RuntimeContract   RuntimeContractKind      `json:"runtime_contract,omitempty"`
+	ConformanceStatus RuntimeConformanceStatus `json:"conformance_status,omitempty"`
 
 	CanaryPercent int      `json:"canary_percent,omitempty"`
 	CanaryScope   []string `json:"canary_scope,omitempty"`
@@ -48,11 +51,14 @@ type AgentDefinition struct {
 	AgentID AgentID      `json:"agent_id"`
 	Version AgentVersion `json:"version"`
 
-	PackageVersionID PackageVersionID `json:"package_version_id,omitempty"`
-	SourceKind       AgentSourceKind  `json:"source_kind,omitempty"`
-	SourceProviderID string           `json:"source_provider_id,omitempty"`
-	ManifestVersion  string           `json:"manifest_version,omitempty"`
-	ManifestHash     string           `json:"manifest_hash,omitempty"`
+	PackageVersionID  PackageVersionID         `json:"package_version_id,omitempty"`
+	SourceKind        AgentSourceKind          `json:"source_kind,omitempty"`
+	SourceProviderID  string                   `json:"source_provider_id,omitempty"`
+	ManifestVersion   string                   `json:"manifest_version,omitempty"`
+	ManifestHash      string                   `json:"manifest_hash,omitempty"`
+	CarrierKind       AgentCarrierKind         `json:"carrier_kind,omitempty"`
+	RuntimeContract   RuntimeContractKind      `json:"runtime_contract,omitempty"`
+	ConformanceStatus RuntimeConformanceStatus `json:"conformance_status,omitempty"`
 
 	Name        string `json:"name"`
 	Description string `json:"description"`

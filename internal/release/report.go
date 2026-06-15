@@ -164,6 +164,7 @@ func capabilityGates(path string) []Gate {
 		{"prompt.preview_hook_effects", []string{"TestRuntimeHooksMutatePromptPreview", "hook_effects"}},
 		{"management.approval_flow", []string{"TestPolicyStableRequiresConcreteApprovalRequest", "approval_required"}},
 		{"release.canary_hits", []string{"TestPackageCanaryRoutesDefaultTrafficAndRecordsHit", "canary.routed", "strategy_hash", "manifest_hash"}},
+		{"agent_runtime.carrier_evidence", []string{"carrier_kind", "runtime_contract", "source_kind", "manifest_hash"}},
 		{"eval.result_evidence", []string{"TestRunnerToolAssertions", "eval.case.completed", "TestRunnerRecordsFailedCaseTrace", "eval.case.failed", "TestEvalSuiteRunRecordsSummaryTrace", "eval.summary.created"}},
 		{"eval.strategy_assertions", []string{"TestRunnerSupportsStrategyAssertions", "strategy_assertions"}},
 		{"context.compression_strategy", []string{"TestRunnerSupportsCompressionModeStrategyAssertions", "TestOpenAICompatibleClientUsesRequestBaseURL", "model_base_url"}},

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -161,6 +162,18 @@ func TestRestorePersistedAgentDefinitionsSkipsMissingAssetDefault(t *testing.T) 
 	}
 }
 
+func TestRestorePersistedAgentDefinitionsAllowsMissingMigrationSchema(t *testing.T) {
+	ctx := context.Background()
+	registry := loader.NewStaticLoader(loader.TestAgentDefinition())
+	store := restorePackageStore{err: errors.New(`ERROR: relation "agent_definitions" does not exist (SQLSTATE 42P01)`)}
+	if err := restorePersistedAgentDefinitions(ctx, registry, store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Load(ctx, "", "test-agent", "v1"); err != nil {
+		t.Fatalf("expected built-in agent to remain available, got %v", err)
+	}
+}
+
 func TestCoreCrossGroupToolRequiresExplicitPermission(t *testing.T) {
 	ctx := context.Background()
 	core, err := New(config.Config{})
@@ -242,13 +255,20 @@ func TestCoreCrossGroupToolRequiresExplicitPermission(t *testing.T) {
 type restorePackageStore struct {
 	definitions []contracts.AgentDefinition
 	assets      []agentpackage.AgentAsset
+	err         error
 }
 
 func (s restorePackageStore) ListAgentDefinitions(context.Context) ([]contracts.AgentDefinition, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	return s.definitions, nil
 }
 
 func (s restorePackageStore) ListAgentAssets(_ context.Context, tenantID contracts.TenantID) ([]agentpackage.AgentAsset, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	out := make([]agentpackage.AgentAsset, 0, len(s.assets))
 	for _, asset := range s.assets {
 		if tenantID != "" && asset.TenantID != tenantID {

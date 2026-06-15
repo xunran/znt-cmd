@@ -71,10 +71,10 @@ func TestBuilderCarriesConversationContext(t *testing.T) {
 func TestApplyRuntimeHookPatchDropsSourcesAndAddsExternalContext(t *testing.T) {
 	view := contracts.WorkView{
 		ConversationContext: &contracts.ConversationContext{},
-		MemorySummaries:    []contracts.MemorySummary{{MemoryID: "memory_1"}},
-		ArtifactRefs:       []contracts.ArtifactRef{{ArtifactID: "artifact_1"}},
-		CandidateTools:     []contracts.ToolCard{{ToolID: "tool_1"}},
-		Constraints:        []string{"base"},
+		MemorySummaries:     []contracts.MemorySummary{{MemoryID: "memory_1"}},
+		ArtifactRefs:        []contracts.ArtifactRef{{ArtifactID: "artifact_1"}},
+		CandidateTools:      []contracts.ToolCard{{ToolID: "tool_1"}},
+		Constraints:         []string{"base"},
 	}
 
 	ApplyRuntimeHookPatch(&view, runtimehook.Patch{

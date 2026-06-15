@@ -533,6 +533,294 @@
         }
       }
     },
+    "/v1/approvals": {
+      "get": {
+        "summary": "List approval requests",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "rejected",
+                "used"
+              ]
+            }
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trace_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "approval list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approvals": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ApprovalRequest"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "401": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create an approval request",
+        "description": "Requires optimizer or admin role.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "resource_type",
+                  "resource_id",
+                  "action"
+                ],
+                "properties": {
+                  "resource_type": {
+                    "type": "string"
+                  },
+                  "resource_id": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string"
+                  },
+                  "risk_level": {
+                    "type": "string"
+                  },
+                  "risk": {
+                    "type": "string",
+                    "description": "Backward-compatible alias for risk_level."
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "requested_by": {
+                    "type": "string"
+                  },
+                  "trace_id": {
+                    "type": "string"
+                  },
+                  "expires_at": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "approval created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approval": {
+                      "$ref": "#/components/schemas/ApprovalRequest"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "401": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
+    "/v1/approvals/{approval_id}": {
+      "get": {
+        "summary": "Get an approval request",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "approval_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "approval request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approval": {
+                      "$ref": "#/components/schemas/ApprovalRequest"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Approve or reject an approval request",
+        "description": "Requires optimizer or admin role. Supports only status=approved or status=rejected. Command callers may alternatively use approval.approve or approval.reject through /v1/commands.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "approval_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "approved",
+                      "rejected"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "approval resolved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "approval": {
+                      "$ref": "#/components/schemas/ApprovalRequest"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "403": {
+            "$ref": "#/components/responses/APIError"
+          },
+          "404": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      },
+      "delete": {
+        "summary": "Approval delete is not supported",
+        "description": "Approval requests are immutable; approve or reject instead.",
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "approval_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "405": {
+            "$ref": "#/components/responses/APIError"
+          }
+        }
+      }
+    },
     "/v1/traces/{trace_id}": {
       "get": {
         "summary": "Trace events by trace id",
@@ -9347,6 +9635,24 @@
           "policy_set_id": {
             "type": "string"
           },
+          "carrier_kind": {
+            "type": "string"
+          },
+          "runtime_contract": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "source_provider_id": {
+            "type": "string"
+          },
+          "carrier_version": {
+            "type": "string"
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
           "version_snapshot": {
             "$ref": "#/components/schemas/VersionSnapshot"
           },
@@ -9377,6 +9683,15 @@
             "type": "string"
           },
           "agent_package": {
+            "type": "string"
+          },
+          "carrier_kind": {
+            "type": "string"
+          },
+          "runtime_contract": {
+            "type": "string"
+          },
+          "carrier_version": {
             "type": "string"
           },
           "source_kind": {
@@ -9742,6 +10057,12 @@
           "package_version_id": {
             "type": "string"
           },
+          "carrier_kind": {
+            "type": "string"
+          },
+          "runtime_contract": {
+            "type": "string"
+          },
           "source_kind": {
             "type": "string"
           },
@@ -9778,6 +10099,12 @@
       "RunStrategyDiagnostic": {
         "type": "object",
         "properties": {
+          "carrier_kind": {
+            "type": "string"
+          },
+          "runtime_contract": {
+            "type": "string"
+          },
           "source_kind": {
             "type": "string"
           },
@@ -10864,6 +11191,24 @@
             "type": "string"
           },
           "default_version": {
+            "type": "string"
+          },
+          "carrier_kind": {
+            "type": "string"
+          },
+          "runtime_contract": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "source_provider_id": {
+            "type": "string"
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
+          "conformance_status": {
             "type": "string"
           },
           "created_by": {
@@ -14745,6 +15090,27 @@
             "type": "string"
           },
           "compiled_hash": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": "string"
+          },
+          "source_provider_id": {
+            "type": "string"
+          },
+          "manifest_version": {
+            "type": "string"
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
+          "carrier_kind": {
+            "type": "string"
+          },
+          "runtime_contract": {
+            "type": "string"
+          },
+          "conformance_status": {
             "type": "string"
           },
           "created_by": {

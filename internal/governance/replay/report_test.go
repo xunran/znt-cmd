@@ -40,10 +40,10 @@ func TestBuildReplayReport(t *testing.T) {
 
 func TestBuildReplayReportCollectsStrategyResolvedHash(t *testing.T) {
 	report := Build([]contracts.TraceEvent{{
-		TraceID: "trace_1",
+		TraceID:  "trace_1",
 		TenantID: "tenant_1",
-		Type:    contracts.TraceStrategyResolved,
-		Payload: map[string]any{"strategy_hash": "strategy_hash_from_resolver"},
+		Type:     contracts.TraceStrategyResolved,
+		Payload:  map[string]any{"strategy_hash": "strategy_hash_from_resolver"},
 	}})
 	if len(report.ContextStrategyHashes) != 1 || report.ContextStrategyHashes[0] != "strategy_hash_from_resolver" {
 		t.Fatalf("expected strategy hash from strategy.resolved trace, got %#v", report)
@@ -52,9 +52,9 @@ func TestBuildReplayReportCollectsStrategyResolvedHash(t *testing.T) {
 
 func TestBuildReplayReportCollectsContextCollectionHash(t *testing.T) {
 	report := Build([]contracts.TraceEvent{{
-		TraceID: "trace_1",
+		TraceID:  "trace_1",
 		TenantID: "tenant_1",
-		Type:    contracts.TraceContextCollectionCompleted,
+		Type:     contracts.TraceContextCollectionCompleted,
 		Payload: map[string]any{
 			"context_assembly_report": contracts.ContextAssemblyReport{
 				StrategyHash: "strategy_hash_from_context_collection",

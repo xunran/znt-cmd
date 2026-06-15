@@ -23,6 +23,16 @@ func TestRunRepositoryLifecycle(t *testing.T) {
 	if err := repo.Create(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
+	created, err := repo.Get(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.CarrierKind != contracts.AgentCarrierKindNativeAgent ||
+		created.RuntimeContract != contracts.RuntimeContractManaged ||
+		created.SourceKind != contracts.AgentSourceKindPackage ||
+		created.VersionSnapshot.CarrierKind != contracts.AgentCarrierKindNativeAgent {
+		t.Fatalf("expected default native carrier snapshot, got %#v", created)
+	}
 	running, err := repo.MarkRunning(context.Background(), run.RunID)
 	if err != nil {
 		t.Fatal(err)

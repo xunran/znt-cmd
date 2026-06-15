@@ -15,7 +15,8 @@ func ApplyContextSourcePolicy(view *contracts.WorkView, strategy contracts.Conte
 			view.ConversationContext.RecentMessages = nil
 			reports = append(reports, NewContextSourceReport(SourceConversationRecent, candidates, 0, contracts.IntValue(strategy.RecentMessageLimit), "disabled_by_context_strategy"))
 		} else {
-			selected, dropped, reason := applyConversationMessageBudget(&view.ConversationContext.RecentMessages, SourceBudget(strategy, SourceConversationRecent))
+			budget, hasBudget := SourceBudget(strategy, SourceConversationRecent)
+			selected, dropped, reason := applyConversationMessageBudget(&view.ConversationContext.RecentMessages, budget, hasBudget)
 			reports = append(reports, NewContextSourceReport(SourceConversationRecent, candidates, selected, SourceReportLimit(strategy, SourceConversationRecent, contracts.IntValue(strategy.RecentMessageLimit)), reason))
 			if dropped > 0 && reason == "" {
 				reports[len(reports)-1].Reason = "limited_by_context_strategy"
@@ -26,7 +27,8 @@ func ApplyContextSourcePolicy(view *contracts.WorkView, strategy contracts.Conte
 			view.ConversationContext.Retrieved = nil
 			reports = append(reports, NewContextSourceReport(SourceConversationRetrieval, candidates, 0, contracts.IntValue(strategy.RetrievalMaxResults), "disabled_by_context_strategy"))
 		} else {
-			selected, dropped, reason := applyRetrievedContextBudget(&view.ConversationContext.Retrieved, SourceBudget(strategy, SourceConversationRetrieval))
+			budget, hasBudget := SourceBudget(strategy, SourceConversationRetrieval)
+			selected, dropped, reason := applyRetrievedContextBudget(&view.ConversationContext.Retrieved, budget, hasBudget)
 			reports = append(reports, NewContextSourceReport(SourceConversationRetrieval, candidates, selected, SourceReportLimit(strategy, SourceConversationRetrieval, contracts.IntValue(strategy.RetrievalMaxResults)), reason))
 			if dropped > 0 && reason == "" {
 				reports[len(reports)-1].Reason = "limited_by_context_strategy"
@@ -38,7 +40,8 @@ func ApplyContextSourcePolicy(view *contracts.WorkView, strategy contracts.Conte
 		view.TaskHistory = nil
 		reports = append(reports, NewContextSourceReport(SourceTaskHistory, candidates, 0, contracts.IntValue(strategy.TaskHistoryMaxItems), "disabled_by_context_strategy"))
 	} else {
-		selected, dropped, reason := applyRetrievedContextBudget(&view.TaskHistory, SourceBudget(strategy, SourceTaskHistory))
+		budget, hasBudget := SourceBudget(strategy, SourceTaskHistory)
+		selected, dropped, reason := applyRetrievedContextBudget(&view.TaskHistory, budget, hasBudget)
 		reports = append(reports, NewContextSourceReport(SourceTaskHistory, candidates, selected, SourceReportLimit(strategy, SourceTaskHistory, contracts.IntValue(strategy.TaskHistoryMaxItems)), reason))
 		if dropped > 0 && reason == "" {
 			reports[len(reports)-1].Reason = "limited_by_context_strategy"
@@ -52,7 +55,8 @@ func ApplyContextSourcePolicy(view *contracts.WorkView, strategy contracts.Conte
 		view.MemorySummaries = nil
 		reports = append(reports, NewContextSourceReport(SourceMemorySummary, candidates, 0, MemoryReadLimit(strategy, memory), "disabled_by_context_strategy"))
 	} else {
-		selected, dropped, reason := applyMemorySummaryBudget(&view.MemorySummaries, SourceBudget(strategy, SourceMemorySummary))
+		budget, hasBudget := SourceBudget(strategy, SourceMemorySummary)
+		selected, dropped, reason := applyMemorySummaryBudget(&view.MemorySummaries, budget, hasBudget)
 		reports = append(reports, NewContextSourceReport(SourceMemorySummary, candidates, selected, SourceReportLimit(strategy, SourceMemorySummary, MemoryReadLimit(strategy, memory)), reason))
 		if dropped > 0 && reason == "" {
 			reports[len(reports)-1].Reason = "limited_by_context_strategy"
@@ -63,7 +67,8 @@ func ApplyContextSourcePolicy(view *contracts.WorkView, strategy contracts.Conte
 		view.ToolResultSummaries = nil
 		reports = append(reports, NewContextSourceReport(SourceToolResults, candidates, 0, contracts.IntValue(strategy.ToolResultMaxItems), "disabled_by_context_strategy"))
 	} else {
-		selected, dropped, reason := applyToolResultBudget(&view.ToolResultSummaries, SourceBudget(strategy, SourceToolResults))
+		budget, hasBudget := SourceBudget(strategy, SourceToolResults)
+		selected, dropped, reason := applyToolResultBudget(&view.ToolResultSummaries, budget, hasBudget)
 		reports = append(reports, NewContextSourceReport(SourceToolResults, candidates, selected, SourceReportLimit(strategy, SourceToolResults, contracts.IntValue(strategy.ToolResultMaxItems)), reason))
 		if dropped > 0 && reason == "" {
 			reports[len(reports)-1].Reason = "limited_by_context_strategy"

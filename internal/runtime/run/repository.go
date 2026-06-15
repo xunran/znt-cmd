@@ -56,6 +56,7 @@ func (r *InMemoryRepository) Create(_ context.Context, run contracts.AgentRun) e
 	if _, ok := r.runs[run.RunID]; ok {
 		return storagerepo.ErrDuplicateRequest
 	}
+	contracts.NormalizeRunCarrierSnapshot(&run)
 	r.runs[run.RunID] = run
 	return nil
 }
@@ -182,6 +183,7 @@ func (r *InMemoryRepository) update(runID contracts.AgentRunID, fn func(*contrac
 		return contracts.AgentRun{}, storagerepo.ErrNotFound
 	}
 	fn(&run)
+	contracts.NormalizeRunCarrierSnapshot(&run)
 	r.runs[runID] = run
 	return run, nil
 }

@@ -517,7 +517,7 @@ func TestCoordinatorLimitsRetrievedContext(t *testing.T) {
 			SuggestedAction: contextconversation.ActionRetrieve,
 		}},
 		ContextRetriever: retriever,
-		Now: func() time.Time { return now },
+		Now:              func() time.Time { return now },
 	}
 	strategy := agentstrategy.DefaultContextStrategy()
 	strategy.RetrievalMaxResults = contracts.IntPtr(1)

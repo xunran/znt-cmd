@@ -10,6 +10,7 @@ import (
 	"znt/internal/app/auth"
 	"znt/internal/app/core"
 	"znt/internal/contracts"
+	runtimedriver "znt/internal/runtime/driver"
 	"znt/pkg/idgen"
 )
 
@@ -74,6 +75,16 @@ func resolveRunnableAgentTarget(r *http.Request, appCore *core.Core, tenantID co
 		return route, err
 	}
 	return route, nil
+}
+
+func driverForRoute(appCore *core.Core, route agentRoute) (runtimedriver.Driver, error) {
+	if appCore == nil || appCore.RuntimeDrivers == nil {
+		return nil, contracts.NewRuntimeError(contracts.CodeAgentRuntimeDriverUnavailable, "runtime driver registry is unavailable", nil)
+	}
+	sourceKind := contracts.NormalizeSourceKind(route.Release.SourceKind)
+	carrierKind := contracts.NormalizeCarrierKind(sourceKind, route.Release.CarrierKind)
+	runtimeContract := contracts.NormalizeRuntimeContract(carrierKind, route.Release.RuntimeContract)
+	return appCore.RuntimeDrivers.Get(carrierKind, runtimeContract)
 }
 
 func activeAgentVersion(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID) (contracts.AgentVersion, bool, error) {
@@ -213,6 +224,8 @@ func recordCanaryRoute(r *http.Request, appCore *core.Core, tenantID contracts.T
 				"agent_id":           agentID,
 				"agent_version":      release.Version,
 				"package_version_id": release.PackageVersionID,
+				"carrier_kind":       contracts.NormalizeCarrierKind(release.SourceKind, release.CarrierKind),
+				"runtime_contract":   contracts.NormalizeRuntimeContract(contracts.NormalizeCarrierKind(release.SourceKind, release.CarrierKind), release.RuntimeContract),
 				"source_kind":        release.SourceKind,
 				"source_provider_id": release.SourceProviderID,
 				"manifest_version":   release.ManifestVersion,
@@ -240,6 +253,8 @@ func recordAgentRouteResolved(r *http.Request, appCore *core.Core, tenantID cont
 		"resolved_version":    route.ResolvedVersion,
 		"release_status":      releaseStatus,
 		"package_version_id":  route.Release.PackageVersionID,
+		"carrier_kind":        contracts.NormalizeCarrierKind(route.Release.SourceKind, route.Release.CarrierKind),
+		"runtime_contract":    contracts.NormalizeRuntimeContract(contracts.NormalizeCarrierKind(route.Release.SourceKind, route.Release.CarrierKind), route.Release.RuntimeContract),
 		"source_kind":         route.Release.SourceKind,
 		"source_provider_id":  route.Release.SourceProviderID,
 		"manifest_version":    route.Release.ManifestVersion,

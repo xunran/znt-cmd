@@ -205,6 +205,84 @@ func TestOptimizerCommandDispatchCoverageForContractWarnings(t *testing.T) {
 	}
 }
 
+func TestApprovalHTTPResourceLifecycle(t *testing.T) {
+	appCore, err := core.New(config.Config{
+		ServiceName: "clean-core",
+		Version:     "test",
+		Env:         "test",
+		HTTPAddr:    ":0",
+		LogLevel:    "error",
+		Readiness:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	deniedCreateResp := doJSON(handler, http.MethodPost, "/v1/approvals", map[string]any{
+		"resource_type": "tool",
+		"resource_id":   "crm.delete_customer",
+		"action":        "tools.invoke",
+		"risk_level":    "high",
+		"reason":        "runtime caller should not create approvals",
+	})
+	if deniedCreateResp.Code != http.StatusForbidden {
+		t.Fatalf("expected approval create to require optimizer/admin, got %d body %s", deniedCreateResp.Code, deniedCreateResp.Body.String())
+	}
+	createResp := doJSONWithHeaders(handler, http.MethodPost, "/v1/approvals", map[string]any{
+		"resource_type": "tool",
+		"resource_id":   "crm.delete_customer",
+		"action":        "tools.invoke",
+		"risk_level":    "high",
+		"reason":        "destructive customer operation",
+		"requested_by":  "operator-1",
+		"trace_id":      "trace_approval_http",
+	}, map[string]string{"X-Roles": "optimizer"})
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("unexpected approval create status %d body %s", createResp.Code, createResp.Body.String())
+	}
+	var created struct {
+		Approval contracts.ApprovalRequest `json:"approval"`
+	}
+	if err := json.Unmarshal(createResp.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Approval.ApprovalID == "" || created.Approval.ResourceType != "tool" || created.Approval.RiskLevel != contracts.RiskHigh || created.Approval.Status != contracts.ApprovalPending {
+		t.Fatalf("unexpected created approval %#v", created.Approval)
+	}
+	listResp := doJSON(handler, http.MethodGet, "/v1/approvals?status=pending&resource_type=tool&trace_id=trace_approval_http", nil)
+	if listResp.Code != http.StatusOK || !bytes.Contains(listResp.Body.Bytes(), []byte(created.Approval.ApprovalID)) {
+		t.Fatalf("approval list failed %d body %s", listResp.Code, listResp.Body.String())
+	}
+	getResp := doJSON(handler, http.MethodGet, "/v1/approvals/"+string(created.Approval.ApprovalID), nil)
+	if getResp.Code != http.StatusOK || !bytes.Contains(getResp.Body.Bytes(), []byte(`"status":"pending"`)) {
+		t.Fatalf("approval get failed %d body %s", getResp.Code, getResp.Body.String())
+	}
+	crossTenantResp := doJSONWithHeaders(handler, http.MethodGet, "/v1/approvals/"+string(created.Approval.ApprovalID), nil, map[string]string{"X-Tenant-ID": "tenant_other"})
+	if crossTenantResp.Code != http.StatusNotFound {
+		t.Fatalf("expected cross-tenant approval lookup to be hidden, got %d body %s", crossTenantResp.Code, crossTenantResp.Body.String())
+	}
+	deniedPatchResp := doJSON(handler, http.MethodPatch, "/v1/approvals/"+string(created.Approval.ApprovalID), map[string]any{
+		"status": "approved",
+	})
+	if deniedPatchResp.Code != http.StatusForbidden {
+		t.Fatalf("expected approval patch to require optimizer/admin, got %d body %s", deniedPatchResp.Code, deniedPatchResp.Body.String())
+	}
+	patchResp := doJSONWithHeaders(handler, http.MethodPatch, "/v1/approvals/"+string(created.Approval.ApprovalID), map[string]any{
+		"status": "approved",
+	}, map[string]string{"X-Roles": "optimizer"})
+	if patchResp.Code != http.StatusOK || !bytes.Contains(patchResp.Body.Bytes(), []byte(`"status":"approved"`)) {
+		t.Fatalf("approval patch failed %d body %s", patchResp.Code, patchResp.Body.String())
+	}
+	invalidListResp := doJSON(handler, http.MethodGet, "/v1/approvals?status=waiting_info", nil)
+	if invalidListResp.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid approval status to fail, got %d body %s", invalidListResp.Code, invalidListResp.Body.String())
+	}
+	deleteResp := doJSON(handler, http.MethodDelete, "/v1/approvals/"+string(created.Approval.ApprovalID), nil)
+	if deleteResp.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected approval delete to be unsupported, got %d body %s", deleteResp.Code, deleteResp.Body.String())
+	}
+}
+
 func TestRemovedAgentPackagePatchCommandsAreUnsupported(t *testing.T) {
 	appCore, err := core.New(config.Config{
 		ServiceName: "clean-core",
@@ -1645,7 +1723,7 @@ func TestPromptPreviewCommandBuildsBundleWithoutModelCall(t *testing.T) {
 			Context contracts.ContextStrategy `json:"context"`
 		} `json:"effective_strategies"`
 		ContextAssemblyReport *contracts.ContextAssemblyReport `json:"context_assembly_report"`
-		TokenEstimate int `json:"token_estimate"`
+		TokenEstimate         int                              `json:"token_estimate"`
 	}
 	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
@@ -1673,10 +1751,14 @@ func TestPromptPreviewCommandSupportsDraftID(t *testing.T) {
 			"agent_id": "test-agent",
 			"version":  "v-preview",
 			"prompt":   "draft identity prompt",
-			"metadata": map[string]any{
-				"system_prompt":    "draft system prompt",
-				"developer_prompt": "draft developer prompt",
-				"max_tool_calls":   0,
+			"strategies": map[string]any{
+				"prompt": map[string]any{
+					"system_prompt":    "draft system prompt",
+					"developer_prompt": "draft developer prompt",
+				},
+				"tools": map[string]any{
+					"max_tool_calls": 0,
+				},
 			},
 		},
 		"context": map[string]any{"tenant_id": "tenant_1"},
@@ -1843,7 +1925,7 @@ func TestPackageDraftPatchStrategiesRejectsUnknownStrategyFields(t *testing.T) {
 		},
 		"context": map[string]any{"tenant_id": "tenant_1"},
 	}, map[string]string{"X-Roles": "optimizer"})
-	if patch.Code == http.StatusOK || !bytes.Contains(patch.Body.Bytes(), []byte(`unknown field "retrival_max_results"`)) {
+	if patch.Code == http.StatusOK || !bytes.Contains(patch.Body.Bytes(), []byte(`unknown field`)) || !bytes.Contains(patch.Body.Bytes(), []byte(`retrival_max_results`)) {
 		t.Fatalf("expected unknown strategy field rejection, got %d body %s", patch.Code, patch.Body.String())
 	}
 	outerPatch := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
@@ -1970,7 +2052,7 @@ func TestAgentPluginSyncCreatesDraftAndToolManifests(t *testing.T) {
 	handler := NewHandlerWithCore(appCore, logging.New("error"))
 	sync := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{
 		"trace_id": "trace_agent_plugin_sync_1",
-		"command": "agent.plugin.sync",
+		"command":  "agent.plugin.sync",
 		"payload": map[string]any{
 			"provider_id": "crm-plugin",
 			"manifest": map[string]any{
@@ -2066,6 +2148,16 @@ func TestAgentPluginSyncCreatesDraftAndToolManifests(t *testing.T) {
 func TestStrategyDiagnosticsReportsPluginSourceAndConnection(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.ServiceConnections.Upsert(context.Background(), serviceconnection.ServiceConnection{
+		TenantID:       "tenant_1",
+		ConnectionID:   "crm-plugin-connection",
+		Name:           "CRM Plugin Connection",
+		ConnectionType: serviceconnection.TypeHTTPAPI,
+		Status:         serviceconnection.StatusEnabled,
+		BaseURL:        "https://crm.example.test",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := appCore.ToolCatalog.UpsertProvider(context.Background(), toolcatalog.ToolProvider{
@@ -2288,11 +2380,12 @@ func TestAgentPluginSyncFallsBackToToolCatalogWithoutDraft(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"tools": []any{map[string]any{
-					"tool_id":      "crm.catalog_lookup",
-					"operation":    "customers.catalog_lookup",
-					"name":         "CRM catalog lookup",
-					"description":  "Lookup a customer through catalog fallback.",
-					"input_schema": map[string]any{"type": "object"},
+					"tool_id":       "crm.catalog_lookup",
+					"operation":     "customers.catalog_lookup",
+					"name":          "CRM catalog lookup",
+					"description":   "Lookup a customer through catalog fallback.",
+					"input_schema":  map[string]any{"type": "object"},
+					"output_schema": map[string]any{"type": "object"},
 				}},
 			})
 		default:
@@ -2340,7 +2433,7 @@ func TestAgentPluginSyncFallsBackToToolCatalogWithoutDraft(t *testing.T) {
 	}
 	var result struct {
 		Fallback      string                     `json:"fallback"`
-		DraftCreated bool                       `json:"draft_created"`
+		DraftCreated  bool                       `json:"draft_created"`
 		ToolManifests []toolcatalog.ToolManifest `json:"tool_manifests"`
 	}
 	if err := json.Unmarshal(sync.Body.Bytes(), &result); err != nil {
@@ -2613,14 +2706,22 @@ func TestPackageCanaryRoutesDefaultTrafficAndRecordsHit(t *testing.T) {
 		if event.Type == contracts.TraceCanaryRouted {
 			found = true
 			manifestHash, hasManifestHash := event.Payload["manifest_hash"]
-			if event.Payload["strategy_hash"] != release.StrategyHash || event.Payload["source_kind"] != release.SourceKind || !hasManifestHash || manifestHash != release.ManifestHash {
+			if event.Payload["strategy_hash"] != release.StrategyHash ||
+				event.Payload["source_kind"] != release.SourceKind ||
+				event.Payload["carrier_kind"] != release.CarrierKind ||
+				event.Payload["runtime_contract"] != release.RuntimeContract ||
+				!hasManifestHash || manifestHash != release.ManifestHash {
 				t.Fatalf("expected canary route trace to include release strategy evidence, got %#v", event.Payload)
 			}
 		}
 		if event.Type == contracts.TraceAgentRouteResolved && stringFromMap(event.Payload, "route_reason") == "canary_percent" {
 			foundRoute = true
 			manifestHash, hasManifestHash := event.Payload["manifest_hash"]
-			if event.Payload["strategy_hash"] != release.StrategyHash || event.Payload["source_kind"] != release.SourceKind || !hasManifestHash || manifestHash != release.ManifestHash {
+			if event.Payload["strategy_hash"] != release.StrategyHash ||
+				event.Payload["source_kind"] != release.SourceKind ||
+				event.Payload["carrier_kind"] != release.CarrierKind ||
+				event.Payload["runtime_contract"] != release.RuntimeContract ||
+				!hasManifestHash || manifestHash != release.ManifestHash {
 				t.Fatalf("expected route resolved trace to include release strategy evidence, got %#v", event.Payload)
 			}
 		}
@@ -2819,15 +2920,15 @@ func TestPolicyContextGovernanceAffectsPromptPreview(t *testing.T) {
 	policy.ReleasePolicy.RequireApprovalForStable = false
 	policy.ReleasePolicy.RequireCanaryBeforeStable = false
 	policy.ContextGovernancePolicy = contracts.ContextGovernancePolicy{
-		MaxContextTokenBudget:  100,
-		MaxRecentMessageLimit:  2,
-		MaxRetrievalResults:    1,
-		MaxTaskHistoryItems:    1,
-		MaxMemoryItems:         3,
-		MaxArtifactRefItems:    2,
-		MaxToolResultItems:     1,
-		AllowFullDebugMode:     false,
-		AllowLLMCompression:    true,
+		MaxContextTokenBudget:    100,
+		MaxRecentMessageLimit:    2,
+		MaxRetrievalResults:      1,
+		MaxTaskHistoryItems:      1,
+		MaxMemoryItems:           3,
+		MaxArtifactRefItems:      2,
+		MaxToolResultItems:       1,
+		AllowFullDebugMode:       false,
+		AllowLLMCompression:      true,
 		AllowedCompressionModels: []string{"small-compressor"},
 	}
 	createPolicy := doJSONWithHeaders(handler, "POST", "/v1/commands", map[string]any{

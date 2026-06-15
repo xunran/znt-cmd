@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	agentplugin "znt/internal/agentdef/plugin"
 	agentpackage "znt/internal/agentdef/package"
+	agentplugin "znt/internal/agentdef/plugin"
 	"znt/internal/app/auth"
 	"znt/internal/app/core"
 	"znt/internal/contracts"
@@ -126,19 +126,19 @@ func agentPackageSourceFromPayload(payload map[string]any) (agentpackage.AgentPa
 		return agentpackage.AgentPackageSource{}, err
 	}
 	return agentpackage.AgentPackageSource{
-		SourceKind:      contracts.AgentSourceKind(payloadString(payload, "source_kind")),
+		SourceKind:       contracts.AgentSourceKind(payloadString(payload, "source_kind")),
 		ProviderID:       payloadString(payload, "provider_id"),
 		ManifestVersion:  payloadString(payload, "manifest_version"),
-		AgentsMD:        payloadString(payload, "agents_md"),
-		Prompt:          payloadString(payload, "prompt"),
-		Strategies:      strategies,
-		ToolBindings:    parseToolsPayload(payload["tool_bindings"]),
-		Skills:          skills,
+		AgentsMD:         payloadString(payload, "agents_md"),
+		Prompt:           payloadString(payload, "prompt"),
+		Strategies:       strategies,
+		ToolBindings:     parseToolsPayload(payload["tool_bindings"]),
+		Skills:           skills,
 		SkillDefinitions: skillDefinitions,
-		Collaborators:   parseCollaboratorsPayload(payload["collaborators"]),
-		Exports:         parseAgentExportsPayload(payload["exports"]),
-		RuntimeHooks:    parseRuntimeHooksPayload(payload["runtime_hooks"]),
-		Metadata:        metadata,
+		Collaborators:    parseCollaboratorsPayload(payload["collaborators"]),
+		Exports:          parseAgentExportsPayload(payload["exports"]),
+		RuntimeHooks:     parseRuntimeHooksPayload(payload["runtime_hooks"]),
+		Metadata:         metadata,
 	}, nil
 }
 
@@ -239,13 +239,13 @@ func agentPluginSyncToolCatalogFallback(r *http.Request, appCore *core.Core, env
 	}
 	recordAgentPluginSyncedTrace(r, appCore, envelope, caller, "", "", providerID, connectionID, "", len(toolManifests), 0, "tool_catalog_fallback")
 	return map[string]any{
-		"source_kind":       contracts.AgentSourceKindPlugin,
-		"provider_id":       providerID,
-		"fallback":          "tool_catalog",
-		"draft_created":     false,
-		"manifest_error":    manifestErr.Error(),
-		"tool_manifests":    toolManifests,
-		"hook_manifests":    []runtimehook.HookManifest{},
+		"source_kind":    contracts.AgentSourceKindPlugin,
+		"provider_id":    providerID,
+		"fallback":       "tool_catalog",
+		"draft_created":  false,
+		"manifest_error": manifestErr.Error(),
+		"tool_manifests": toolManifests,
+		"hook_manifests": []runtimehook.HookManifest{},
 	}, nil
 }
 
@@ -268,12 +268,12 @@ func recordAgentPluginSyncedTrace(r *http.Request, appCore *core.Core, envelope 
 		payload["draft_created"] = false
 	}
 	_ = appCore.Trace.Record(r.Context(), contracts.TraceEvent{
-		TraceID:  envelope.TraceID,
-		TenantID: caller.TenantID,
-		SpanID:   contracts.SpanID(idgen.New("span")),
-		Type:     contracts.TraceAgentPluginSynced,
+		TraceID:   envelope.TraceID,
+		TenantID:  caller.TenantID,
+		SpanID:    contracts.SpanID(idgen.New("span")),
+		Type:      contracts.TraceAgentPluginSynced,
 		CreatedAt: time.Now().UTC(),
-		Payload: payload,
+		Payload:   payload,
 	})
 }
 
@@ -310,18 +310,18 @@ func agentPluginSourceOverridesFromPayload(payload map[string]any) (agentpackage
 		return agentpackage.AgentPluginSource{}, err
 	}
 	return agentpackage.AgentPluginSource{
-		ProviderID:        payloadString(payload, "provider_id"),
-		ManifestVersion:   payloadString(payload, "manifest_version"),
-		AgentsMD:          payloadString(payload, "agents_md"),
-		Prompt:            payloadString(payload, "prompt"),
-		Strategies:        strategies,
-		ToolBindings:      parseToolsPayload(payload["tool_bindings"]),
-		Skills:            skills,
-		SkillDefinitions:  skillDefinitions,
-		Collaborators:     parseCollaboratorsPayload(payload["collaborators"]),
-		Exports:           parseAgentExportsPayload(payload["exports"]),
-		RuntimeHooks:      parseRuntimeHooksPayload(payload["runtime_hooks"]),
-		Metadata:          metadata,
+		ProviderID:       payloadString(payload, "provider_id"),
+		ManifestVersion:  payloadString(payload, "manifest_version"),
+		AgentsMD:         payloadString(payload, "agents_md"),
+		Prompt:           payloadString(payload, "prompt"),
+		Strategies:       strategies,
+		ToolBindings:     parseToolsPayload(payload["tool_bindings"]),
+		Skills:           skills,
+		SkillDefinitions: skillDefinitions,
+		Collaborators:    parseCollaboratorsPayload(payload["collaborators"]),
+		Exports:          parseAgentExportsPayload(payload["exports"]),
+		RuntimeHooks:     parseRuntimeHooksPayload(payload["runtime_hooks"]),
+		Metadata:         metadata,
 	}, nil
 }
 

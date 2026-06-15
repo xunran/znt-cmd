@@ -14,6 +14,7 @@ $ErrorActionPreference = "Stop"
 
 $root = Get-RepoRoot
 $reportDir = New-E2EReportDir -Name "release-candidate"
+$originalDatabaseURL = $env:CLEAN_CORE_DATABASE_URL
 $summary = [ordered]@{
     status = "started"
     report_dir = $reportDir
@@ -42,6 +43,28 @@ function Invoke-Step {
     }
     $step.completed_at = (Get-Date).ToUniversalTime().ToString("o")
     $summary.steps += [pscustomobject]$step
+}
+
+function Invoke-WithDatabaseUrl {
+    param(
+        [AllowNull()] [string]$DatabaseUrl,
+        [Parameter(Mandatory = $true)] [scriptblock]$Block
+    )
+    $previous = $env:CLEAN_CORE_DATABASE_URL
+    try {
+        if ([string]::IsNullOrWhiteSpace($DatabaseUrl)) {
+            Remove-Item Env:CLEAN_CORE_DATABASE_URL -ErrorAction SilentlyContinue
+        } else {
+            $env:CLEAN_CORE_DATABASE_URL = $DatabaseUrl
+        }
+        & $Block
+    } finally {
+        if ([string]::IsNullOrWhiteSpace($previous)) {
+            Remove-Item Env:CLEAN_CORE_DATABASE_URL -ErrorAction SilentlyContinue
+        } else {
+            $env:CLEAN_CORE_DATABASE_URL = $previous
+        }
+    }
 }
 
 try {
@@ -100,43 +123,56 @@ try {
     }
 
     Invoke-Step "api-smoke" {
-        if ($PackageDir -ne "") {
-            & "$PSScriptRoot\e2e_api_smoke.ps1" -ReportDir (Join-Path $reportDir "api-smoke") -PackageDir $PackageDir
-        } else {
-            & "$PSScriptRoot\e2e_api_smoke.ps1" -ReportDir (Join-Path $reportDir "api-smoke")
+        Invoke-WithDatabaseUrl "" {
+            if ($PackageDir -ne "") {
+                & "$PSScriptRoot\e2e_api_smoke.ps1" -ReportDir (Join-Path $reportDir "api-smoke") -PackageDir $PackageDir
+            } else {
+                & "$PSScriptRoot\e2e_api_smoke.ps1" -ReportDir (Join-Path $reportDir "api-smoke")
+            }
         }
     }
 
     Invoke-Step "clean-core-mmr-service-e2e" {
-        & "$PSScriptRoot\e2e_clean_core_mmr_service.ps1" -ReportDir (Join-Path $reportDir "clean-core-mmr-service")
+        Invoke-WithDatabaseUrl "" {
+            & "$PSScriptRoot\e2e_clean_core_mmr_service.ps1" -ReportDir (Join-Path $reportDir "clean-core-mmr-service")
+        }
     }
 
     Invoke-Step "clean-core-all-interfaces-e2e" {
-        & "$PSScriptRoot\e2e_clean_core_all_interfaces.ps1" -ReportDir (Join-Path $reportDir "clean-core-all-interfaces")
+        Invoke-WithDatabaseUrl "" {
+            & "$PSScriptRoot\e2e_clean_core_all_interfaces.ps1" -ReportDir (Join-Path $reportDir "clean-core-all-interfaces")
+        }
     }
 
     if ($RunPostgres) {
         Invoke-Step "postgres-release" {
-            if ($PackageDir -ne "") {
-                & "$PSScriptRoot\e2e_postgres_release.ps1" -ReportDir (Join-Path $reportDir "postgres-release") -PackageDir $PackageDir
-            } else {
-                & "$PSScriptRoot\e2e_postgres_release.ps1" -ReportDir (Join-Path $reportDir "postgres-release")
+            if ([string]::IsNullOrWhiteSpace($originalDatabaseURL)) {
+                throw "RunPostgres requires CLEAN_CORE_DATABASE_URL"
+            }
+            Invoke-WithDatabaseUrl $originalDatabaseURL {
+                if ($PackageDir -ne "") {
+                    & "$PSScriptRoot\e2e_postgres_release.ps1" -ReportDir (Join-Path $reportDir "postgres-release") -PackageDir $PackageDir
+                } else {
+                    & "$PSScriptRoot\e2e_postgres_release.ps1" -ReportDir (Join-Path $reportDir "postgres-release")
+                }
             }
         }
     }
 
     if ($RunRealModel) {
         Invoke-Step "real-model-smoke" {
-            $realArgs = @{
-                ReportDir = (Join-Path $reportDir "deepseek-smoke")
+            Invoke-WithDatabaseUrl "" {
+                $realArgs = @{
+                    ReportDir = (Join-Path $reportDir "deepseek-smoke")
+                }
+                if ($DeepSeekEnvFile -ne "") {
+                    $realArgs["EnvFile"] = $DeepSeekEnvFile
+                }
+                if ($PackageDir -ne "") {
+                    $realArgs["PackageDir"] = $PackageDir
+                }
+                & "$PSScriptRoot\e2e_deepseek_smoke.ps1" @realArgs
             }
-            if ($DeepSeekEnvFile -ne "") {
-                $realArgs["EnvFile"] = $DeepSeekEnvFile
-            }
-            if ($PackageDir -ne "") {
-                $realArgs["PackageDir"] = $PackageDir
-            }
-            & "$PSScriptRoot\e2e_deepseek_smoke.ps1" @realArgs
         }
     }
 

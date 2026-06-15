@@ -33,21 +33,21 @@ type Collector struct {
 }
 
 type Input struct {
-	TenantID       contracts.TenantID
-	TaskID         contracts.TaskID
-	RunID          contracts.AgentRunID
-	AgentID        contracts.AgentID
-	UserID         contracts.UserID
+	TenantID        contracts.TenantID
+	TaskID          contracts.TaskID
+	RunID           contracts.AgentRunID
+	AgentID         contracts.AgentID
+	UserID          contracts.UserID
 	ContextStrategy contracts.ContextStrategy
 	MemoryStrategy  contracts.MemoryUseStrategy
 }
 
 type Result struct {
-	TaskEvents      []contracts.TaskEvent
-	TaskHistory     []contracts.RetrievedContext
-	Memory          []contracts.MemorySummary
-	ArtifactRefs    []contracts.ArtifactRef
-	ToolResults     []contracts.ToolResultSummary
+	TaskEvents   []contracts.TaskEvent
+	TaskHistory  []contracts.RetrievedContext
+	Memory       []contracts.MemorySummary
+	ArtifactRefs []contracts.ArtifactRef
+	ToolResults  []contracts.ToolResultSummary
 }
 
 func (c Collector) Collect(ctx context.Context, input Input) (Result, error) {

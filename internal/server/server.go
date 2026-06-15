@@ -8,7 +8,7 @@ import (
 	"znt/internal/app/auth"
 	"znt/internal/app/core"
 	"znt/internal/contracts"
-	"znt/internal/runtime/kernel"
+	runtimedriver "znt/internal/runtime/driver"
 )
 
 func dispatchCommand(r *http.Request, appCore *core.Core, metrics *metricsState, envelope contracts.AgentEnvelope, caller auth.CallerIdentity) (any, error) {
@@ -40,9 +40,24 @@ func dispatchCommand(r *http.Request, appCore *core.Core, metrics *metricsState,
 			observeRun(true)
 			return nil, err
 		}
+		driver, err := driverForRoute(appCore, route)
+		if err != nil {
+			releaseAdmission()
+			observeRun(true)
+			return nil, err
+		}
 		envelope.Target.Version = route.ResolvedVersion
 		if appCore.Config.EffectiveAgentRunExecutionMode() == "async" {
-			prepared, err := appCore.Coordinator.PrepareEnvelopeRun(r.Context(), envelope)
+			preparer, ok := driver.(runtimedriver.PreparedDriver)
+			if !ok {
+				releaseAdmission()
+				observeRun(true)
+				return nil, contracts.NewRuntimeError(contracts.CodeAgentRuntimeDriverUnavailable, "runtime driver does not support async prepared execution", map[string]any{
+					"carrier_kind":     driver.Kind(),
+					"runtime_contract": driver.Contract(),
+				})
+			}
+			prepared, err := preparer.PrepareRun(r.Context(), runtimedriver.StartRunRequest{Envelope: envelope})
 			if err != nil {
 				releaseAdmission()
 				observeRun(true)
@@ -52,21 +67,30 @@ func dispatchCommand(r *http.Request, appCore *core.Core, metrics *metricsState,
 			if route.Canary {
 				_ = recordCanaryRoute(r, appCore, caller.TenantID, envelope.TraceID, caller, envelope.Target.AgentID, prepared.Run.RunID, route.Release)
 			}
-			go func(prepared kernel.PreparedRun, release func()) {
+			go func(driver runtimedriver.PreparedDriver, prepared runtimedriver.PreparedRun, release func()) {
 				defer release()
-				_, _ = appCore.Coordinator.ExecutePreparedRun(context.Background(), prepared)
-			}(prepared, releaseAdmission)
+				_, _ = driver.ExecutePreparedRun(context.Background(), prepared)
+			}(preparer, prepared, releaseAdmission)
 			observeRun(false)
 			return prepared.Result(), nil
 		}
 		defer releaseAdmission()
-		prepared, err := appCore.Coordinator.PrepareEnvelopeRun(r.Context(), envelope)
+		preparer, ok := driver.(runtimedriver.PreparedDriver)
+		if !ok {
+			result, err := driver.StartRun(r.Context(), runtimedriver.StartRunRequest{Envelope: envelope})
+			observeRun(err != nil)
+			if err == nil && route.Canary {
+				_ = recordCanaryRoute(r, appCore, caller.TenantID, envelope.TraceID, caller, envelope.Target.AgentID, result.RunID, route.Release)
+			}
+			return result, err
+		}
+		prepared, err := preparer.PrepareRun(r.Context(), runtimedriver.StartRunRequest{Envelope: envelope})
 		if err != nil {
 			observeRun(true)
 			return nil, err
 		}
 		_ = recordAgentRouteResolved(r, appCore, caller.TenantID, envelope.TraceID, envelope.Target.AgentID, prepared.Run.RunID, route)
-		result, err := appCore.Coordinator.ExecutePreparedRun(r.Context(), prepared)
+		result, err := preparer.ExecutePreparedRun(r.Context(), prepared)
 		observeRun(err != nil)
 		if err == nil {
 			if route.Canary {

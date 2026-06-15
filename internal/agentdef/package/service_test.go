@@ -34,12 +34,42 @@ func TestPackageDraftValidatePublishWritesAudit(t *testing.T) {
 	if release.SourceKind != contracts.AgentSourceKindPackage {
 		t.Fatalf("expected release source kind, got %#v", release)
 	}
+	if release.CarrierKind != contracts.AgentCarrierKindNativeAgent || release.RuntimeContract != contracts.RuntimeContractManaged {
+		t.Fatalf("expected native managed carrier release, got %#v", release)
+	}
 	events, err := auditLogger.Search(context.Background(), audit.Filter{Action: contracts.AuditAgentPackagePublish})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected publish audit, got %d", len(events))
+	}
+}
+
+func TestPublishPluginDraftWritesCarrierEvidence(t *testing.T) {
+	service := NewService(nil)
+	draft, err := service.CreateDraft(context.Background(), "tenant_1", "agent_plugin", "v1", PackageSourceFromPlugin(AgentPluginSource{
+		ProviderID:      "crm-plugin",
+		ManifestVersion: "2026-06-12",
+		Prompt:          "plugin prompt",
+		Metadata:        map[string]any{"manifest_hash": "sha256:manifest"},
+	}), "optimizer_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ValidateDraft(context.Background(), draft.DraftID); err != nil {
+		t.Fatal(err)
+	}
+	release, err := service.PublishDraft(context.Background(), draft.DraftID, "optimizer_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release.SourceKind != contracts.AgentSourceKindPlugin ||
+		release.SourceProviderID != "crm-plugin" ||
+		release.ManifestHash != "sha256:manifest" ||
+		release.CarrierKind != contracts.AgentCarrierKindAgentPluginSource ||
+		release.RuntimeContract != contracts.RuntimeContractManaged {
+		t.Fatalf("expected plugin source carrier evidence, got %#v", release)
 	}
 }
 

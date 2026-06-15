@@ -210,13 +210,17 @@ func (l *StaticLoader) ListByTenant(tenantID contracts.TenantID) []contracts.Age
 
 func TestAgentDefinition() contracts.AgentDefinition {
 	return contracts.AgentDefinition{
-		AgentID:         "test-agent",
-		Version:         "v1",
-		Name:            "Test Agent",
-		Description:     "A static agent definition for Clean Core tests.",
-		IdentityPrompt:  "You are Test Agent.",
-		SystemPrompt:    "Return decisions as JSON.",
-		DeveloperPrompt: "Be concise.",
+		AgentID:           "test-agent",
+		Version:           "v1",
+		SourceKind:        contracts.AgentSourceKindPackage,
+		CarrierKind:       contracts.AgentCarrierKindNativeAgent,
+		RuntimeContract:   contracts.RuntimeContractManaged,
+		ConformanceStatus: contracts.RuntimeConformancePassed,
+		Name:              "Test Agent",
+		Description:       "A static agent definition for Clean Core tests.",
+		IdentityPrompt:    "You are Test Agent.",
+		SystemPrompt:      "Return decisions as JSON.",
+		DeveloperPrompt:   "Be concise.",
 		Tools: contracts.AgentToolsConfig{
 			AllowedToolIDs: []string{"echo", "origin.agent.delegate"},
 			ExposedToolIDs: []string{"echo"},

@@ -123,7 +123,7 @@ func TestResolveAppliesCompressionModelAllowlistWhenModelOmitted(t *testing.T) {
 	}
 	policy := contracts.PolicySet{
 		ContextGovernancePolicy: contracts.ContextGovernancePolicy{
-			AllowLLMCompression:     true,
+			AllowLLMCompression:      true,
 			AllowedCompressionModels: []string{"small-compressor"},
 		},
 	}
@@ -156,7 +156,7 @@ func TestResolveAppliesCompressionBaseURLAllowlist(t *testing.T) {
 	}
 	policy := contracts.PolicySet{
 		ContextGovernancePolicy: contracts.ContextGovernancePolicy{
-			AllowLLMCompression:     true,
+			AllowLLMCompression:      true,
 			AllowedCompressionModels: []string{"small-compressor"},
 		},
 	}

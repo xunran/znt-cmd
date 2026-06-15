@@ -1249,7 +1249,7 @@ func (s *Service) staticProviderConnection(ctx context.Context, tenantID contrac
 			return staticProviderConnection{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "endpoint or service_connection_id is required for static_hook_host providers", map[string]any{"provider_id": provider.ProviderID})
 		}
 		return staticProviderConnection{
-			BaseURL:  provider.Endpoint,
+			BaseURL: provider.Endpoint,
 			Timeout: defaultStaticHookTimeout(requestedTimeout),
 		}, nil
 	}

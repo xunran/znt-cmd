@@ -788,18 +788,23 @@ type RunRepository struct {
 }
 
 func (r *RunRepository) Create(ctx context.Context, run contracts.AgentRun) error {
+	applyRunCarrierDefaults(&run)
 	snapshot, err := jsonValue(run.VersionSnapshot)
 	if err != nil {
 		return err
 	}
 	result, err := r.db.ExecContext(ctx, `
 INSERT INTO agent_runs (
-  run_id, trace_id, tenant_id, agent_id, agent_version, task_id, input, conversation_id, thread_id, message_id, status,
+  run_id, trace_id, tenant_id, agent_id, agent_version,
+  carrier_kind, runtime_contract, source_kind, source_provider_id, carrier_version, manifest_hash,
+  task_id, input, conversation_id, thread_id, message_id, status,
   step_count, tool_call_count, policy_set_id, version_snapshot,
   started_at, completed_at, error_code, error_message
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 ON CONFLICT (run_id) DO NOTHING`,
-		run.RunID, run.TraceID, run.TenantID, run.AgentID, run.AgentVersion, nullString(string(run.TaskID)),
+		run.RunID, run.TraceID, run.TenantID, run.AgentID, run.AgentVersion,
+		run.CarrierKind, run.RuntimeContract, run.SourceKind, nullString(run.SourceProviderID), nullString(string(run.CarrierVersion)), nullString(run.ManifestHash),
+		nullString(string(run.TaskID)),
 		run.Input, nullString(run.ConversationID), nullString(run.ThreadID), nullString(run.MessageID),
 		run.Status, run.StepCount, run.ToolCallCount, run.PolicySetID, snapshot,
 		run.StartedAt.UTC(), nullTime(run.CompletedAt), nullString(string(run.ErrorCode)), nullString(run.ErrorMessage),
@@ -901,11 +906,19 @@ func (r *RunRepository) UpdateVersionSnapshot(ctx context.Context, runID contrac
 		return contracts.AgentRun{}, err
 	}
 	return scanRun(r.db.QueryRowContext(ctx, `
-UPDATE agent_runs SET version_snapshot=$2
+UPDATE agent_runs SET
+  version_snapshot=$2,
+  carrier_kind=$3,
+  runtime_contract=$4,
+  source_kind=$5,
+  source_provider_id=$6,
+  carrier_version=$7,
+  manifest_hash=$8
 WHERE run_id=$1
 RETURNING run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`,
-		runID, value,
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message,
+carrier_kind, runtime_contract, source_kind, source_provider_id, carrier_version, manifest_hash`,
+		runID, value, snapshot.CarrierKind, snapshot.RuntimeContract, snapshot.SourceKind, nullString(snapshot.SourceProviderID), nullString(string(snapshot.CarrierVersion)), nullString(snapshot.ManifestHash),
 	))
 }
 
@@ -914,7 +927,8 @@ func (r *RunRepository) IncrementStep(ctx context.Context, runID contracts.Agent
 UPDATE agent_runs SET step_count = step_count + 1
 WHERE run_id=$1
 RETURNING run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`, runID))
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message,
+carrier_kind, runtime_contract, source_kind, source_provider_id, carrier_version, manifest_hash`, runID))
 	if err != nil {
 		return contracts.AgentRun{}, "", err
 	}
@@ -926,7 +940,8 @@ func (r *RunRepository) IncrementToolCall(ctx context.Context, runID contracts.A
 UPDATE agent_runs SET tool_call_count = tool_call_count + 1
 WHERE run_id=$1
 RETURNING run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`, runID))
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message,
+carrier_kind, runtime_contract, source_kind, source_provider_id, carrier_version, manifest_hash`, runID))
 }
 
 func (r *RunRepository) updateStatus(ctx context.Context, runID contracts.AgentRunID, status contracts.RunStatus, completedAt *time.Time, runtimeErr *contracts.RuntimeError) (contracts.AgentRun, error) {
@@ -940,14 +955,16 @@ UPDATE agent_runs
 SET status=$2, completed_at=$3, error_code=$4, error_message=$5
 WHERE run_id=$1
 RETURNING run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message`,
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message,
+carrier_kind, runtime_contract, source_kind, source_provider_id, carrier_version, manifest_hash`,
 		runID, status, nullTime(completedAt), nullString(code), nullString(message),
 	))
 }
 
 func runSelectSQL() string {
 	return `SELECT run_id, trace_id, tenant_id, agent_id, agent_version, task_id, status,
-input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message
+input, conversation_id, thread_id, message_id, step_count, tool_call_count, policy_set_id, version_snapshot, started_at, completed_at, error_code, error_message,
+carrier_kind, runtime_contract, source_kind, source_provider_id, carrier_version, manifest_hash
 FROM agent_runs`
 }
 
@@ -956,13 +973,15 @@ func scanRun(row interface {
 }) (contracts.AgentRun, error) {
 	var runID, traceID, tenantID, agentID, agentVersion, taskID, status, policySetID string
 	var input, conversationID, threadID, messageID sql.NullString
+	var carrierKind, runtimeContract, sourceKind string
+	var sourceProviderID, carrierVersion, manifestHash sql.NullString
 	var snapshot []byte
 	var completed sql.NullTime
 	var code, message sql.NullString
 	run := contracts.AgentRun{}
 	err := row.Scan(&runID, &traceID, &tenantID, &agentID, &agentVersion, &taskID, &status,
 		&input, &conversationID, &threadID, &messageID, &run.StepCount, &run.ToolCallCount, &policySetID, &snapshot, &run.StartedAt,
-		&completed, &code, &message)
+		&completed, &code, &message, &carrierKind, &runtimeContract, &sourceKind, &sourceProviderID, &carrierVersion, &manifestHash)
 	if err != nil {
 		return contracts.AgentRun{}, mapSQLError(err)
 	}
@@ -971,6 +990,12 @@ func scanRun(row interface {
 	run.TenantID = contracts.TenantID(tenantID)
 	run.AgentID = contracts.AgentID(agentID)
 	run.AgentVersion = contracts.AgentVersion(agentVersion)
+	run.CarrierKind = contracts.AgentCarrierKind(carrierKind)
+	run.RuntimeContract = contracts.RuntimeContractKind(runtimeContract)
+	run.SourceKind = contracts.AgentSourceKind(sourceKind)
+	run.SourceProviderID = sourceProviderID.String
+	run.CarrierVersion = contracts.AgentVersion(carrierVersion.String)
+	run.ManifestHash = manifestHash.String
 	run.TaskID = contracts.TaskID(taskID)
 	run.Input = input.String
 	run.ConversationID = conversationID.String
@@ -981,11 +1006,16 @@ func scanRun(row interface {
 	if err := scanJSON(snapshot, &run.VersionSnapshot); err != nil {
 		return contracts.AgentRun{}, err
 	}
+	applyRunCarrierDefaults(&run)
 	run.CompletedAt = timePtr(completed)
 	run.ErrorCode = contracts.ErrorCode(code.String)
 	run.ErrorMessage = message.String
 	run.StartedAt = run.StartedAt.UTC()
 	return run, nil
+}
+
+func applyRunCarrierDefaults(run *contracts.AgentRun) {
+	contracts.NormalizeRunCarrierSnapshot(run)
 }
 
 type ConversationStore struct {
@@ -3897,11 +3927,14 @@ type PackageStore struct {
 }
 
 func (s *PackageStore) SaveAgentAsset(ctx context.Context, asset agentpackage.AgentAsset) error {
+	ensureAgentAssetCarrierDefaults(&asset)
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO agent_assets (
   tenant_id, agent_id, name, description, owner_id, status,
-  active_version, default_version, created_by, created_at, updated_at, deleted_at
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+  active_version, default_version,
+  carrier_kind, runtime_contract, source_kind, source_provider_id, manifest_hash, conformance_status,
+  created_by, created_at, updated_at, deleted_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
   name=EXCLUDED.name,
   description=EXCLUDED.description,
@@ -3909,10 +3942,18 @@ ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
   status=EXCLUDED.status,
   active_version=EXCLUDED.active_version,
   default_version=EXCLUDED.default_version,
+  carrier_kind=EXCLUDED.carrier_kind,
+  runtime_contract=EXCLUDED.runtime_contract,
+  source_kind=EXCLUDED.source_kind,
+  source_provider_id=EXCLUDED.source_provider_id,
+  manifest_hash=EXCLUDED.manifest_hash,
+  conformance_status=EXCLUDED.conformance_status,
   updated_at=EXCLUDED.updated_at,
   deleted_at=EXCLUDED.deleted_at`,
 		asset.TenantID, asset.AgentID, asset.Name, nullString(asset.Description), nullString(asset.OwnerID), asset.Status,
-		nullString(string(asset.ActiveVersion)), nullString(string(asset.DefaultVersion)), nullString(asset.CreatedBy),
+		nullString(string(asset.ActiveVersion)), nullString(string(asset.DefaultVersion)),
+		asset.CarrierKind, asset.RuntimeContract, asset.SourceKind, nullString(asset.SourceProviderID), nullString(asset.ManifestHash), asset.ConformanceStatus,
+		nullString(string(asset.CreatedBy)),
 		asset.CreatedAt.UTC(), asset.UpdatedAt.UTC(), nullTime(asset.DeletedAt),
 	)
 	return err
@@ -3975,18 +4016,22 @@ ORDER BY created_at ASC, tenant_id ASC, agent_id ASC, version ASC`)
 }
 
 func agentAssetSelectSQL() string {
-	return `SELECT tenant_id, agent_id, name, description, owner_id, status, active_version, default_version, created_by, created_at, updated_at, deleted_at FROM agent_assets`
+	return `SELECT tenant_id, agent_id, name, description, owner_id, status, active_version, default_version,
+carrier_kind, runtime_contract, source_kind, source_provider_id, manifest_hash, conformance_status,
+created_by, created_at, updated_at, deleted_at FROM agent_assets`
 }
 
 func scanAgentAsset(row interface {
 	Scan(dest ...any) error
 }) (agentpackage.AgentAsset, error) {
 	var tenantID, agentID, status string
-	var description, ownerID, activeVersion, defaultVersion, createdBy sql.NullString
+	var carrierKind, runtimeContract, sourceKind, conformanceStatus string
+	var description, ownerID, activeVersion, defaultVersion, sourceProviderID, manifestHash, createdBy sql.NullString
 	var deletedAt sql.NullTime
 	asset := agentpackage.AgentAsset{}
 	if err := row.Scan(&tenantID, &agentID, &asset.Name, &description, &ownerID, &status,
-		&activeVersion, &defaultVersion, &createdBy, &asset.CreatedAt, &asset.UpdatedAt, &deletedAt); err != nil {
+		&activeVersion, &defaultVersion, &carrierKind, &runtimeContract, &sourceKind, &sourceProviderID, &manifestHash, &conformanceStatus,
+		&createdBy, &asset.CreatedAt, &asset.UpdatedAt, &deletedAt); err != nil {
 		return agentpackage.AgentAsset{}, mapSQLError(err)
 	}
 	asset.TenantID = contracts.TenantID(tenantID)
@@ -3996,11 +4041,32 @@ func scanAgentAsset(row interface {
 	asset.Status = status
 	asset.ActiveVersion = contracts.AgentVersion(activeVersion.String)
 	asset.DefaultVersion = contracts.AgentVersion(defaultVersion.String)
+	asset.CarrierKind = contracts.AgentCarrierKind(carrierKind)
+	asset.RuntimeContract = contracts.RuntimeContractKind(runtimeContract)
+	asset.SourceKind = contracts.AgentSourceKind(sourceKind)
+	asset.SourceProviderID = sourceProviderID.String
+	asset.ManifestHash = manifestHash.String
+	asset.ConformanceStatus = contracts.RuntimeConformanceStatus(conformanceStatus)
 	asset.CreatedBy = createdBy.String
 	asset.CreatedAt = asset.CreatedAt.UTC()
 	asset.UpdatedAt = asset.UpdatedAt.UTC()
 	asset.DeletedAt = timePtr(deletedAt)
+	ensureAgentAssetCarrierDefaults(&asset)
 	return asset, nil
+}
+
+func ensureAgentAssetCarrierDefaults(asset *agentpackage.AgentAsset) {
+	if asset == nil {
+		return
+	}
+	if asset.SourceKind == "" {
+		asset.SourceKind = contracts.AgentSourceKindPackage
+	}
+	asset.CarrierKind = contracts.NormalizeCarrierKind(asset.SourceKind, asset.CarrierKind)
+	asset.RuntimeContract = contracts.NormalizeRuntimeContract(asset.CarrierKind, asset.RuntimeContract)
+	if asset.ConformanceStatus == "" {
+		asset.ConformanceStatus = contracts.RuntimeConformanceUnknown
+	}
 }
 
 func (s *PackageStore) SaveDraft(ctx context.Context, draft agentpackage.Draft) error {
@@ -5027,20 +5093,32 @@ func (s *PackageStore) SaveRelease(ctx context.Context, release contracts.AgentP
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO agent_package_versions (
   package_version_id, tenant_id, agent_id, version, status, source_hash,
-  compiled_hash, source_json, compiled_json, created_by, created_at, published_at,
+  compiled_hash, source_kind, source_provider_id, manifest_version, manifest_hash,
+  carrier_kind, runtime_contract, conformance_status,
+  source_json, compiled_json, created_by, created_at, published_at,
   canary_percent, canary_scope_json
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 ON CONFLICT (tenant_id, agent_id, version) DO UPDATE SET
   status=EXCLUDED.status,
   source_hash=EXCLUDED.source_hash,
   compiled_hash=EXCLUDED.compiled_hash,
+  source_kind=EXCLUDED.source_kind,
+  source_provider_id=EXCLUDED.source_provider_id,
+  manifest_version=EXCLUDED.manifest_version,
+  manifest_hash=EXCLUDED.manifest_hash,
+  carrier_kind=EXCLUDED.carrier_kind,
+  runtime_contract=EXCLUDED.runtime_contract,
+  conformance_status=EXCLUDED.conformance_status,
   source_json=EXCLUDED.source_json,
   compiled_json=EXCLUDED.compiled_json,
   published_at=EXCLUDED.published_at,
   canary_percent=EXCLUDED.canary_percent,
   canary_scope_json=EXCLUDED.canary_scope_json`,
 		release.PackageVersionID, release.TenantID, release.AgentID, release.Version, release.Status,
-		release.SourceHash, release.CompiledHash, sourceJSON, compiledJSON, release.CreatedBy,
+		release.SourceHash, release.CompiledHash,
+		contracts.NormalizeSourceKind(release.SourceKind), nullString(release.SourceProviderID), nullString(release.ManifestVersion), nullString(release.ManifestHash),
+		contracts.NormalizeCarrierKind(release.SourceKind, release.CarrierKind), contracts.NormalizeRuntimeContract(contracts.NormalizeCarrierKind(release.SourceKind, release.CarrierKind), release.RuntimeContract), release.ConformanceStatus,
+		sourceJSON, compiledJSON, release.CreatedBy,
 		release.CreatedAt.UTC(), nullTime(release.PublishedAt), release.CanaryPercent, jsonBytes(release.CanaryScope),
 	)
 	if err != nil {
@@ -5160,7 +5238,9 @@ func (s *PackageStore) ListReleases(ctx context.Context) ([]contracts.AgentPacka
 }
 
 func packageReleaseSelectSQL() string {
-	return `SELECT package_version_id, tenant_id, agent_id, version, status, source_hash, compiled_hash, compiled_json, created_by, created_at, published_at, canary_percent, canary_scope_json FROM agent_package_versions`
+	return `SELECT package_version_id, tenant_id, agent_id, version, status, source_hash, compiled_hash,
+source_kind, source_provider_id, manifest_version, manifest_hash, carrier_kind, runtime_contract, conformance_status,
+compiled_json, created_by, created_at, published_at, canary_percent, canary_scope_json FROM agent_package_versions`
 }
 
 func scanPackageRelease(row interface {
@@ -5168,22 +5248,56 @@ func scanPackageRelease(row interface {
 }) (contracts.AgentPackageVersion, error) {
 	var packageID, tenantID, agentID, version, status string
 	var published sql.NullTime
+	var sourceKind, carrierKind, runtimeContract, conformanceStatus string
+	var sourceProviderID, manifestVersion, manifestHash sql.NullString
 	var compiledJSON, scopeJSON []byte
 	release := contracts.AgentPackageVersion{}
-	if err := row.Scan(&packageID, &tenantID, &agentID, &version, &status, &release.SourceHash, &release.CompiledHash, &compiledJSON,
+	if err := row.Scan(&packageID, &tenantID, &agentID, &version, &status, &release.SourceHash, &release.CompiledHash,
+		&sourceKind, &sourceProviderID, &manifestVersion, &manifestHash, &carrierKind, &runtimeContract, &conformanceStatus,
+		&compiledJSON,
 		&release.CreatedBy, &release.CreatedAt, &published, &release.CanaryPercent, &scopeJSON); err != nil {
 		return contracts.AgentPackageVersion{}, mapSQLError(err)
 	}
+	release.SourceKind = contracts.AgentSourceKind(sourceKind)
+	release.SourceProviderID = sourceProviderID.String
+	release.ManifestVersion = manifestVersion.String
+	release.ManifestHash = manifestHash.String
+	release.CarrierKind = contracts.AgentCarrierKind(carrierKind)
+	release.RuntimeContract = contracts.RuntimeContractKind(runtimeContract)
+	release.ConformanceStatus = contracts.RuntimeConformanceStatus(conformanceStatus)
 	_ = scanJSON(scopeJSON, &release.CanaryScope)
 	var compiled contracts.AgentDefinition
 	if err := scanJSON(compiledJSON, &compiled); err == nil {
-		release.SourceKind = compiled.SourceKind
-		release.SourceProviderID = compiled.SourceProviderID
-		release.ManifestVersion = compiled.ManifestVersion
-		release.ManifestHash = compiled.ManifestHash
+		if release.SourceKind == "" {
+			release.SourceKind = compiled.SourceKind
+		}
+		if release.SourceProviderID == "" {
+			release.SourceProviderID = compiled.SourceProviderID
+		}
+		if release.ManifestVersion == "" {
+			release.ManifestVersion = compiled.ManifestVersion
+		}
+		if release.ManifestHash == "" {
+			release.ManifestHash = compiled.ManifestHash
+		}
+		if release.CarrierKind == "" {
+			release.CarrierKind = compiled.CarrierKind
+		}
+		if release.RuntimeContract == "" {
+			release.RuntimeContract = compiled.RuntimeContract
+		}
+		if release.ConformanceStatus == "" {
+			release.ConformanceStatus = compiled.ConformanceStatus
+		}
 		if strategyHash, err := hash.StableJSON(compiled.Strategies); err == nil {
 			release.StrategyHash = strategyHash
 		}
+	}
+	release.SourceKind = contracts.NormalizeSourceKind(release.SourceKind)
+	release.CarrierKind = contracts.NormalizeCarrierKind(release.SourceKind, release.CarrierKind)
+	release.RuntimeContract = contracts.NormalizeRuntimeContract(release.CarrierKind, release.RuntimeContract)
+	if release.ConformanceStatus == "" {
+		release.ConformanceStatus = contracts.RuntimeConformanceUnknown
 	}
 	release.PackageVersionID = contracts.PackageVersionID(packageID)
 	release.TenantID = contracts.TenantID(tenantID)

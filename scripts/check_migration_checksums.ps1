@@ -27,7 +27,7 @@ function Get-MigrationChecksumEntries {
         if ([string]::IsNullOrWhiteSpace($rest)) {
             throw "migration file $($file.Name) must use version_name.sql format"
         }
-        $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+        $bytes = Get-NormalizedMigrationChecksumBytes -Path $file.FullName
         $checksum = [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
         $entries += [ordered]@{
             version = $version
@@ -37,6 +37,29 @@ function Get-MigrationChecksumEntries {
         }
     }
     return $entries
+}
+
+function Get-NormalizedMigrationChecksumBytes {
+    param(
+        [Parameter(Mandatory = $true)] [string]$Path
+    )
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $stream = [System.IO.MemoryStream]::new()
+    try {
+        for ($i = 0; $i -lt $bytes.Length; $i++) {
+            if ($bytes[$i] -eq 13) {
+                if (($i + 1) -lt $bytes.Length -and $bytes[$i + 1] -eq 10) {
+                    $i++
+                }
+                $stream.WriteByte(10)
+            } else {
+                $stream.WriteByte($bytes[$i])
+            }
+        }
+        return $stream.ToArray()
+    } finally {
+        $stream.Dispose()
+    }
 }
 
 function New-MigrationChecksumManifest {

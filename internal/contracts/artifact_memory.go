@@ -3,11 +3,11 @@ package contracts
 import "time"
 
 type ArtifactRef struct {
-	ArtifactID ArtifactID `json:"artifact_id"`
-	Type       string     `json:"type"`
-	URI        string     `json:"uri,omitempty"`
-	Summary    string     `json:"summary,omitempty"`
-	Hash       string     `json:"hash,omitempty"`
+	ArtifactID ArtifactID     `json:"artifact_id"`
+	Type       string         `json:"type"`
+	URI        string         `json:"uri,omitempty"`
+	Summary    string         `json:"summary,omitempty"`
+	Hash       string         `json:"hash,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 

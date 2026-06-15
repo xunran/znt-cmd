@@ -148,15 +148,21 @@ func handleAgentDelete(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 func synthesizedAgentAsset(tenantID contracts.TenantID, definition contracts.AgentDefinition) agentpackage.AgentAsset {
 	now := time.Now().UTC()
 	return agentpackage.AgentAsset{
-		TenantID:       tenantID,
-		AgentID:        definition.AgentID,
-		Name:           definition.Name,
-		Description:    definition.Description,
-		Status:         agentpackage.AgentAssetActive,
-		ActiveVersion:  definition.Version,
-		DefaultVersion: definition.Version,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		TenantID:          tenantID,
+		AgentID:           definition.AgentID,
+		Name:              definition.Name,
+		Description:       definition.Description,
+		Status:            agentpackage.AgentAssetActive,
+		ActiveVersion:     definition.Version,
+		DefaultVersion:    definition.Version,
+		CarrierKind:       contracts.NormalizeCarrierKind(definition.SourceKind, definition.CarrierKind),
+		RuntimeContract:   contracts.NormalizeRuntimeContract(contracts.NormalizeCarrierKind(definition.SourceKind, definition.CarrierKind), definition.RuntimeContract),
+		SourceKind:        contracts.NormalizeSourceKind(definition.SourceKind),
+		SourceProviderID:  definition.SourceProviderID,
+		ManifestHash:      definition.ManifestHash,
+		ConformanceStatus: contracts.RuntimeConformanceUnknown,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 }
 
@@ -168,18 +174,24 @@ func agentResourceView(appCore *core.Core, tenantID contracts.TenantID, asset ag
 		}
 	}
 	return map[string]any{
-		"tenant_id":       asset.TenantID,
-		"agent_id":        asset.AgentID,
-		"name":            asset.Name,
-		"description":     asset.Description,
-		"owner_id":        asset.OwnerID,
-		"status":          asset.Status,
-		"active_version":  asset.ActiveVersion,
-		"default_version": asset.DefaultVersion,
-		"created_by":      asset.CreatedBy,
-		"created_at":      asset.CreatedAt,
-		"updated_at":      asset.UpdatedAt,
-		"deleted_at":      asset.DeletedAt,
-		"releases":        releases,
+		"tenant_id":          asset.TenantID,
+		"agent_id":           asset.AgentID,
+		"name":               asset.Name,
+		"description":        asset.Description,
+		"owner_id":           asset.OwnerID,
+		"status":             asset.Status,
+		"active_version":     asset.ActiveVersion,
+		"default_version":    asset.DefaultVersion,
+		"carrier_kind":       contracts.NormalizeCarrierKind(asset.SourceKind, asset.CarrierKind),
+		"runtime_contract":   contracts.NormalizeRuntimeContract(contracts.NormalizeCarrierKind(asset.SourceKind, asset.CarrierKind), asset.RuntimeContract),
+		"source_kind":        contracts.NormalizeSourceKind(asset.SourceKind),
+		"source_provider_id": asset.SourceProviderID,
+		"manifest_hash":      asset.ManifestHash,
+		"conformance_status": asset.ConformanceStatus,
+		"created_by":         asset.CreatedBy,
+		"created_at":         asset.CreatedAt,
+		"updated_at":         asset.UpdatedAt,
+		"deleted_at":         asset.DeletedAt,
+		"releases":           releases,
 	}
 }

@@ -131,21 +131,21 @@ type ContextSourceReport struct {
 }
 
 type ContextCompressionReport struct {
-	Applied         bool   `json:"applied"`
-	Mode            string `json:"mode,omitempty"`
-	ModelProvider   string `json:"model_provider,omitempty"`
-	ModelName       string `json:"model_name,omitempty"`
-	PromptProfileID string `json:"prompt_profile_id,omitempty"`
-	InputTokens     int    `json:"input_tokens,omitempty"`
-	OutputTokens    int    `json:"output_tokens,omitempty"`
-	SummaryHash     string `json:"summary_hash,omitempty"`
+	Applied         bool     `json:"applied"`
+	Mode            string   `json:"mode,omitempty"`
+	ModelProvider   string   `json:"model_provider,omitempty"`
+	ModelName       string   `json:"model_name,omitempty"`
+	PromptProfileID string   `json:"prompt_profile_id,omitempty"`
+	InputTokens     int      `json:"input_tokens,omitempty"`
+	OutputTokens    int      `json:"output_tokens,omitempty"`
+	SummaryHash     string   `json:"summary_hash,omitempty"`
 	FailureReason   string   `json:"failure_reason,omitempty"`
 	SourceRefs      []string `json:"source_refs,omitempty"`
 }
 
 type CompressedContext struct {
-	Summary      string   `json:"summary"`
-	SourceRefs   []string `json:"source_refs,omitempty"`
+	Summary       string   `json:"summary"`
+	SourceRefs    []string `json:"source_refs,omitempty"`
 	OpenQuestions []string `json:"open_questions,omitempty"`
 }
 
@@ -161,9 +161,9 @@ type ToolUseStrategy struct {
 }
 
 type SkillUseStrategy struct {
-	EnabledSkillIDs  []string `json:"enabled_skill_ids,omitempty"`
-	DisabledSkillIDs []string `json:"disabled_skill_ids,omitempty"`
-	SelectionMode    string   `json:"selection_mode,omitempty"`
+	EnabledSkillIDs   []string `json:"enabled_skill_ids,omitempty"`
+	DisabledSkillIDs  []string `json:"disabled_skill_ids,omitempty"`
+	SelectionMode     string   `json:"selection_mode,omitempty"`
 	MaxSelectedSkills int      `json:"max_selected_skills,omitempty"`
 }
 

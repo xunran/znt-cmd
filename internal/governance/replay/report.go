@@ -11,25 +11,25 @@ import (
 )
 
 type Report struct {
-	TraceID             contracts.TraceID      `json:"trace_id"`
-	TenantID            contracts.TenantID     `json:"tenant_id,omitempty"`
-	Status              string                 `json:"status"`
-	EventCount          int                    `json:"event_count"`
-	FirstAt             *time.Time             `json:"first_at,omitempty"`
-	LastAt              *time.Time             `json:"last_at,omitempty"`
-	EventTypes          map[string]int         `json:"event_types"`
-	RunIDs              []contracts.AgentRunID `json:"run_ids,omitempty"`
-	TaskIDs             []contracts.TaskID     `json:"task_ids,omitempty"`
-	PromptBundleHashes  []string               `json:"prompt_bundle_hashes,omitempty"`
-	ContextStrategyHashes []string              `json:"context_strategy_hashes,omitempty"`
-	PolicyVersions      []string               `json:"policy_versions,omitempty"`
-	ToolResultCount     int                    `json:"tool_result_count"`
-	HandoffCount        int                    `json:"handoff_count"`
-	ContextCompressionCount int                 `json:"context_compression_count,omitempty"`
-	ContextCompressionApplied int               `json:"context_compression_applied,omitempty"`
-	ContextCompressionFailures int              `json:"context_compression_failures,omitempty"`
-	RedactionViolations []string               `json:"redaction_violations,omitempty"`
-	Problems            []string               `json:"problems,omitempty"`
+	TraceID                    contracts.TraceID      `json:"trace_id"`
+	TenantID                   contracts.TenantID     `json:"tenant_id,omitempty"`
+	Status                     string                 `json:"status"`
+	EventCount                 int                    `json:"event_count"`
+	FirstAt                    *time.Time             `json:"first_at,omitempty"`
+	LastAt                     *time.Time             `json:"last_at,omitempty"`
+	EventTypes                 map[string]int         `json:"event_types"`
+	RunIDs                     []contracts.AgentRunID `json:"run_ids,omitempty"`
+	TaskIDs                    []contracts.TaskID     `json:"task_ids,omitempty"`
+	PromptBundleHashes         []string               `json:"prompt_bundle_hashes,omitempty"`
+	ContextStrategyHashes      []string               `json:"context_strategy_hashes,omitempty"`
+	PolicyVersions             []string               `json:"policy_versions,omitempty"`
+	ToolResultCount            int                    `json:"tool_result_count"`
+	HandoffCount               int                    `json:"handoff_count"`
+	ContextCompressionCount    int                    `json:"context_compression_count,omitempty"`
+	ContextCompressionApplied  int                    `json:"context_compression_applied,omitempty"`
+	ContextCompressionFailures int                    `json:"context_compression_failures,omitempty"`
+	RedactionViolations        []string               `json:"redaction_violations,omitempty"`
+	Problems                   []string               `json:"problems,omitempty"`
 }
 
 func Build(events []contracts.TraceEvent) Report {

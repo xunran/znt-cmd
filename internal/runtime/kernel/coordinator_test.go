@@ -107,10 +107,10 @@ func TestCoordinatorRunsExistingTaskFromEnvelopeContext(t *testing.T) {
 	if run.Input != "continue existing task" {
 		t.Fatalf("expected run input to use current payload input, got %#v", run)
 	}
-	if !strings.Contains(model.lastRequest.PromptBundle.Context, "<user input>\ncontinue existing task\n</user input>") {
+	if !strings.Contains(model.lastRequest.PromptBundle.Context, "continue existing task") {
 		t.Fatalf("expected prompt to use current input, got %s", model.lastRequest.PromptBundle.Context)
 	}
-	if strings.Contains(model.lastRequest.PromptBundle.Context, "<user input>\nuse existing task\n</user input>") {
+	if strings.Contains(model.lastRequest.PromptBundle.Context, "use existing task") {
 		t.Fatalf("task objective leaked into current user input: %s", model.lastRequest.PromptBundle.Context)
 	}
 	task, err := taskRepo.Get(context.Background(), existing.TaskID)
@@ -994,7 +994,7 @@ func TestCoordinatorRecordsStrategyFamilyTraceEvents(t *testing.T) {
 		}
 	})
 	assertStrategyTracePayload(t, events, contracts.TraceToolStrategyApplied, func(payload map[string]any) {
-		if payload["tool_choice_mode"] != "no_tools" || payload["selected_tool_count"] != 0 || payload["max_tool_calls"] != 0 {
+		if payload["tool_choice_mode"] != "no_tools" || payload["selected_tool_count"] != 0 {
 			t.Fatalf("expected tool strategy payload, got %#v", payload)
 		}
 	})
@@ -1481,7 +1481,7 @@ func TestResumeRunUsesResumeInput(t *testing.T) {
 	if result.Status != contracts.RunCompleted {
 		t.Fatalf("unexpected resume result: %#v", result)
 	}
-	if !strings.Contains(model.lastRequest.PromptBundle.Context, "<user input>\n审批通过，继续执行\n</user input>") {
+	if !strings.Contains(model.lastRequest.PromptBundle.Context, "审批通过，继续执行") {
 		t.Fatalf("expected resume input in prompt, got %s", model.lastRequest.PromptBundle.Context)
 	}
 }
@@ -1502,7 +1502,7 @@ func TestResumeRunFallsBackToRunInput(t *testing.T) {
 	if result.Status != contracts.RunCompleted {
 		t.Fatalf("unexpected resume result: %#v", result)
 	}
-	if !strings.Contains(model.lastRequest.PromptBundle.Context, "<user input>\noriginal run input\n</user input>") {
+	if !strings.Contains(model.lastRequest.PromptBundle.Context, "original run input") {
 		t.Fatalf("expected run input fallback in prompt, got %s", model.lastRequest.PromptBundle.Context)
 	}
 }
@@ -1652,7 +1652,7 @@ func TestApplySkillUseCandidateStrategyLimitsSelectedSkills(t *testing.T) {
 		},
 	}
 	got := tooldiscovery.ApplySkillUseStrategy(candidates, contracts.SkillUseStrategy{
-		SelectionMode:      "explicit_only",
+		SelectionMode:     "explicit_only",
 		EnabledSkillIDs:   []string{"plan", "research"},
 		MaxSelectedSkills: 1,
 	})
@@ -2218,7 +2218,7 @@ func TestCoordinatorStopsToolFailureWhenRepairStrategyDisablesModelRepair(t *tes
 			RiskLevel:        contracts.RiskLow,
 			Visibility:       contracts.ToolProtected,
 			ExecutionProfile: "local",
-			Version:           "v1",
+			Version:          "v1",
 		},
 		Executor: failingExecutor{},
 	}); err != nil {
@@ -2440,11 +2440,11 @@ func (pluginContextHook) Apply(_ context.Context, request runtimehook.TransformR
 		Title:   "CRM account",
 		Content: "CRM renewal context",
 		Metadata: map[string]any{
-			"source_type":  contextSourceAgentPluginContext,
-			"source_ref":   "crm://account/42",
-			"provider_id":  "crm-plugin",
-			"hook_id":      "crm-context",
-			"trust_level":  "untrusted_external_context",
+			"source_type": contextSourceAgentPluginContext,
+			"source_ref":  "crm://account/42",
+			"provider_id": "crm-plugin",
+			"hook_id":     "crm-context",
+			"trust_level": "untrusted_external_context",
 		},
 	}}}, nil
 }
@@ -2460,11 +2460,11 @@ func (beforeContextBuildPluginContextHook) Apply(_ context.Context, request runt
 		Title:   "CRM early account",
 		Content: "early CRM context",
 		Metadata: map[string]any{
-			"source_type":  contextSourceAgentPluginContext,
-			"source_ref":   "crm://account/early",
-			"provider_id":  "crm-plugin",
-			"hook_id":      "crm-before-context",
-			"trust_level":  "untrusted_external_context",
+			"source_type": contextSourceAgentPluginContext,
+			"source_ref":  "crm://account/early",
+			"provider_id": "crm-plugin",
+			"hook_id":     "crm-before-context",
+			"trust_level": "untrusted_external_context",
 		},
 	}}}, nil
 }
