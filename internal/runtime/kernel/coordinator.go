@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -1785,8 +1786,116 @@ func (c Coordinator) dispatchToolCalls(ctx context.Context, envelope contracts.A
 		for _, ref := range result.ArtifactRefs {
 			c.syncArtifact(ctx, envelope, runID, taskID, ref)
 		}
+		if finalDecision, ok, err := c.finalDecisionFromToolResult(ctx, envelope, definition, runID, taskID, stepID, result, candidates.Tools); err != nil {
+			return RunResult{}, true, err
+		} else if ok {
+			return c.dispatch(ctx, envelope, definition, policySet, runID, taskID, stepID, finalDecision, candidates)
+		}
 	}
 	return RunResult{RunID: runID, TaskID: taskID, Status: contracts.RunRunning}, false, nil
+}
+
+func (c Coordinator) finalDecisionFromToolResult(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, result contracts.ToolResult, candidateTools []contracts.ToolCard) (contracts.Decision, bool, error) {
+	if result.Status != contracts.ToolResultSucceeded || len(result.Output) == 0 {
+		return contracts.Decision{}, false, nil
+	}
+	rawDecision, ok := result.Output["final_decision"]
+	if !ok {
+		return contracts.Decision{}, false, nil
+	}
+	decision, err := decodeToolFinalDecision(rawDecision)
+	if err != nil {
+		c.recordFinalToolDecisionValidated(ctx, envelope, runID, taskID, stepID, decision, err, nil)
+		return contracts.Decision{}, true, err
+	}
+	if decision.Type == contracts.DecisionTypeToolCall {
+		err := contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "tool final_decision cannot be a tool_call", nil)
+		c.recordFinalToolDecisionValidated(ctx, envelope, runID, taskID, stepID, decision, err, nil)
+		return contracts.Decision{}, true, err
+	}
+	if decision.DecisionID == "" {
+		decision.DecisionID = contracts.DecisionID(idgen.New("decision"))
+	}
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceDecisionCreated, map[string]any{
+		"decision_id":     decision.DecisionID,
+		"type":            decision.Type,
+		"source":          "tool_result.final_decision",
+		"tool_result_id":  result.ToolResultID,
+		"tool_call_id":    result.ToolCallID,
+		"repair_attempt":  0,
+		"from_model_call": false,
+	})
+	validation, err := c.Validator.Normalize(decision, candidateTools)
+	if err != nil {
+		c.recordFinalToolDecisionValidated(ctx, envelope, runID, taskID, stepID, decision, err, nil)
+		return contracts.Decision{}, true, err
+	}
+	if err := outputpolicy.ValidateDecision(definition.Strategies.Output, validation); err != nil {
+		c.recordFinalToolDecisionValidated(ctx, envelope, runID, taskID, stepID, decision, err, validation.Warnings)
+		return contracts.Decision{}, true, err
+	}
+	decision = validation.Decision
+	c.recordFinalToolDecisionValidated(ctx, envelope, runID, taskID, stepID, decision, nil, validation.Warnings)
+	c.observeHook(ctx, runtimehook.OnModelDecision, envelope, definition, runID, taskID, map[string]any{"decision": decision, "source": "tool_result.final_decision"})
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceDecisionCompleted, map[string]any{
+		"decision_id":     decision.DecisionID,
+		"type":            decision.Type,
+		"source":          "tool_result.final_decision",
+		"tool_result_id":  result.ToolResultID,
+		"tool_call_id":    result.ToolCallID,
+		"repair_attempt":  0,
+		"from_model_call": false,
+	})
+	return decision, true, nil
+}
+
+func decodeToolFinalDecision(value any) (contracts.Decision, error) {
+	switch typed := value.(type) {
+	case contracts.Decision:
+		return typed, nil
+	case map[string]any:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return contracts.Decision{}, err
+		}
+		var decision contracts.Decision
+		if err := json.Unmarshal(data, &decision); err != nil {
+			return contracts.Decision{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid tool final_decision", map[string]any{"error": err.Error()})
+		}
+		return decision, nil
+	case string:
+		var decision contracts.Decision
+		if err := json.Unmarshal([]byte(typed), &decision); err != nil {
+			return contracts.Decision{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid tool final_decision", map[string]any{"error": err.Error()})
+		}
+		return decision, nil
+	default:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return contracts.Decision{}, err
+		}
+		var decision contracts.Decision
+		if err := json.Unmarshal(data, &decision); err != nil {
+			return contracts.Decision{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "invalid tool final_decision", map[string]any{"error": err.Error()})
+		}
+		return decision, nil
+	}
+}
+
+func (c Coordinator) recordFinalToolDecisionValidated(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, decision contracts.Decision, validationErr error, warnings []string) {
+	payload := map[string]any{
+		"decision_id":     decision.DecisionID,
+		"type":            decision.Type,
+		"source":          "tool_result.final_decision",
+		"repair_attempt":  0,
+		"from_model_call": false,
+	}
+	if validationErr != nil {
+		payload["error"] = validationErr.Error()
+	} else {
+		payload["warnings"] = warnings
+	}
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceDecisionValidated, payload)
 }
 
 func (c Coordinator) shouldContinueAfterToolFailure(ctx context.Context, definition contracts.AgentDefinition, policySet contracts.PolicySet, runID contracts.AgentRunID, call contracts.ToolCall, result contracts.ToolResult) bool {

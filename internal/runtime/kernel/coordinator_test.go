@@ -379,6 +379,84 @@ func TestCoordinatorToolLoopThenReply(t *testing.T) {
 	}
 }
 
+func TestCoordinatorCompletesFromToolFinalDecision(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	runRepo := runrepo.NewInMemoryRepository()
+	traceRecorder := trace.NewInMemoryRecorder()
+	def := loader.TestAgentDefinition()
+	def.Tools.AllowedToolIDs = []string{"final.reply"}
+	def.Runtime.MaxToolCalls = 1
+	agents := loader.NewStaticLoader(def)
+	model := &modelclient.ScriptedModelClient{Responses: []modelclient.ModelResponse{
+		{RawDecisionJSON: []byte(`{"type":"tool_call","tool_calls":[{"tool_id":"final.reply","name":"final.reply","arguments":{"message":"hello"}}]}`), ModelProvider: "stub", ModelName: "scripted"},
+		{RawDecisionJSON: []byte(`{"type":"tool_call","tool_calls":[{"tool_id":"final.reply","name":"final.reply","arguments":{"message":"should not run"}}]}`), ModelProvider: "stub", ModelName: "scripted"},
+	}}
+	coordinator := NewCoordinator(agents, runRepo, taskService, taskRepo, traceRecorder, model)
+	reg := registry.NewInMemoryRegistry()
+	if err := reg.Register(registry.Tool{
+		Definition: contracts.ToolDefinition{
+			ToolID:           "final.reply",
+			GroupID:          "test",
+			Name:             "final.reply",
+			Description:      "Returns a final decision for tests.",
+			InputSchema:      map[string]any{"type": "object"},
+			OutputSchema:     map[string]any{"type": "object"},
+			RiskLevel:        contracts.RiskLow,
+			Visibility:       contracts.ToolExposed,
+			ExecutionProfile: "local",
+			Version:          "v1",
+		},
+		Executor: finalDecisionExecutor{Text: "工具已经给出最终回复"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	coordinator.Tools = tooldiscovery.StaticCandidateProvider{Cards: reg.Cards()}
+	coordinator.ToolRepo = toolrepo.NewInMemoryRepository()
+	coordinator.ToolRuntime = toolruntime.New(reg, toolpolicy.New(nil), traceRecorder)
+
+	result, err := coordinator.HandleEnvelope(context.Background(), contracts.AgentEnvelope{
+		EnvelopeID: "env_final_tool",
+		TraceID:    "trace_final_tool",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "use final tool"},
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", UserID: "user_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != contracts.RunCompleted || result.Reply == nil || result.Reply.Text != "工具已经给出最终回复" {
+		t.Fatalf("expected completed run from tool final decision, got %#v", result)
+	}
+	if model.Calls != 1 {
+		t.Fatalf("expected no second model call after tool final_decision, got %d", model.Calls)
+	}
+	calls, err := coordinator.ToolRepo.ListCallsByRun(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", calls)
+	}
+	events, err := traceRecorder.ListByTrace(context.Background(), "trace_final_tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundFinalDecisionTrace bool
+	for _, event := range events {
+		if event.Type == contracts.TraceDecisionCompleted && event.Payload["source"] == "tool_result.final_decision" {
+			foundFinalDecisionTrace = true
+			break
+		}
+	}
+	if !foundFinalDecisionTrace {
+		t.Fatalf("expected final_decision decision trace, got %#v", events)
+	}
+}
+
 func TestRuntimeHooksObserveAndPatchData(t *testing.T) {
 	taskRepo := taskrepo.NewInMemoryTaskRepository()
 	eventRepo := taskrepo.NewInMemoryEventRepository()
@@ -2279,6 +2357,26 @@ func containsStringForTest(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+type finalDecisionExecutor struct {
+	Text string
+}
+
+func (e finalDecisionExecutor) Execute(_ context.Context, _ contracts.ToolCall) (map[string]any, []contracts.ArtifactRef, error) {
+	return map[string]any{
+		"reply":           e.Text,
+		"final":           true,
+		"should_continue": false,
+		"next_action":     "reply_to_user",
+		"final_decision": map[string]any{
+			"type": "reply",
+			"reply": map[string]any{
+				"kind": "answer",
+				"text": e.Text,
+			},
+		},
+	}, nil, nil
 }
 
 func nowForTest() time.Time {

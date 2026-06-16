@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +90,42 @@ func TestCollectorCollectsEnabledSourcesWithStrategyLimits(t *testing.T) {
 	}
 	if len(result.ArtifactRefs) != 1 || result.ArtifactRefs[0].ArtifactID != "artifact_call_2" {
 		t.Fatalf("expected latest artifact ref, got %#v", result.ArtifactRefs)
+	}
+}
+
+func TestSummarizeToolResultIncludesFinalDecisionReply(t *testing.T) {
+	summary := summarizeToolResult(contracts.ToolResult{
+		Status: contracts.ToolResultSucceeded,
+		Output: map[string]any{
+			"reply":           "当前请款单未查到，请核对编号。",
+			"final":           true,
+			"should_continue": false,
+			"next_action":     "reply_to_user",
+			"final_decision": map[string]any{
+				"type": "reply",
+				"reply": map[string]any{
+					"kind": "answer",
+					"text": "当前请款单未查到，请核对编号。",
+				},
+			},
+			"decision_instruction": "Return final_decision exactly as the next Decision JSON.",
+		},
+	})
+
+	for _, expected := range []string{
+		"reply=当前请款单未查到，请核对编号。",
+		"final=true",
+		"should_continue=false",
+		"next_action=reply_to_user",
+		"final_decision.reply.text=当前请款单未查到，请核对编号。",
+		"decision_instruction=Return final_decision exactly as the next Decision JSON.",
+	} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("expected summary to contain %q, got %s", expected, summary)
+		}
+	}
+	if strings.Contains(summary, "tool output available") {
+		t.Fatalf("expected concrete tool output summary, got %s", summary)
 	}
 }
 

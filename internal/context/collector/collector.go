@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	taskruntime "znt/internal/task/runtime"
 	toolrepo "znt/internal/tool/repository"
 )
+
+const maxToolResultSummaryLength = 1500
 
 const (
 	SourceConversationRecent    = "conversation_recent"
@@ -286,12 +289,102 @@ func summarizeToolResult(result contracts.ToolResult) string {
 		return result.Error.Message
 	}
 	if len(result.Output) > 0 {
+		if summary := summarizeToolOutput(result.Output); summary != "" {
+			return summary
+		}
 		return "tool output available"
 	}
 	if len(result.ArtifactRefs) > 0 {
 		return "artifact refs available"
 	}
 	return ""
+}
+
+func summarizeToolOutput(output map[string]any) string {
+	parts := make([]string, 0, 8)
+	seen := map[string]struct{}{}
+	add := func(key string, value any) {
+		text := strings.TrimSpace(toolOutputText(value))
+		if text == "" {
+			return
+		}
+		line := key + "=" + text
+		if _, ok := seen[line]; ok {
+			return
+		}
+		seen[line] = struct{}{}
+		parts = append(parts, line)
+	}
+
+	for _, key := range []string{"final", "should_continue", "next_action"} {
+		if value, ok := output[key]; ok {
+			add(key, value)
+		}
+	}
+	for _, key := range []string{"reply", "response", "answer", "text", "content", "summary", "message"} {
+		if value, ok := output[key]; ok {
+			add(key, value)
+		}
+	}
+	if decision, ok := output["final_decision"]; ok {
+		if text := nestedToolOutputText(decision, "reply", "text"); text != "" {
+			add("final_decision.reply.text", text)
+		}
+		add("final_decision", decision)
+	}
+	if decision, ok := output["decision_json"]; ok {
+		add("decision_json", decision)
+	}
+	if instruction, ok := output["decision_instruction"]; ok {
+		add("decision_instruction", instruction)
+	}
+	if len(parts) > 0 {
+		return truncateToolResultSummary(strings.Join(parts, "; "))
+	}
+	if raw, err := json.Marshal(output); err == nil {
+		return truncateToolResultSummary(string(raw))
+	}
+	return ""
+}
+
+func nestedToolOutputText(value any, path ...string) string {
+	current := value
+	for _, key := range path {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+		current = object[key]
+	}
+	return toolOutputText(current)
+}
+
+func toolOutputText(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case bool:
+		return fmt.Sprintf("%t", typed)
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return fmt.Sprint(typed)
+	default:
+		raw, err := json.Marshal(typed)
+		if err != nil {
+			return strings.TrimSpace(fmt.Sprint(typed))
+		}
+		return strings.TrimSpace(string(raw))
+	}
+}
+
+func truncateToolResultSummary(text string) string {
+	text = strings.TrimSpace(text)
+	if len([]rune(text)) <= maxToolResultSummaryLength {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:maxToolResultSummaryLength]) + "...(truncated)"
 }
 
 func eventRunID(event contracts.TaskEvent) string {
