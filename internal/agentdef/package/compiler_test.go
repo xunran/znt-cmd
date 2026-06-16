@@ -124,6 +124,18 @@ func TestCompileRejectsRuntimeLimitsFromMetadata(t *testing.T) {
 	}
 }
 
+func TestCompileUsesBusinessFlowRuntimeDefaults(t *testing.T) {
+	definition, err := Compile("agent_1", "v1", AgentPackageSource{
+		Prompt: "You are agent 1.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definition.Runtime.MaxSteps < 8 || definition.Runtime.MaxToolCalls < 8 {
+		t.Fatalf("expected business flow runtime defaults, got %#v", definition.Runtime)
+	}
+}
+
 func TestCompileReadsContextStrategy(t *testing.T) {
 	definition, err := Compile("agent_1", "v1", AgentPackageSource{
 		Prompt: "You are agent 1.",

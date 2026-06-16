@@ -86,8 +86,8 @@ func Compile(agentID contracts.AgentID, version contracts.AgentVersion, source A
 		},
 		Strategies: source.Strategies,
 		Runtime: contracts.RuntimeLimits{
-			MaxSteps:                   4,
-			MaxToolCalls:               2,
+			MaxSteps:                   8,
+			MaxToolCalls:               8,
 			MaxDuration:                60 * time.Second,
 			MaxPromptTokens:            4000,
 			MaxHandoffDepth:            0,

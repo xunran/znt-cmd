@@ -143,8 +143,8 @@ func DefaultPolicySet() contracts.PolicySet {
 		PolicySetID: "policy_default",
 		Version:     "v1",
 		RuntimePolicy: contracts.RuntimePolicy{
-			MaxSteps:                   4,
-			MaxToolCalls:               2,
+			MaxSteps:                   8,
+			MaxToolCalls:               8,
 			MaxModelRetries:            1,
 			MaxConsecutiveToolFailures: 2,
 		},
