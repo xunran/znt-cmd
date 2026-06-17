@@ -32,7 +32,7 @@ func ApplyRuntimeHookPatch(bundle contracts.PromptBundle, patch runtimehook.Patc
 			MessageRole:    "user",
 			PromptSection:  "context",
 			Reason:         "Hook 在模型调用前追加上下文",
-			ContentPreview: previewText(rendered, 320),
+			Content:        rendered,
 			TokensEstimate: estimateTokens(rendered),
 			Included:       true,
 		})
@@ -50,7 +50,7 @@ func ApplyRuntimeHookPatch(bundle contracts.PromptBundle, patch runtimehook.Patc
 				MessageRole:    "system",
 				PromptSection:  "constraints",
 				Reason:         "Hook 在模型调用前追加规划提示",
-				ContentPreview: previewText(rendered, 320),
+				Content:        rendered,
 				TokensEstimate: estimateTokens(rendered),
 				Included:       true,
 			})

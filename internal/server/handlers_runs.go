@@ -33,7 +33,7 @@ type runTimelineEvent struct {
 }
 
 type runDiagnosticsResponse struct {
-	Run            contracts.AgentRun      `json:"run"`
+	Run            map[string]any          `json:"run"`
 	Summary        runDiagnosticsSummary   `json:"summary"`
 	Routing        []runRouteDiagnostic    `json:"routing"`
 	Strategy       runStrategyDiagnostic   `json:"strategy"`
@@ -135,6 +135,7 @@ type promptAssemblyStepView struct {
 	MessageRole    string `json:"message_role"`
 	PromptSection  string `json:"prompt_section"`
 	Reason         string `json:"reason,omitempty"`
+	Content        string `json:"content,omitempty"`
 	ContentPreview string `json:"content_preview,omitempty"`
 	TokensEstimate int    `json:"tokens_estimate,omitempty"`
 	Included       bool   `json:"included"`
@@ -524,7 +525,7 @@ func buildRunDiagnostics(r *http.Request, appCore *core.Core, caller auth.Caller
 	report := replay.Build(traceEvents)
 	usage := buildUsageEvidence(run.TraceID, caller.TenantID, traceEvents)
 	diagnostics := runDiagnosticsResponse{
-		Run:            run,
+		Run:            runDiagnosticRecord(run, traceEvents),
 		Summary:        diagnosticsSummary(run, traceEvents, taskEvents, toolCalls, toolResults, auditEvents, hookEvents, report),
 		Routing:        routeDiagnostics(traceEvents),
 		Strategy:       strategyDiagnostics(run, traceEvents, appCore),
@@ -543,6 +544,51 @@ func buildRunDiagnostics(r *http.Request, appCore *core.Core, caller auth.Caller
 		Meta:           runResponseMeta(caller, run.TraceID),
 	}
 	return diagnostics, nil
+}
+
+func runDiagnosticRecord(run contracts.AgentRun, events []contracts.TraceEvent) map[string]any {
+	out := map[string]any{}
+	data, err := json.Marshal(run)
+	if err == nil {
+		_ = json.Unmarshal(data, &out)
+	}
+	if finalResponse, source := finalResponseFromEvents(events); finalResponse != "" {
+		out["final_response"] = finalResponse
+		out["output"] = finalResponse
+		out["output_preview"] = finalResponse
+		out["final_response_source"] = source
+	}
+	if run.ErrorMessage != "" {
+		out["failure_reason"] = run.ErrorMessage
+	}
+	return out
+}
+
+func finalResponseFromEvents(events []contracts.TraceEvent) (string, string) {
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != contracts.TraceResponseSent {
+			continue
+		}
+		if text := responseTextFromPayload(event.Payload); text != "" {
+			return text, string(event.Type)
+		}
+	}
+	return "", ""
+}
+
+func responseTextFromPayload(payload map[string]any) string {
+	for _, key := range []string{"final_response", "reply_text", "output_preview", "output", "text", "content"} {
+		if text := stringFromMap(payload, key); strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	if reply, ok := payload["reply"].(map[string]any); ok {
+		if text := stringFromMap(reply, "text"); strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	return ""
 }
 
 func buildTraceDiagnostics(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, traceID contracts.TraceID, events []contracts.TraceEvent) (traceDiagnosticsResponse, error) {
@@ -1258,7 +1304,7 @@ func promptSnapshots(events []contracts.TraceEvent) []promptSnapshotView {
 			ModelName:        snapshot.ModelName,
 			RepairAttempt:    snapshot.RepairAttempt,
 			Messages:         snapshot.Messages,
-			AssemblySteps:    snapshot.AssemblySteps,
+			AssemblySteps:    normalizePromptAssemblySteps(snapshot.AssemblySteps),
 			TokensEstimate:   snapshot.TokensEstimate,
 			CreatedAt:        event.CreatedAt,
 		})
@@ -1288,6 +1334,15 @@ func promptAssemblyStepsFromAny(value any) []promptAssemblyStepView {
 	var out []promptAssemblyStepView
 	if !decodeJSONish(value, &out) {
 		return nil
+	}
+	return normalizePromptAssemblySteps(out)
+}
+
+func normalizePromptAssemblySteps(out []promptAssemblyStepView) []promptAssemblyStepView {
+	for i := range out {
+		if strings.TrimSpace(out[i].Content) == "" && strings.TrimSpace(out[i].ContentPreview) != "" {
+			out[i].Content = out[i].ContentPreview
+		}
 	}
 	return out
 }

@@ -71,18 +71,10 @@ func promptAssemblyStep(stepID string, title string, sourceType string, sourceLa
 		MessageRole:    role,
 		PromptSection:  section,
 		Reason:         reason,
-		ContentPreview: previewText(content, 320),
+		Content:        content,
 		TokensEstimate: estimateTokens(content),
 		Included:       content != "",
 	}
-}
-
-func previewText(value string, limit int) string {
-	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-	if limit <= 0 || len(value) <= limit {
-		return value
-	}
-	return value[:limit] + "..."
 }
 
 func estimateTokens(value string) int {

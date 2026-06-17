@@ -181,6 +181,7 @@ type PromptAssemblyStep struct {
 	MessageRole    string `json:"message_role"`
 	PromptSection  string `json:"prompt_section"`
 	Reason         string `json:"reason,omitempty"`
+	Content        string `json:"content,omitempty"`
 	ContentPreview string `json:"content_preview,omitempty"`
 	TokensEstimate int    `json:"tokens_estimate,omitempty"`
 	Included       bool   `json:"included"`

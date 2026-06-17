@@ -1374,7 +1374,7 @@ func (c Coordinator) repairPrompt(ctx context.Context, envelope contracts.AgentE
 		MessageRole:    "system",
 		PromptSection:  "constraints",
 		Reason:         "上一轮模型输出无法解析或不符合决策协议",
-		ContentPreview: constraint,
+		Content:        constraint,
 		TokensEstimate: estimateTextTokens(constraint),
 		Included:       true,
 	})
@@ -1536,7 +1536,7 @@ func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvel
 		if err != nil {
 			return RunResult{}, true, err
 		}
-		c.recordResponse(ctx, envelope, runID, taskID, stepID, "reply", run.Status)
+		c.recordResponse(ctx, envelope, runID, taskID, stepID, "reply", run.Status, decision.Reply)
 		c.syncReply(ctx, envelope, runID, taskID, decision.Reply)
 		c.observeHook(ctx, runtimehook.OnRunFinished, envelope, definition, runID, taskID, map[string]any{"status": run.Status, "decision_type": decision.Type})
 		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Reply: decision.Reply}, true, nil
@@ -1556,7 +1556,7 @@ func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvel
 		if err != nil {
 			return RunResult{}, true, err
 		}
-		c.recordResponse(ctx, envelope, runID, taskID, stepID, "ask_clarification", run.Status)
+		c.recordResponse(ctx, envelope, runID, taskID, stepID, "ask_clarification", run.Status, &contracts.DecisionReply{Kind: contracts.ReplyStatusUpdate, Text: decision.Ask.Question})
 		c.syncWaitingInput(ctx, envelope, runID, taskID, decision.Ask.Question)
 		c.observeHook(ctx, runtimehook.OnRunFinished, envelope, definition, runID, taskID, map[string]any{"status": run.Status, "decision_type": decision.Type})
 		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Ask: decision.Ask}, true, nil
@@ -1577,7 +1577,7 @@ func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvel
 			return RunResult{}, true, err
 		}
 		reply := &contracts.DecisionReply{Kind: contracts.ReplyStatusUpdate, Text: "no operation required"}
-		c.recordResponse(ctx, envelope, runID, taskID, stepID, "no_op", run.Status)
+		c.recordResponse(ctx, envelope, runID, taskID, stepID, "no_op", run.Status, reply)
 		c.observeHook(ctx, runtimehook.OnRunFinished, envelope, definition, runID, taskID, map[string]any{"status": run.Status, "decision_type": decision.Type})
 		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Reply: reply}, true, nil
 	case contracts.DecisionTypeUnsupported:
@@ -1597,7 +1597,7 @@ func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvel
 			return RunResult{}, true, err
 		}
 		reply := &contracts.DecisionReply{Kind: contracts.ReplyRefusal, Text: decision.Reason}
-		c.recordResponse(ctx, envelope, runID, taskID, stepID, "unsupported", run.Status)
+		c.recordResponse(ctx, envelope, runID, taskID, stepID, "unsupported", run.Status, reply)
 		c.observeHook(ctx, runtimehook.OnRunFinished, envelope, definition, runID, taskID, map[string]any{"status": run.Status, "decision_type": decision.Type})
 		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Reply: reply}, true, nil
 	case contracts.DecisionTypeError:
@@ -1615,7 +1615,7 @@ func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvel
 		if err != nil {
 			return RunResult{}, true, err
 		}
-		c.recordResponse(ctx, envelope, runID, taskID, stepID, "error", run.Status)
+		c.recordResponse(ctx, envelope, runID, taskID, stepID, "error", run.Status, &contracts.DecisionReply{Kind: contracts.ReplyRefusal, Text: runtimeErr.Message})
 		c.syncRunFailed(ctx, envelope, runID, taskID, runtimeErr.Message)
 		c.observeHook(ctx, runtimehook.OnRunFinished, envelope, definition, runID, taskID, map[string]any{"status": run.Status, "decision_type": decision.Type, "error": runtimeErr.ToTracePayload()})
 		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Error: runtimeErr}, true, runtimeErr
@@ -2443,21 +2443,31 @@ func (c Coordinator) modelCapabilities() (modelclient.ModelCapabilityDescriptor,
 	return capabilities, true
 }
 
-func (c Coordinator) recordResponse(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, responseType string, status contracts.RunStatus) {
+func (c Coordinator) recordResponse(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, responseType string, status contracts.RunStatus, reply *contracts.DecisionReply) {
 	if c.Trace == nil {
 		return
 	}
+	payload := map[string]any{
+		"response_type": responseType,
+		"run_status":    status,
+	}
+	if reply != nil {
+		payload["reply"] = reply
+		if text := strings.TrimSpace(reply.Text); text != "" {
+			payload["reply_text"] = text
+			payload["final_response"] = text
+			payload["output"] = text
+			payload["output_preview"] = text
+		}
+	}
 	_ = c.Trace.Record(ctx, contracts.TraceEvent{
-		TraceID:  envelope.TraceID,
-		TenantID: envelope.Context.TenantID,
-		SpanID:   contracts.SpanID(stepID),
-		RunID:    runID,
-		TaskID:   taskID,
-		Type:     contracts.TraceResponseSent,
-		Payload: map[string]any{
-			"response_type": responseType,
-			"run_status":    status,
-		},
+		TraceID:   envelope.TraceID,
+		TenantID:  envelope.Context.TenantID,
+		SpanID:    contracts.SpanID(stepID),
+		RunID:     runID,
+		TaskID:    taskID,
+		Type:      contracts.TraceResponseSent,
+		Payload:   payload,
 		CreatedAt: c.Now(),
 	})
 }
