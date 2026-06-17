@@ -188,6 +188,7 @@ type SkillCard struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Tags        []string `json:"tags"`
+	Status      string   `json:"status,omitempty"`
 
 	WhenToUse    []string `json:"when_to_use"`
 	WhenNotToUse []string `json:"when_not_to_use,omitempty"`

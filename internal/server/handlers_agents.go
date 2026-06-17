@@ -2,6 +2,9 @@ package server
 
 import (
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	agentpackage "znt/internal/agentdef/package"
@@ -84,7 +87,89 @@ func handleAgentList(w http.ResponseWriter, r *http.Request, appCore *core.Core,
 	for _, asset := range byID {
 		views = append(views, agentResourceView(appCore, caller.TenantID, asset))
 	}
-	writeJSON(w, map[string]any{"agents": views}, http.StatusOK)
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	sortBy := strings.TrimSpace(r.URL.Query().Get("sort"))
+	filtered := make([]map[string]any, 0, len(views))
+	for _, view := range views {
+		if q != "" {
+			text := strings.ToLower(agentListString(view, "name") + " " + agentListString(view, "agent_id") + " " + agentListString(view, "description"))
+			if !strings.Contains(text, q) {
+				continue
+			}
+		}
+		if status != "" && status != "all" && !agentListStatusMatches(status, agentListString(view, "status")) {
+			continue
+		}
+		filtered = append(filtered, view)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		switch sortBy {
+		case "name":
+			return agentListString(filtered[i], "name") < agentListString(filtered[j], "name")
+		case "runs":
+			return false
+		default:
+			return agentListTime(filtered[i], "updated_at").After(agentListTime(filtered[j], "updated_at"))
+		}
+	})
+	total := len(filtered)
+	limit := intQuery(r.URL.Query().Get("limit"), total)
+	offset := intQuery(r.URL.Query().Get("offset"), 0)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit < 0 {
+		limit = total
+	}
+	if offset > total {
+		offset = total
+	}
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	writeJSON(w, map[string]any{
+		"agents": filtered[offset:end],
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	}, http.StatusOK)
+}
+
+func intQuery(value string, fallback int) int {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func agentListString(view map[string]any, key string) string {
+	if value, ok := view[key].(string); ok {
+		return value
+	}
+	return ""
+}
+
+func agentListStatusMatches(filter string, status string) bool {
+	if filter == status {
+		return true
+	}
+	if filter == "published" {
+		return status == agentpackage.AgentAssetActive || status == "published"
+	}
+	return false
+}
+
+func agentListTime(view map[string]any, key string) time.Time {
+	if value, ok := view[key].(time.Time); ok {
+		return value
+	}
+	return time.Time{}
 }
 
 func handleAgentGet(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID) {

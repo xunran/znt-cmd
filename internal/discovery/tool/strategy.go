@@ -65,6 +65,9 @@ func ApplySkillUseStrategy(candidates CandidateSet, strategy contracts.SkillUseS
 			continue
 		}
 		known[id] = struct{}{}
+		if strings.TrimSpace(skill.Status) == "disabled" {
+			continue
+		}
 		if _, ok := disabled[id]; ok {
 			continue
 		}

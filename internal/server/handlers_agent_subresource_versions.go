@@ -272,6 +272,159 @@ func promptProfileResourceView(ctx context.Context, appCore *core.Core, tenantID
 	return promptProfileDefinitionView(agent, draft), true, nil
 }
 
+func skillDefinitionListResourceView(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, draftID string) ([]contracts.SkillDefinition, bool, error) {
+	if version == "" && strings.TrimSpace(draftID) == "" {
+		if active, err := appCore.Packages.ListActiveSkillDefinitionProjections(ctx, tenantID, agentID); err != nil {
+			return nil, false, err
+		} else if len(active) > 0 {
+			skills := make([]contracts.SkillDefinition, 0, len(active))
+			for _, projection := range active {
+				skills = append(skills, projection.Definition)
+			}
+			return skills, true, nil
+		}
+	}
+	projectionVersion := agentSubresourceProjectionVersion(ctx, appCore, tenantID, agentID, version, draftID)
+	if projections, usedProjection, err := appCore.Packages.ListSkillDefinitionProjections(ctx, tenantID, agentID, projectionVersion, draftID); err != nil {
+		return nil, false, err
+	} else if usedProjection {
+		skills := make([]contracts.SkillDefinition, 0, len(projections))
+		for _, projection := range projections {
+			skills = append(skills, projection.Definition)
+		}
+		return skills, true, nil
+	}
+	agent, _, found, err := agentSubresourceDefinition(ctx, appCore, tenantID, agentID, version, draftID)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	return agent.SkillDefinitions, true, nil
+}
+
+func collaboratorListResourceView(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, draftID string) ([]contracts.AgentCollaboratorRef, bool, error) {
+	if version == "" && strings.TrimSpace(draftID) == "" {
+		if active, err := appCore.Packages.ListActiveCollaboratorProjections(ctx, tenantID, agentID); err != nil {
+			return nil, false, err
+		} else if len(active) > 0 {
+			collaborators := make([]contracts.AgentCollaboratorRef, 0, len(active))
+			for _, projection := range active {
+				collaborators = append(collaborators, projection.Collaborator)
+			}
+			return collaborators, true, nil
+		}
+	}
+	projectionVersion := agentSubresourceProjectionVersion(ctx, appCore, tenantID, agentID, version, draftID)
+	if projections, usedProjection, err := appCore.Packages.ListCollaboratorProjections(ctx, tenantID, agentID, projectionVersion, draftID); err != nil {
+		return nil, false, err
+	} else if usedProjection {
+		collaborators := make([]contracts.AgentCollaboratorRef, 0, len(projections))
+		for _, projection := range projections {
+			collaborators = append(collaborators, projection.Collaborator)
+		}
+		return collaborators, true, nil
+	}
+	agent, _, found, err := agentSubresourceDefinition(ctx, appCore, tenantID, agentID, version, draftID)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	return agent.Collaborators, true, nil
+}
+
+func exportedToolListResourceView(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, draftID string) ([]contracts.AgentExportedTool, bool, error) {
+	if version == "" && strings.TrimSpace(draftID) == "" {
+		if active, err := appCore.Packages.ListActiveExportedToolProjections(ctx, tenantID, agentID); err != nil {
+			return nil, false, err
+		} else if len(active) > 0 {
+			tools := make([]contracts.AgentExportedTool, 0, len(active))
+			for _, projection := range active {
+				tools = append(tools, projection.Tool)
+			}
+			return tools, true, nil
+		}
+	}
+	projectionVersion := agentSubresourceProjectionVersion(ctx, appCore, tenantID, agentID, version, draftID)
+	if projections, usedProjection, err := appCore.Packages.ListExportedToolProjections(ctx, tenantID, agentID, projectionVersion, draftID); err != nil {
+		return nil, false, err
+	} else if usedProjection {
+		tools := make([]contracts.AgentExportedTool, 0, len(projections))
+		for _, projection := range projections {
+			tools = append(tools, projection.Tool)
+		}
+		return tools, true, nil
+	}
+	agent, _, found, err := agentSubresourceDefinition(ctx, appCore, tenantID, agentID, version, draftID)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	return agent.Exports.Tools, true, nil
+}
+
+func agentVersionDetailResourceView(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion) (map[string]any, *contracts.RuntimeError, int, error) {
+	release, ok := releaseForAgentVersion(appCore.Packages.ListReleases(), tenantID, agentID, version)
+	if !ok {
+		return nil, contracts.NewRuntimeError(contracts.CodeAgentVersionNotFound, "agent package version not found", map[string]any{"agent_id": agentID, "version": version}), http.StatusNotFound, nil
+	}
+	asset, assetFound, err := appCore.Packages.GetAgentAsset(ctx, tenantID, agentID)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if !assetFound {
+		if definition, _, found, err := agentSubresourceDefinition(ctx, appCore, tenantID, agentID, release.Version, ""); err != nil {
+			return nil, nil, 0, err
+		} else if found {
+			asset = synthesizedAgentAsset(tenantID, definition)
+			assetFound = true
+		}
+	}
+	if !assetFound {
+		updatedAt := release.CreatedAt
+		if release.PublishedAt != nil {
+			updatedAt = *release.PublishedAt
+		}
+		asset = agentpackage.AgentAsset{
+			TenantID:       tenantID,
+			AgentID:        agentID,
+			Name:           string(agentID),
+			Status:         agentpackage.AgentAssetActive,
+			ActiveVersion:  release.Version,
+			DefaultVersion: release.Version,
+			CreatedAt:      release.CreatedAt,
+			UpdatedAt:      updatedAt,
+		}
+	}
+	detail := map[string]any{
+		"agent":    agentResourceView(appCore, tenantID, asset),
+		"version":  agentVersionResourceView(ctx, appCore, tenantID, agentID, release),
+		"versions": agentVersionResourceViews(ctx, appCore, tenantID, agentID),
+	}
+	if prompt, found, err := promptProfileResourceView(ctx, appCore, tenantID, agentID, release.Version, ""); err != nil {
+		return nil, nil, 0, err
+	} else if found {
+		detail["prompt_profile"] = prompt
+	}
+	if bindings, found, err := toolBindingResourceView(ctx, appCore, tenantID, agentID, release.Version, ""); err != nil {
+		return nil, nil, 0, err
+	} else if found {
+		detail["tool_bindings"] = bindings
+	}
+	if skills, found, err := skillDefinitionListResourceView(ctx, appCore, tenantID, agentID, release.Version, ""); err != nil {
+		return nil, nil, 0, err
+	} else if found {
+		detail["skills"] = skills
+	}
+	if collaborators, found, err := collaboratorListResourceView(ctx, appCore, tenantID, agentID, release.Version, ""); err != nil {
+		return nil, nil, 0, err
+	} else if found {
+		detail["collaborators"] = collaborators
+	}
+	if tools, found, err := exportedToolListResourceView(ctx, appCore, tenantID, agentID, release.Version, ""); err != nil {
+		return nil, nil, 0, err
+	} else if found {
+		detail["exported_tools"] = tools
+	}
+	return detail, nil, 0, nil
+}
+
 func handleAgentVersions(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, parts []string) {
 	switch {
 	case len(parts) == 0:
@@ -291,6 +444,21 @@ func handleAgentVersions(w http.ResponseWriter, r *http.Request, appCore *core.C
 			return
 		}
 		writeJSON(w, map[string]any{"version": agentVersionResourceView(r.Context(), appCore, caller.TenantID, agentID, release)}, http.StatusOK)
+	case len(parts) == 2 && parts[1] == "detail":
+		if r.Method != http.MethodGet {
+			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported agent version detail method", nil), http.StatusMethodNotAllowed)
+			return
+		}
+		detail, runtimeErr, status, err := agentVersionDetailResourceView(r.Context(), appCore, caller.TenantID, agentID, contracts.AgentVersion(parts[0]))
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		if runtimeErr != nil {
+			writeError(w, runtimeErr, status)
+			return
+		}
+		writeJSON(w, detail, http.StatusOK)
 	case len(parts) == 2 && (parts[1] == "activate" || parts[1] == "restore"):
 		if r.Method != http.MethodPost {
 			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported agent version "+parts[1]+" method", nil), http.StatusMethodNotAllowed)

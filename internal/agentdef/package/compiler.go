@@ -900,6 +900,12 @@ func normalizeSkillDefinitions(definitions []contracts.SkillDefinition) ([]contr
 		if strings.TrimSpace(definition.Card.Description) == "" {
 			definition.Card.Description = definition.Card.Name
 		}
+		if strings.TrimSpace(definition.Card.Status) == "" {
+			definition.Card.Status = "enabled"
+		}
+		if definition.Card.Status != "enabled" && definition.Card.Status != "disabled" {
+			return nil, CompileError{Path: "skill_definitions." + skillID + ".status", Message: fmt.Sprintf("unknown skill status %q", definition.Card.Status)}
+		}
 		if definition.Card.RiskLevel == "" {
 			definition.Card.RiskLevel = contracts.RiskLow
 		}

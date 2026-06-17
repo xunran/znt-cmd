@@ -57,6 +57,9 @@ func (p StaticCandidateProvider) skillCandidates(agent contracts.AgentDefinition
 	instructionsByKey := map[string]contracts.SkillInstruction{}
 	cards := make([]contracts.SkillCard, 0, len(agent.SkillDefinitions)+len(p.Skills))
 	for _, definition := range agent.SkillDefinitions {
+		if strings.TrimSpace(definition.Card.Status) == "disabled" {
+			continue
+		}
 		cards = append(cards, definition.Card)
 		if definition.Instruction.Content != "" {
 			instructionsByKey[skillKey(definition.Card.SkillID, definition.Card.Version)] = definition.Instruction

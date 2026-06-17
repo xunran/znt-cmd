@@ -5862,6 +5862,33 @@ func TestAgentVersionResourceAPIActivatesStableVersion(t *testing.T) {
 	}
 }
 
+func TestAgentVersionDetailResourceAPIReturnsAggregatedSubresources(t *testing.T) {
+	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	publishStableAgentVersionForTest(t, appCore, "tenant_1", "test-agent", "v2", "detail aggregate prompt")
+	if _, err := appCore.Packages.EnsureAgentAssetVersionForTenant(context.Background(), "tenant_1", "test-agent", "v2", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appCore.Packages.UpsertSkillDefinitionProjection(context.Background(), "tenant_1", "test-agent", "v2", contracts.SkillDefinition{
+		Card:        contracts.SkillCard{SkillID: "detail-skill", Version: "v1", Name: "Detail Skill"},
+		Instruction: contracts.SkillInstruction{SkillID: "detail-skill", Content: "Use detail aggregate."},
+	}, "tester"); err != nil {
+		t.Fatal(err)
+	}
+	detail := doJSON(handler, "GET", "/v1/agents/test-agent/versions/v2/detail", nil)
+	if detail.Code != http.StatusOK {
+		t.Fatalf("agent version detail failed %d body %s", detail.Code, detail.Body.String())
+	}
+	for _, want := range []string{`"agent"`, `"version"`, `"versions"`, `"prompt_profile"`, `"tool_bindings"`, `"skills"`, "detail aggregate prompt", "detail-skill"} {
+		if !bytes.Contains(detail.Body.Bytes(), []byte(want)) {
+			t.Fatalf("agent version detail missing %q body %s", want, detail.Body.String())
+		}
+	}
+}
+
 func TestAgentVersionResourceAPIRestoresStableVersion(t *testing.T) {
 	appCore, err := core.New(config.Config{ServiceName: "clean-core", Version: "test", Env: "test", HTTPAddr: ":0", LogLevel: "error", Readiness: true})
 	if err != nil {

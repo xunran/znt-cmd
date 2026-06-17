@@ -111,6 +111,7 @@ type SkillDraftInput struct {
 	Name                    string                       `json:"name,omitempty"`
 	Description             string                       `json:"description,omitempty"`
 	Instruction             string                       `json:"instruction,omitempty"`
+	Status                  string                       `json:"status,omitempty"`
 	RiskLevel               contracts.RiskLevel          `json:"risk_level,omitempty"`
 	Tags                    []string                     `json:"tags,omitempty"`
 	WhenToUse               []string                     `json:"when_to_use,omitempty"`

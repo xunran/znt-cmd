@@ -216,6 +216,30 @@ func TestStaticCandidateProviderAppliesSkillStrategyBeforeToolGuidance(t *testin
 	}
 }
 
+func TestStaticCandidateProviderSkipsDisabledSkillStatus(t *testing.T) {
+	agent := loader.TestAgentDefinition()
+	agent.Skills = []contracts.SkillDefinitionRef{{SkillID: "pkg.disabled", Version: "v1"}}
+	agent.SkillDefinitions = []contracts.SkillDefinition{{
+		Card: contracts.SkillCard{
+			SkillID:     "pkg.disabled",
+			Version:     "v1",
+			Name:        "Disabled skill",
+			Description: "Should not be shown to model",
+			Status:      "disabled",
+			WhenToUse:   []string{"customer"},
+		},
+		Instruction: contracts.SkillInstruction{SkillID: "pkg.disabled", Content: "Hidden instruction."},
+	}}
+	provider := StaticCandidateProvider{}
+	set, err := provider.Candidates(context.Background(), agent, contracts.PolicySet{}, "customer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(set.Skills) != 0 || len(set.SkillInstructions) != 0 {
+		t.Fatalf("expected disabled skill status to be skipped, got skills=%#v instructions=%#v", set.Skills, set.SkillInstructions)
+	}
+}
+
 func TestStaticCandidateProviderMatchesSkillInstructionVersion(t *testing.T) {
 	agent := loader.TestAgentDefinition()
 	agent.Skills = []contracts.SkillDefinitionRef{{SkillID: "pkg.report", Version: "v1"}}
