@@ -165,7 +165,23 @@ type PromptBundle struct {
 
 	ContextAssemblyReport *ContextAssemblyReport `json:"context_assembly_report,omitempty"`
 
+	AssemblySteps []PromptAssemblyStep `json:"assembly_steps,omitempty"`
+
 	Hash string `json:"hash"`
 
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type PromptAssemblyStep struct {
+	StepID         string `json:"step_id"`
+	Title          string `json:"title"`
+	SourceType     string `json:"source_type"`
+	SourceLabel    string `json:"source_label"`
+	EditTarget     string `json:"edit_target,omitempty"`
+	MessageRole    string `json:"message_role"`
+	PromptSection  string `json:"prompt_section"`
+	Reason         string `json:"reason,omitempty"`
+	ContentPreview string `json:"content_preview,omitempty"`
+	TokensEstimate int    `json:"tokens_estimate,omitempty"`
+	Included       bool   `json:"included"`
 }

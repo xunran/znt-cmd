@@ -122,6 +122,39 @@ type runPromptDiagnostic struct {
 	PromptRecorded     bool                      `json:"prompt_recorded"`
 	PreviewCommand     map[string]any            `json:"preview_command,omitempty"`
 	RedactionPolicy    string                    `json:"redaction_policy"`
+	AssemblySteps      []promptAssemblyStepView  `json:"assembly_steps,omitempty"`
+	PromptSnapshots    []promptSnapshotView      `json:"prompt_snapshots,omitempty"`
+}
+
+type promptAssemblyStepView struct {
+	StepID         string `json:"step_id"`
+	Title          string `json:"title"`
+	SourceType     string `json:"source_type"`
+	SourceLabel    string `json:"source_label"`
+	EditTarget     string `json:"edit_target,omitempty"`
+	MessageRole    string `json:"message_role"`
+	PromptSection  string `json:"prompt_section"`
+	Reason         string `json:"reason,omitempty"`
+	ContentPreview string `json:"content_preview,omitempty"`
+	TokensEstimate int    `json:"tokens_estimate,omitempty"`
+	Included       bool   `json:"included"`
+}
+
+type promptMessageView struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type promptSnapshotView struct {
+	SnapshotID       string                   `json:"snapshot_id"`
+	PromptBundleHash string                   `json:"prompt_bundle_hash,omitempty"`
+	ModelProvider    string                   `json:"model_provider,omitempty"`
+	ModelName        string                   `json:"model_name,omitempty"`
+	RepairAttempt    int                      `json:"repair_attempt,omitempty"`
+	Messages         []promptMessageView      `json:"messages"`
+	AssemblySteps    []promptAssemblyStepView `json:"assembly_steps,omitempty"`
+	TokensEstimate   int                      `json:"tokens_estimate,omitempty"`
+	CreatedAt        time.Time                `json:"created_at"`
 }
 
 type runModelDiagnostic struct {
@@ -1165,6 +1198,8 @@ func promptDiagnostics(run contracts.AgentRun, events []contracts.TraceEvent) ru
 	if run.VersionSnapshot.PromptBundleHash != "" {
 		hashes = uniqueStrings(append([]string{run.VersionSnapshot.PromptBundleHash}, hashes...))
 	}
+	snapshots := promptSnapshots(events)
+	steps := promptAssemblySteps(events, snapshots)
 	preview := map[string]any{}
 	if run.AgentID != "" {
 		preview = map[string]any{
@@ -1180,10 +1215,100 @@ func promptDiagnostics(run contracts.AgentRun, events []contracts.TraceEvent) ru
 		PolicySetID:        run.VersionSnapshot.PolicySet,
 		PolicyVersionID:    run.VersionSnapshot.PolicyVersionID,
 		PolicyVersion:      run.VersionSnapshot.PolicySetVersion,
-		PromptRecorded:     false,
+		PromptRecorded:     len(snapshots) > 0,
 		PreviewCommand:     preview,
-		RedactionPolicy:    "raw PromptBundle is not stored in run logs; use prompt.preview with optimizer/admin roles to reconstruct a sanitized preview",
+		RedactionPolicy:    promptRedactionPolicy(len(snapshots) > 0),
+		AssemblySteps:      steps,
+		PromptSnapshots:    snapshots,
 	}
+}
+
+func promptRedactionPolicy(recorded bool) string {
+	if recorded {
+		return "prompt snapshots are recorded for local diagnostics; sensitive secrets should still be redacted by upstream policies"
+	}
+	return "raw PromptBundle is not stored in run logs; use prompt.preview with optimizer/admin roles to reconstruct a sanitized preview"
+}
+
+func promptSnapshots(events []contracts.TraceEvent) []promptSnapshotView {
+	out := []promptSnapshotView{}
+	for _, event := range events {
+		if event.Type != contracts.TraceModelCalled {
+			continue
+		}
+		var snapshot struct {
+			PromptBundleHash string                   `json:"prompt_bundle_hash"`
+			ModelProvider    string                   `json:"model_provider"`
+			ModelName        string                   `json:"model_name"`
+			RepairAttempt    int                      `json:"repair_attempt"`
+			Messages         []promptMessageView      `json:"messages"`
+			AssemblySteps    []promptAssemblyStepView `json:"assembly_steps"`
+			TokensEstimate   int                      `json:"tokens_estimate"`
+		}
+		if !decodeJSONish(event.Payload["prompt_snapshot"], &snapshot) {
+			continue
+		}
+		if len(snapshot.Messages) == 0 {
+			continue
+		}
+		out = append(out, promptSnapshotView{
+			SnapshotID:       fmt.Sprintf("%s-%d", event.Type, len(out)+1),
+			PromptBundleHash: snapshot.PromptBundleHash,
+			ModelProvider:    snapshot.ModelProvider,
+			ModelName:        snapshot.ModelName,
+			RepairAttempt:    snapshot.RepairAttempt,
+			Messages:         snapshot.Messages,
+			AssemblySteps:    snapshot.AssemblySteps,
+			TokensEstimate:   snapshot.TokensEstimate,
+			CreatedAt:        event.CreatedAt,
+		})
+	}
+	return out
+}
+
+func promptAssemblySteps(events []contracts.TraceEvent, snapshots []promptSnapshotView) []promptAssemblyStepView {
+	for i := len(snapshots) - 1; i >= 0; i-- {
+		if len(snapshots[i].AssemblySteps) > 0 {
+			return snapshots[i].AssemblySteps
+		}
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != contracts.TracePromptBundleBuilt {
+			continue
+		}
+		steps := promptAssemblyStepsFromAny(events[i].Payload["assembly_steps"])
+		if len(steps) > 0 {
+			return steps
+		}
+	}
+	return nil
+}
+
+func promptAssemblyStepsFromAny(value any) []promptAssemblyStepView {
+	var out []promptAssemblyStepView
+	if !decodeJSONish(value, &out) {
+		return nil
+	}
+	return out
+}
+
+func promptMessagesFromAny(value any) []promptMessageView {
+	var out []promptMessageView
+	if !decodeJSONish(value, &out) {
+		return nil
+	}
+	return out
+}
+
+func decodeJSONish(value any, target any) bool {
+	if value == nil {
+		return false
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, target) == nil
 }
 
 func modelDiagnostics(run contracts.AgentRun, events []contracts.TraceEvent) runModelDiagnostic {

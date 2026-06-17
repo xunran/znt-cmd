@@ -525,6 +525,11 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
+type PromptMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type chatCompletionResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
@@ -648,6 +653,15 @@ func promptBundleMessages(bundle contracts.PromptBundle, outputContract string) 
 		messages = append(messages, chatMessage{Role: "user", Content: user})
 	}
 	return messages
+}
+
+func PromptBundleMessagesForDiagnostics(bundle contracts.PromptBundle, outputContract string) []PromptMessage {
+	messages := promptBundleMessages(bundle, outputContract)
+	out := make([]PromptMessage, 0, len(messages))
+	for _, message := range messages {
+		out = append(out, PromptMessage{Role: message.Role, Content: message.Content})
+	}
+	return out
 }
 
 func renderDecisionContract(bundle contracts.PromptBundle) string {

@@ -1021,6 +1021,7 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 			"hash":                    bundle.Hash,
 			"context_assembly_report": bundle.ContextAssemblyReport,
 			"compression_report":      compressionReport,
+			"assembly_steps":          bundle.AssemblySteps,
 		},
 		CreatedAt: c.Now(),
 	})
@@ -1142,6 +1143,15 @@ func (c Coordinator) recordModelCalled(ctx context.Context, envelope contracts.A
 		if capabilitiesHash, err := hash.StableJSON(capabilities); err == nil {
 			payload["model_capabilities_hash"] = capabilitiesHash
 		}
+	}
+	payload["prompt_snapshot"] = map[string]any{
+		"prompt_bundle_hash": bundle.Hash,
+		"repair_attempt":     repairAttempt,
+		"model_provider":     c.modelProviderForDefinition(definition),
+		"model_name":         c.modelNameForDefinition(definition),
+		"messages":           modelclient.PromptBundleMessagesForDiagnostics(bundle, ""),
+		"assembly_steps":     bundle.AssemblySteps,
+		"tokens_estimate":    estimatePromptTokens(bundle),
 	}
 	_ = c.Trace.Record(ctx, contracts.TraceEvent{
 		TraceID:   envelope.TraceID,
@@ -1353,7 +1363,21 @@ func (c Coordinator) recordMemoryStrategyApplied(ctx context.Context, envelope c
 }
 
 func (c Coordinator) repairPrompt(ctx context.Context, envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, bundle contracts.PromptBundle, repairAttempt int, cause error) contracts.PromptBundle {
-	bundle.Constraints = append(bundle.Constraints, fmt.Sprintf("repair attempt %d: previous decision was invalid (%s); return one valid Decision JSON object that matches the contract", repairAttempt, cause.Error()))
+	constraint := fmt.Sprintf("repair attempt %d: previous decision was invalid (%s); return one valid Decision JSON object that matches the contract", repairAttempt, cause.Error())
+	bundle.Constraints = append(bundle.Constraints, constraint)
+	bundle.AssemblySteps = append(bundle.AssemblySteps, contracts.PromptAssemblyStep{
+		StepID:         fmt.Sprintf("repair-attempt-%d", repairAttempt),
+		Title:          "加入决策修复提示",
+		SourceType:     "decision_repair",
+		SourceLabel:    "运行时修复策略",
+		EditTarget:     "运行策略 > 输出协议",
+		MessageRole:    "system",
+		PromptSection:  "constraints",
+		Reason:         "上一轮模型输出无法解析或不符合决策协议",
+		ContentPreview: constraint,
+		TokensEstimate: estimateTextTokens(constraint),
+		Included:       true,
+	})
 	_ = promptbuilder.RefreshHash(&bundle)
 	_ = c.Trace.Record(ctx, contracts.TraceEvent{
 		TraceID:   envelope.TraceID,
@@ -1366,6 +1390,20 @@ func (c Coordinator) repairPrompt(ctx context.Context, envelope contracts.AgentE
 		CreatedAt: c.Now(),
 	})
 	return bundle
+}
+
+func estimateTextTokens(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	words := len(strings.Fields(value))
+	runes := len([]rune(value))
+	charEstimate := (runes + 3) / 4
+	if words > charEstimate {
+		return words
+	}
+	return charEstimate
 }
 
 func (c Coordinator) observeHook(ctx context.Context, event runtimehook.Event, envelope contracts.AgentEnvelope, agent contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, payload map[string]any) {

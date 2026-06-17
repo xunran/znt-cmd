@@ -21,7 +21,7 @@ func NewBuilder() Builder {
 }
 
 func (b Builder) Build(_ context.Context, agent contracts.AgentDefinition, view contracts.WorkView) (contracts.PromptBundle, error) {
-	contextText := renderContext(view)
+	contextText, contextSteps := renderContext(view)
 	bundle := contracts.PromptBundle{
 		BundleID: idgen.New("promptbundle"),
 		RunID:    view.RunID,
@@ -45,6 +45,13 @@ func (b Builder) Build(_ context.Context, agent contracts.AgentDefinition, view 
 		Constraints: view.Constraints,
 		CreatedAt:   b.now(),
 	}
+	bundle.AssemblySteps = append(bundle.AssemblySteps,
+		promptStep("system-instructions", "加入智能体系统提示词", "agent_system_prompt", "智能体配置", "智能体详情 > 基础提示词", "system", "system", "当前运行使用该智能体", agent.SystemPrompt),
+		promptStep("developer-instructions", "加入开发者提示词", "agent_developer_prompt", "智能体配置", "智能体详情 > 开发者提示词", "system", "developer", "当前智能体配置了开发者指令", agent.DeveloperPrompt),
+		promptStep("agent-identity", "加入智能体身份说明", "agent_identity_prompt", "智能体配置", "智能体详情 > 身份说明", "system", "developer", "帮助模型理解当前智能体角色", agent.IdentityPrompt),
+		promptStep("task-objective", "加入任务目标", "task_objective", "运行任务", "重新发起运行或修改任务输入", "user", "task", "本次运行的目标", view.TaskSummary.Objective),
+	)
+	bundle.AssemblySteps = append(bundle.AssemblySteps, contextSteps...)
 	if view.ContextAssemblyReport != nil {
 		report := *view.ContextAssemblyReport
 		bundle.ContextAssemblyReport = &report
@@ -55,13 +62,37 @@ func (b Builder) Build(_ context.Context, agent contracts.AgentDefinition, view 
 			continue
 		}
 		seenSkillInstructions[instruction.SkillID] = struct{}{}
-		bundle.SkillInstructions = append(bundle.SkillInstructions, renderSkillInstruction(instruction))
+		rendered := renderSkillInstruction(instruction)
+		bundle.SkillInstructions = append(bundle.SkillInstructions, rendered)
+		bundle.AssemblySteps = append(bundle.AssemblySteps, promptStep(
+			"skill-instruction-"+instruction.SkillID,
+			"加入技能执行指令",
+			"skill_instruction",
+			"技能配置",
+			"技能管理 > "+instruction.SkillID,
+			"system",
+			"developer",
+			"候选技能命中本次任务",
+			rendered,
+		))
 	}
 	for _, skill := range view.CandidateSkills {
 		if _, ok := seenSkillInstructions[skill.SkillID]; ok {
 			continue
 		}
-		bundle.SkillInstructions = append(bundle.SkillInstructions, sourceBlock("skill instruction "+skill.SkillID, fmt.Sprintf("%s: %s", skill.Name, strings.Join(skill.WhenToUse, "; "))))
+		rendered := sourceBlock("skill instruction "+skill.SkillID, fmt.Sprintf("%s: %s", skill.Name, strings.Join(skill.WhenToUse, "; ")))
+		bundle.SkillInstructions = append(bundle.SkillInstructions, rendered)
+		bundle.AssemblySteps = append(bundle.AssemblySteps, promptStep(
+			"skill-card-"+skill.SkillID,
+			"加入技能使用说明",
+			"skill_card",
+			"技能配置",
+			"技能管理 > "+skill.SkillID,
+			"system",
+			"developer",
+			"候选技能进入本次上下文",
+			rendered,
+		))
 	}
 	if len(bundle.SkillInstructions) > 0 {
 		bundle.Developer = strings.Join(append([]string{bundle.Developer}, bundle.SkillInstructions...), "\n")
@@ -91,6 +122,45 @@ func RefreshHash(bundle *contracts.PromptBundle) error {
 	return nil
 }
 
+func promptStep(stepID string, title string, sourceType string, sourceLabel string, editTarget string, role string, section string, reason string, content string) contracts.PromptAssemblyStep {
+	content = strings.TrimSpace(content)
+	return contracts.PromptAssemblyStep{
+		StepID:         stepID,
+		Title:          title,
+		SourceType:     sourceType,
+		SourceLabel:    sourceLabel,
+		EditTarget:     editTarget,
+		MessageRole:    role,
+		PromptSection:  section,
+		Reason:         reason,
+		ContentPreview: previewText(content, 320),
+		TokensEstimate: estimateTokens(content),
+		Included:       content != "",
+	}
+}
+
+func previewText(value string, limit int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
+}
+
+func estimateTokens(value string) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	words := len(strings.Fields(value))
+	runes := len([]rune(value))
+	charEstimate := (runes + 3) / 4
+	if words > charEstimate {
+		return words
+	}
+	return charEstimate
+}
+
 func renderSkillInstruction(instruction contracts.SkillInstruction) string {
 	parts := []string{instruction.Content}
 	if len(instruction.OutputRequirements) > 0 {
@@ -102,55 +172,79 @@ func renderSkillInstruction(instruction contracts.SkillInstruction) string {
 	return sourceBlock("skill instruction "+instruction.SkillID, strings.Join(parts, "\n"))
 }
 
-func renderContext(view contracts.WorkView) string {
-	parts := []string{
-		sourceBlock("user input", renderDynamicContext("user_input", "user_input:"+string(view.RunID), "untrusted_user_text", view.UserInput)),
-		sourceBlock("task summary", fmt.Sprintf("task_id=%s status=%s title=%s", view.TaskSummary.TaskID, view.TaskSummary.Status, view.TaskSummary.Title)),
+func renderContext(view contracts.WorkView) (string, []contracts.PromptAssemblyStep) {
+	parts := []string{}
+	steps := []contracts.PromptAssemblyStep{}
+	addContext := func(stepID string, title string, sourceType string, sourceLabel string, editTarget string, reason string, content string) {
+		parts = append(parts, content)
+		steps = append(steps, promptStep(stepID, title, sourceType, sourceLabel, editTarget, "user", "context", reason, content))
 	}
+	addContext(
+		"user-input",
+		"加入用户输入",
+		"user_input",
+		"本次运行输入",
+		"重新发起运行",
+		"模型需要理解用户当前问题",
+		sourceBlock("user input", renderDynamicContext("user_input", "user_input:"+string(view.RunID), "untrusted_user_text", view.UserInput)),
+	)
+	addContext(
+		"task-summary",
+		"加入任务摘要",
+		"task_summary",
+		"任务运行上下文",
+		"任务管理 / 运行上下文",
+		"帮助模型了解任务状态",
+		sourceBlock("task summary", fmt.Sprintf("task_id=%s status=%s title=%s", view.TaskSummary.TaskID, view.TaskSummary.Status, view.TaskSummary.Title)),
+	)
 	if view.ConversationContext != nil {
-		parts = append(parts, renderConversationContext(*view.ConversationContext)...)
+		conversationParts := renderConversationContext(*view.ConversationContext)
+		if len(conversationParts) > 0 {
+			content := strings.Join(conversationParts, "\n")
+			addContext("conversation-context", "加入会话上下文", "conversation_context", "会话历史", "上下文策略 > 会话历史", "本次运行来自会话或需要参考最近消息", content)
+		}
 	}
 	if view.PlanSummary != nil {
-		parts = append(parts, sourceBlock("task plan", fmt.Sprintf("plan_id=%s status=%s objective=%s", view.PlanSummary.PlanID, view.PlanSummary.Status, view.PlanSummary.Objective)))
+		addContext("task-plan", "加入任务计划", "task_plan", "任务计划", "任务计划配置", "当前任务已有计划信息", sourceBlock("task plan", fmt.Sprintf("plan_id=%s status=%s objective=%s", view.PlanSummary.PlanID, view.PlanSummary.Status, view.PlanSummary.Objective)))
 	}
 	if view.CurrentPlanStep != nil {
-		parts = append(parts, sourceBlock("current plan step", fmt.Sprintf("step_id=%s index=%d status=%s title=%s", view.CurrentPlanStep.StepID, view.CurrentPlanStep.Index, view.CurrentPlanStep.Status, view.CurrentPlanStep.Title)))
+		addContext("current-plan-step", "加入当前计划步骤", "current_plan_step", "任务计划", "任务计划配置", "模型需要知道当前执行到哪一步", sourceBlock("current plan step", fmt.Sprintf("step_id=%s index=%d status=%s title=%s", view.CurrentPlanStep.StepID, view.CurrentPlanStep.Index, view.CurrentPlanStep.Status, view.CurrentPlanStep.Title)))
 	}
 	if len(view.TaskHistory) > 0 {
 		lines := make([]string, 0, len(view.TaskHistory))
 		for _, item := range view.TaskHistory {
 			lines = append(lines, renderRetrievedContext(item))
 		}
-		parts = append(parts, sourceBlock("task history", strings.Join(lines, "\n\n")))
+		addContext("task-history", "加入任务历史", "task_history", "历史任务记录", "上下文策略 > 任务历史", "上下文策略选择了历史任务", sourceBlock("task history", strings.Join(lines, "\n\n")))
 	}
 	if view.HandoffContext != nil {
-		parts = append(parts, sourceBlock("handoff context", fmt.Sprintf("package_id=%s from=%s mode=%s summary=%s", view.HandoffContext.PackageID, view.HandoffContext.FromAgent, view.HandoffContext.Mode, view.HandoffContext.Summary)))
+		addContext("handoff-context", "加入协作交接上下文", "handoff_context", "协作智能体", "协作 / 交接配置", "本次任务来自其他智能体交接", sourceBlock("handoff context", fmt.Sprintf("package_id=%s from=%s mode=%s summary=%s", view.HandoffContext.PackageID, view.HandoffContext.FromAgent, view.HandoffContext.Mode, view.HandoffContext.Summary)))
 	}
 	for _, memory := range view.MemorySummaries {
-		parts = append(parts, sourceBlock("memory summary", renderMemorySummary(memory)))
+		addContext("memory-"+string(memory.MemoryID), "加入记忆摘要", "memory_summary", "记忆", "上下文策略 > 记忆", "记忆策略选择了相关记忆", sourceBlock("memory summary", renderMemorySummary(memory)))
 	}
 	for _, artifact := range view.ArtifactRefs {
-		parts = append(parts, sourceBlock("artifact summary", renderArtifactRef(artifact)))
+		addContext("artifact-"+string(artifact.ArtifactID), "加入产物摘要", "artifact_summary", "运行产物", "产物 / 文件上下文", "本次上下文包含相关产物", sourceBlock("artifact summary", renderArtifactRef(artifact)))
 	}
 	for _, mark := range view.RiskMarks {
-		parts = append(parts, sourceBlock("risk mark", fmt.Sprintf("%s: %s", mark.Level, mark.Reason)))
+		addContext("risk-mark-"+string(mark.Level), "加入风险标记", "risk_mark", "风控策略", "风控 / 审批策略", "风险策略命中了本次运行", sourceBlock("risk mark", fmt.Sprintf("%s: %s", mark.Level, mark.Reason)))
 	}
 	for _, result := range view.ToolResultSummaries {
-		parts = append(parts, sourceBlock("tool result", renderToolResultSummary(result)))
+		addContext("tool-result-"+string(result.ToolCallID), "加入工具结果", "tool_result", "工具调用结果", "工具调用记录", "模型需要基于工具返回继续决策或回复", sourceBlock("tool result", renderToolResultSummary(result)))
 	}
 	for _, capability := range view.CandidateCapabilities {
-		parts = append(parts, sourceBlock("retrieved capability", fmt.Sprintf("%s/%s: %s", capability.Type, capability.Name, capability.Description)))
+		addContext("capability-"+capability.ID, "加入能力卡片", "capability_card", "能力目录", "能力配置", "能力检索命中本次任务", sourceBlock("retrieved capability", fmt.Sprintf("%s/%s: %s", capability.Type, capability.Name, capability.Description)))
 	}
 	for _, skill := range view.CandidateSkills {
-		parts = append(parts, sourceBlock("retrieved skill card", fmt.Sprintf("%s: %s", skill.Name, skill.Description)))
+		addContext("retrieved-skill-"+skill.SkillID, "加入技能卡片", "skill_card", "技能配置", "技能管理 > "+skill.SkillID, "技能检索命中本次任务", sourceBlock("retrieved skill card", fmt.Sprintf("%s: %s", skill.Name, skill.Description)))
 	}
 	for _, collaborator := range view.CandidateCollaborators {
-		parts = append(parts, sourceBlock("retrieved collaborator card", fmt.Sprintf("%s agent_id=%s version=%s alias=%s capabilities=%s when_to_use=%s", collaborator.Name, collaborator.AgentID, collaborator.Version, collaborator.Alias, strings.Join(collaborator.Capabilities, "; "), strings.Join(collaborator.WhenToUse, "; "))))
+		addContext("collaborator-"+string(collaborator.AgentID), "加入协作智能体卡片", "collaborator_card", "协作智能体配置", "协作智能体 > "+string(collaborator.AgentID), "候选协作智能体可处理部分任务", sourceBlock("retrieved collaborator card", fmt.Sprintf("%s agent_id=%s version=%s alias=%s capabilities=%s when_to_use=%s", collaborator.Name, collaborator.AgentID, collaborator.Version, collaborator.Alias, strings.Join(collaborator.Capabilities, "; "), strings.Join(collaborator.WhenToUse, "; "))))
 	}
 	for _, tool := range view.CandidateTools {
-		parts = append(parts, sourceBlock("retrieved tool card", fmt.Sprintf("%s: %s", tool.Name, tool.Description)))
+		addContext("tool-card-"+tool.ToolID, "加入工具说明", "tool_card", "工具目录", "工具接入 > "+tool.ToolID, "工具检索命中本次任务，模型可选择调用", sourceBlock("retrieved tool card", fmt.Sprintf("%s: %s", tool.Name, tool.Description)))
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n"), steps
 }
 
 func renderDynamicContext(sourceType string, sourceRef string, trustLevel string, content string) string {
