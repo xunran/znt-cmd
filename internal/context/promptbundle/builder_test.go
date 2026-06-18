@@ -35,6 +35,35 @@ func TestBuilderSeparatesSourcesAndHashes(t *testing.T) {
 	}
 }
 
+func TestBuilderDoesNotWrapTrustedPromptParts(t *testing.T) {
+	agent := loader.TestAgentDefinition()
+	agent.SystemPrompt = "Return decisions as JSON.\n<custom-system-tag>keep me</custom-system-tag>"
+	agent.DeveloperPrompt = "Developer policy."
+	agent.IdentityPrompt = "<agent-tone>Friendly</agent-tone>"
+	view := contracts.WorkView{
+		RunID: "run_1",
+		TaskSummary: contracts.TaskSummary{
+			TaskID:    "task_1",
+			Status:    contracts.TaskRunning,
+			Objective: "answer",
+		},
+	}
+	bundle, err := NewBuilder().Build(context.Background(), agent, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unexpected := range []string{"<system instructions>", "<developer instructions>", "<agent package instructions>"} {
+		if strings.Contains(bundle.System, unexpected) || strings.Contains(bundle.Developer, unexpected) {
+			t.Fatalf("expected trusted prompt wrapper %q to be omitted, got system=%q developer=%q", unexpected, bundle.System, bundle.Developer)
+		}
+	}
+	for _, expected := range []string{"<custom-system-tag>keep me</custom-system-tag>", "Developer policy.", "<agent-tone>Friendly</agent-tone>"} {
+		if !strings.Contains(bundle.System, expected) && !strings.Contains(bundle.Developer, expected) {
+			t.Fatalf("expected user-authored prompt content %q to be preserved, got system=%q developer=%q", expected, bundle.System, bundle.Developer)
+		}
+	}
+}
+
 func TestBuilderCarriesContextAssemblyReport(t *testing.T) {
 	agent := loader.TestAgentDefinition()
 	view := contracts.WorkView{

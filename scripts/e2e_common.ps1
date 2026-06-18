@@ -565,8 +565,15 @@ function New-OriginPromptBundlePreview {
         [string]$Input = "你能做什么？"
     )
     $package = Read-AgentPackage -PackageDir $PackageDir
-    $system = "<system instructions>`n$($package.System)`n</system instructions>"
-    $developer = "<developer instructions>`n$($package.Developer)`n</developer instructions>`n<agent package instructions>`n$($package.Prompt)`n</agent package instructions>"
+    $system = ([string]$package.System).Trim()
+    $developerParts = @()
+    if (-not [string]::IsNullOrWhiteSpace([string]$package.Developer)) {
+        $developerParts += ([string]$package.Developer).Trim()
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$package.Prompt)) {
+        $developerParts += ([string]$package.Prompt).Trim()
+    }
+    $developer = ($developerParts -join "`n`n")
     $task = "<task objective>`n$Input`n</task objective>"
     $context = "<user input>`n$Input`n</user input>`n<task summary>`ntask_id=preview status=running title=Prompt preview`n</task summary>"
     $constraints = @("preview generated from fileized AgentPackage")

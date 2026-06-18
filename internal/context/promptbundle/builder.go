@@ -25,11 +25,11 @@ func (b Builder) Build(_ context.Context, agent contracts.AgentDefinition, view 
 	bundle := contracts.PromptBundle{
 		BundleID: idgen.New("promptbundle"),
 		RunID:    view.RunID,
-		System:   sourceBlock("system instructions", agent.SystemPrompt),
-		Developer: strings.Join([]string{
-			sourceBlock("developer instructions", agent.DeveloperPrompt),
-			sourceBlock("agent package instructions", agent.IdentityPrompt),
-		}, "\n"),
+		System:   strings.TrimSpace(agent.SystemPrompt),
+		Developer: joinPromptParts(
+			agent.DeveloperPrompt,
+			agent.IdentityPrompt,
+		),
 		Task:      sourceBlock("task objective", view.TaskSummary.Objective),
 		Context:   contextText,
 		ToolCards: view.CandidateTools,
@@ -101,6 +101,17 @@ func (b Builder) Build(_ context.Context, agent contracts.AgentDefinition, view 
 		return contracts.PromptBundle{}, err
 	}
 	return bundle, nil
+}
+
+func joinPromptParts(values ...string) string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return strings.Join(out, "\n\n")
 }
 
 func RefreshHash(bundle *contracts.PromptBundle) error {

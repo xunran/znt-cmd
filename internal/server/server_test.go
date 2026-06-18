@@ -1731,8 +1731,11 @@ func TestPromptPreviewCommandBuildsBundleWithoutModelCall(t *testing.T) {
 	if result.PromptBundle.Hash == "" || result.TokenEstimate <= 0 {
 		t.Fatalf("expected prompt hash and token estimate, got %#v", result)
 	}
-	if !bytes.Contains([]byte(result.PromptBundle.Developer), []byte("agent package instructions")) {
+	if !bytes.Contains([]byte(result.PromptBundle.Developer), []byte("You are Test Agent.")) {
 		t.Fatalf("expected preview to include package instructions, got %s", result.PromptBundle.Developer)
+	}
+	if bytes.Contains([]byte(result.PromptBundle.Developer), []byte("agent package instructions")) {
+		t.Fatalf("expected preview to omit package instruction wrapper tag, got %s", result.PromptBundle.Developer)
 	}
 	if result.EffectiveStrategies.Context.Mode == "" || result.ContextAssemblyReport == nil || result.ContextAssemblyReport.StrategyHash == "" {
 		t.Fatalf("expected preview strategy diagnostics, got %#v", result)
