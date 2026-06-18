@@ -457,6 +457,91 @@ func TestCoordinatorCompletesFromToolFinalDecision(t *testing.T) {
 	}
 }
 
+func TestCoordinatorForcesMerchantLimitToolForBusinessInput(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	runRepo := runrepo.NewInMemoryRepository()
+	traceRecorder := trace.NewInMemoryRecorder()
+	def := loader.TestAgentDefinition()
+	def.AgentID = "agent-mqjc5uc2"
+	def.Name = "商家测额智能体"
+	def.Description = "面向提钱罐业务的商家测额智能体"
+	def.IdentityPrompt = "你是提钱罐商家测额智能体。"
+	def.Tools.AllowedToolIDs = []string{"znt-merchant-limit.run_merchant_limit_agent"}
+	def.Tools.ExposedToolIDs = []string{"znt-merchant-limit.run_merchant_limit_agent"}
+	def.Runtime.MaxToolCalls = 1
+	agents := loader.NewStaticLoader(def)
+	model := &modelclient.ScriptedModelClient{Responses: []modelclient.ModelResponse{
+		{RawDecisionJSON: []byte(`{"type":"reply","reply":{"kind":"answer","text":"请提供请款单号。"}}`), ModelProvider: "stub", ModelName: "scripted"},
+	}}
+	coordinator := NewCoordinator(agents, runRepo, taskService, taskRepo, traceRecorder, model)
+	reg := registry.NewInMemoryRegistry()
+	if err := reg.Register(registry.Tool{
+		Definition: contracts.ToolDefinition{
+			ToolID:           "znt-merchant-limit.run_merchant_limit_agent",
+			GroupID:          "merchant-limit",
+			Name:             "znt-merchant-limit.run_merchant_limit_agent",
+			Description:      "Run merchant limit agent.",
+			InputSchema:      map[string]any{"type": "object"},
+			OutputSchema:     map[string]any{"type": "object"},
+			RiskLevel:        contracts.RiskLow,
+			Visibility:       contracts.ToolProtected,
+			ExecutionProfile: "local",
+			Version:          "v1",
+		},
+		Executor: finalDecisionExecutor{Text: "当前可融资金额为 0 元。\n本次申请金额 100,000 元，超过当前可融资金额。"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	coordinator.Tools = tooldiscovery.StaticCandidateProvider{Cards: reg.Cards(), Registry: reg}
+	coordinator.ToolRepo = toolrepo.NewInMemoryRepository()
+	coordinator.ToolRuntime = toolruntime.New(reg, toolpolicy.New(nil), traceRecorder)
+
+	result, err := coordinator.HandleEnvelope(context.Background(), contracts.AgentEnvelope{
+		EnvelopeID: "env_merchant_limit_forced",
+		TraceID:    "trace_merchant_limit_forced",
+		Target:     contracts.AgentTarget{AgentID: "agent-mqjc5uc2", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "这笔 2026041072529642 我想提 10 万，按现在数据够不够"},
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", UserID: "user_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != contracts.RunCompleted || result.Reply == nil || !strings.Contains(result.Reply.Text, "当前可融资金额为 0 元") {
+		t.Fatalf("expected forced merchant-limit final reply, got %#v", result)
+	}
+	if model.Calls != 0 {
+		t.Fatalf("expected forced route to bypass model, got %d calls", model.Calls)
+	}
+	calls, err := coordinator.ToolRepo.ListCallsByRun(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].ToolID != "znt-merchant-limit.run_merchant_limit_agent" {
+		t.Fatalf("expected one merchant-limit tool call, got %#v", calls)
+	}
+	if calls[0].Arguments["loanNo"] != "2026041072529642" || calls[0].Arguments["applyAmount"] != float64(100000) {
+		t.Fatalf("expected extracted loanNo and applyAmount, got %#v", calls[0].Arguments)
+	}
+	events, err := traceRecorder.ListByTrace(context.Background(), "trace_merchant_limit_forced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundForcedTrace bool
+	for _, event := range events {
+		if event.Type == contracts.TraceDecisionCompleted && event.Payload["source"] == "merchant_limit_forced_tool" {
+			foundForcedTrace = true
+			break
+		}
+	}
+	if !foundForcedTrace {
+		t.Fatalf("expected forced tool decision trace, got %#v", events)
+	}
+}
+
 func TestRuntimeHooksObserveAndPatchData(t *testing.T) {
 	taskRepo := taskrepo.NewInMemoryTaskRepository()
 	eventRepo := taskrepo.NewInMemoryEventRepository()

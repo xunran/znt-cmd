@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1025,6 +1027,12 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 		},
 		CreatedAt: c.Now(),
 	})
+	if decision, ok := c.merchantLimitForcedToolDecision(ctx, envelope, activeDefinition, runID, taskID, userInput, candidates.Tools); ok {
+		if err := c.applyMemoryWriteHook(ctx, envelope, activeDefinition, policySet, effective.Memory, runID, taskID, task.Objective, candidates, view, bundle, decision); err != nil {
+			return RunResult{}, true, err
+		}
+		return c.dispatch(ctx, envelope, activeDefinition, policySet, runID, taskID, stepID, decision, candidates)
+	}
 	decision, err := c.modelDecision(ctx, envelope, activeDefinition, runID, taskID, stepID, bundle, policySet, candidates.Tools)
 	if err != nil {
 		return RunResult{}, true, err
@@ -1125,6 +1133,124 @@ func (c Coordinator) modelDecision(ctx context.Context, envelope contracts.Agent
 		})
 		return decision, nil
 	}
+}
+
+func (c Coordinator) merchantLimitForcedToolDecision(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, userInput string, candidateTools []contracts.ToolCard) (contracts.Decision, bool) {
+	toolID, ok := merchantLimitRunToolID(candidateTools)
+	if !ok || !isMerchantLimitAgent(definition) || !isMerchantLimitBusinessInput(userInput) {
+		return contracts.Decision{}, false
+	}
+	arguments := map[string]any{
+		"input":     userInput,
+		"rawInput":  userInput,
+		"userInput": userInput,
+	}
+	if loanNo := firstRegexpSubmatch(userInput, `\b(20\d{10,})\b`); loanNo != "" {
+		arguments["loanNo"] = loanNo
+	}
+	if amount, ok := merchantLimitApplyAmount(userInput); ok {
+		arguments["applyAmount"] = amount
+	}
+	decision := contracts.Decision{
+		DecisionID: contracts.DecisionID(idgen.New("decision")),
+		Type:       contracts.DecisionTypeToolCall,
+		Reason:     "merchant_limit_business_request_forced_tool",
+		Confidence: 1,
+		ToolCalls: []contracts.ToolCall{{
+			ToolID:    toolID,
+			Name:      toolID,
+			Arguments: arguments,
+		}},
+	}
+	payload := map[string]any{
+		"decision_id":     decision.DecisionID,
+		"type":            decision.Type,
+		"source":          "merchant_limit_forced_tool",
+		"tool_id":         toolID,
+		"from_model_call": false,
+	}
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceDecisionCreated, payload)
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceDecisionCompleted, payload)
+	c.observeHook(ctx, runtimehook.OnModelDecision, envelope, definition, runID, taskID, map[string]any{"decision": decision, "source": "merchant_limit_forced_tool"})
+	return decision, true
+}
+
+func merchantLimitRunToolID(candidateTools []contracts.ToolCard) (string, bool) {
+	for _, tool := range candidateTools {
+		toolID := strings.TrimSpace(tool.ToolID)
+		if toolID == "znt-merchant-limit.run_merchant_limit_agent" || toolID == "run_merchant_limit_agent" {
+			return toolID, true
+		}
+	}
+	return "", false
+}
+
+func isMerchantLimitAgent(definition contracts.AgentDefinition) bool {
+	values := []string{
+		string(definition.AgentID),
+		string(definition.SourceProviderID),
+		definition.Name,
+		definition.Description,
+		definition.IdentityPrompt,
+		definition.SystemPrompt,
+	}
+	joined := strings.ToLower(strings.Join(values, "\n"))
+	return strings.Contains(joined, "znt-merchant-limit") ||
+		strings.Contains(joined, "merchant-limit") ||
+		strings.Contains(joined, "商家测额") ||
+		strings.Contains(joined, "提钱罐")
+}
+
+func isMerchantLimitBusinessInput(input string) bool {
+	text := strings.TrimSpace(input)
+	if text == "" {
+		return false
+	}
+	if firstRegexpSubmatch(text, `\b(20\d{10,})\b`) != "" {
+		return true
+	}
+	return strings.Contains(text, "请款单") ||
+		strings.Contains(text, "可融") ||
+		strings.Contains(text, "融资额度") ||
+		strings.Contains(text, "授信") ||
+		strings.Contains(text, "风控") ||
+		strings.Contains(text, "质押") ||
+		strings.Contains(text, "回款") ||
+		strings.Contains(text, "逾期")
+}
+
+func merchantLimitApplyAmount(input string) (float64, bool) {
+	text := strings.ReplaceAll(strings.TrimSpace(input), ",", "")
+	if text == "" {
+		return 0, false
+	}
+	for _, pattern := range []string{
+		`申请金额\s*[:：]?\s*(\d+(?:\.\d+)?)`,
+		`(?:我想提|想提|提)\s*(\d+(?:\.\d+)?)\s*万`,
+		`(\d+(?:\.\d+)?)\s*万`,
+	} {
+		match := firstRegexpSubmatch(text, pattern)
+		if match == "" {
+			continue
+		}
+		parsed, err := strconv.ParseFloat(match, 64)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(pattern, "万") {
+			return parsed * 10000, true
+		}
+		return parsed, true
+	}
+	return 0, false
+}
+
+func firstRegexpSubmatch(text string, pattern string) string {
+	match := regexp.MustCompile(pattern).FindStringSubmatch(text)
+	if len(match) > 1 {
+		return match[1]
+	}
+	return ""
 }
 
 func (c Coordinator) recordModelCalled(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, bundle contracts.PromptBundle, repairAttempt int) {
