@@ -295,6 +295,11 @@ type SkillDefinitionStore interface {
 	DeleteActiveSkillDefinitionProjection(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, skillID string) error
 }
 
+type SkillDefinitionVersionStore interface {
+	ListSkillDefinitionProjectionVersions(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, skillID string) ([]SkillDefinitionProjection, error)
+	ActivateSkillDefinitionProjection(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, skillID string, skillVersion string) error
+}
+
 type ToolBindingStore interface {
 	GetActiveToolBindingProjection(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID) (ToolBindingProjection, bool, error)
 	UpsertToolBindingProjection(ctx context.Context, binding ToolBindingProjection) error
@@ -1306,7 +1311,7 @@ func (s *Service) ListActiveSkillDefinitionProjections(ctx context.Context, tena
 	out := make([]SkillDefinitionProjection, 0)
 	prefix := promptProfileKey(tenantID, agentID) + "\x00"
 	for key, skill := range s.skills {
-		if strings.HasPrefix(key, prefix) {
+		if strings.HasPrefix(key, prefix) && skill.Status == contracts.ReleaseStable {
 			out = append(out, skill)
 		}
 	}
@@ -1325,8 +1330,22 @@ func (s *Service) GetActiveSkillDefinitionProjection(ctx context.Context, tenant
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	skill, ok := s.skills[skillDefinitionKey(tenantID, agentID, strings.TrimSpace(skillID))]
-	return skill, ok, nil
+	prefix := skillDefinitionKey(tenantID, agentID, strings.TrimSpace(skillID)) + "\x00"
+	var newest SkillDefinitionProjection
+	found := false
+	for key, skill := range s.skills {
+		if key != strings.TrimSuffix(prefix, "\x00") && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if skill.Status != contracts.ReleaseStable {
+			continue
+		}
+		if !found || skill.UpdatedAt.After(newest.UpdatedAt) {
+			newest = skill
+			found = true
+		}
+	}
+	return newest, found, nil
 }
 
 func (s *Service) UpsertSkillDefinitionProjection(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, definition contracts.SkillDefinition, actorID string) (SkillDefinitionProjection, error) {
@@ -1370,7 +1389,13 @@ func (s *Service) UpsertSkillDefinitionProjection(ctx context.Context, tenantID 
 		}
 	} else {
 		s.mu.Lock()
-		s.skills[skillDefinitionKey(tenantID, agentID, skill.SkillID)] = skill
+		for key, current := range s.skills {
+			if current.SkillID == skill.SkillID && current.TenantID == tenantID && current.AgentID == agentID && current.Status == contracts.ReleaseStable {
+				current.Status = contracts.ReleasePublished
+				s.skills[key] = current
+			}
+		}
+		s.skills[skillDefinitionKey(tenantID, agentID, skill.SkillID, skill.SkillVersion)] = skill
 		s.mu.Unlock()
 	}
 	s.auditEvent(ctx, tenantID, actorID, "agent.skill_definition.upsert", string(agentID)+"/"+skill.SkillID, "allowed", "")
@@ -1387,11 +1412,97 @@ func (s *Service) DeleteActiveSkillDefinitionProjection(ctx context.Context, ten
 		}
 	} else {
 		s.mu.Lock()
-		delete(s.skills, skillDefinitionKey(tenantID, agentID, strings.TrimSpace(skillID)))
+		prefix := skillDefinitionKey(tenantID, agentID, strings.TrimSpace(skillID)) + "\x00"
+		for key, skill := range s.skills {
+			if key == strings.TrimSuffix(prefix, "\x00") || strings.HasPrefix(key, prefix) {
+				skill.Status = contracts.ReleaseDeprecated
+				skill.Definition.Card.Status = "deleted"
+				skill.UpdatedAt = s.now()
+				s.skills[key] = skill
+			}
+		}
 		s.mu.Unlock()
 	}
 	s.auditEvent(ctx, tenantID, actorID, "agent.skill_definition.delete", string(agentID)+"/"+strings.TrimSpace(skillID), "allowed", "")
 	return nil
+}
+
+func (s *Service) ListSkillDefinitionProjectionVersions(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, skillID string) ([]SkillDefinitionProjection, error) {
+	skillID = strings.TrimSpace(skillID)
+	if tenantID == "" || agentID == "" {
+		return nil, nil
+	}
+	if store, ok := s.store.(SkillDefinitionVersionStore); ok {
+		return store.ListSkillDefinitionProjectionVersions(ctx, tenantID, agentID, skillID)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]SkillDefinitionProjection, 0)
+	prefix := skillDefinitionKey(tenantID, agentID, skillID) + "\x00"
+	for key, skill := range s.skills {
+		if skillID == "" {
+			if skill.TenantID == tenantID && skill.AgentID == agentID {
+				out = append(out, skill)
+			}
+			continue
+		}
+		if key == strings.TrimSuffix(prefix, "\x00") || strings.HasPrefix(key, prefix) {
+			out = append(out, skill)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Status != out[j].Status {
+			return out[i].Status == contracts.ReleaseStable
+		}
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	return out, nil
+}
+
+func (s *Service) ActivateSkillDefinitionProjection(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, skillID string, skillVersion string, actorID string) (SkillDefinitionProjection, error) {
+	skillID = strings.TrimSpace(skillID)
+	skillVersion = strings.TrimSpace(skillVersion)
+	if tenantID == "" || agentID == "" || skillID == "" || skillVersion == "" {
+		return SkillDefinitionProjection{}, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "skill activation requires tenant_id, agent_id, skill_id and skill_version", nil)
+	}
+	if store, ok := s.store.(SkillDefinitionVersionStore); ok {
+		if err := store.ActivateSkillDefinitionProjection(ctx, tenantID, agentID, skillID, skillVersion); err != nil {
+			return SkillDefinitionProjection{}, err
+		}
+		skill, found, err := s.GetActiveSkillDefinitionProjection(ctx, tenantID, agentID, skillID)
+		if err != nil || !found {
+			return SkillDefinitionProjection{}, err
+		}
+		s.auditEvent(ctx, tenantID, actorID, "agent.skill_definition.activate", string(agentID)+"/"+skill.SkillID+"/"+skill.SkillVersion, "allowed", "")
+		return skill, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var activated SkillDefinitionProjection
+	found := false
+	prefix := skillDefinitionKey(tenantID, agentID, skillID) + "\x00"
+	for key, skill := range s.skills {
+		if key != strings.TrimSuffix(prefix, "\x00") && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if skill.SkillID != skillID {
+			continue
+		}
+		if skill.SkillVersion == skillVersion {
+			skill.Status = contracts.ReleaseStable
+			skill.UpdatedAt = s.now()
+			activated = skill
+			found = true
+		} else if skill.Status == contracts.ReleaseStable {
+			skill.Status = contracts.ReleasePublished
+		}
+		s.skills[key] = skill
+	}
+	if !found {
+		return SkillDefinitionProjection{}, contracts.NewRuntimeError(contracts.CodeAgentVersionNotFound, "skill version not found", map[string]any{"skill_id": skillID, "skill_version": skillVersion})
+	}
+	s.auditEvent(ctx, tenantID, actorID, "agent.skill_definition.activate", string(agentID)+"/"+activated.SkillID+"/"+activated.SkillVersion, "allowed", "")
+	return activated, nil
 }
 
 func (s *Service) ListCollaboratorProjections(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, draftID string) ([]CollaboratorProjection, bool, error) {
@@ -1605,8 +1716,12 @@ func promptProfileKey(tenantID contracts.TenantID, agentID contracts.AgentID) st
 	return string(tenantID) + "\x00" + string(agentID)
 }
 
-func skillDefinitionKey(tenantID contracts.TenantID, agentID contracts.AgentID, skillID string) string {
-	return promptProfileKey(tenantID, agentID) + "\x00" + skillID
+func skillDefinitionKey(tenantID contracts.TenantID, agentID contracts.AgentID, skillID string, skillVersion ...string) string {
+	key := promptProfileKey(tenantID, agentID) + "\x00" + skillID
+	if len(skillVersion) > 0 && strings.TrimSpace(skillVersion[0]) != "" {
+		key += "\x00" + strings.TrimSpace(skillVersion[0])
+	}
+	return key
 }
 
 func collaboratorKey(tenantID contracts.TenantID, agentID contracts.AgentID, collaboratorAgentID contracts.AgentID) string {

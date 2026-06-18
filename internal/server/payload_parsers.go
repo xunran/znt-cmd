@@ -171,7 +171,7 @@ func parseExportedToolPayload(payload map[string]any) contracts.AgentExportedToo
 func skillDraftInput(payload map[string]any) (agentpackage.SkillDraftInput, error) {
 	input := agentpackage.SkillDraftInput{
 		SkillID:                 payloadString(payload, "skill_id"),
-		Version:                 payloadString(payload, "version"),
+		Version:                 payloadString(payload, "skill_version"),
 		Name:                    payloadString(payload, "name"),
 		Description:             payloadString(payload, "description"),
 		Instruction:             payloadString(payload, "instruction"),
@@ -189,6 +189,9 @@ func skillDraftInput(payload map[string]any) (agentpackage.SkillDraftInput, erro
 		RecommendedHandoffs:     stringSlice(payload["recommended_handoffs"]),
 		CompletionCriteria:      stringSlice(payload["completion_criteria"]),
 		OutputSchema:            parseMetadata(payload["output_schema"]),
+	}
+	if input.Version == "" {
+		input.Version = payloadString(payload, "version")
 	}
 	if input.SkillID == "" {
 		return input, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "agent.package.skill command requires skill_id", nil)

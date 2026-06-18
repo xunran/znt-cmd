@@ -3,18 +3,99 @@ package server
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
 
+	agentpackage "znt/internal/agentdef/package"
 	"znt/internal/app/auth"
 	"znt/internal/app/core"
 	"znt/internal/contracts"
 )
+
+func skillProjectionDeleted(projection agentpackage.SkillDefinitionProjection) bool {
+	return projection.Status == contracts.ReleaseDeprecated || projection.Definition.Card.Status == "deleted"
+}
+
+func deletedSkillIDs(projections []agentpackage.SkillDefinitionProjection) map[string]bool {
+	out := make(map[string]bool)
+	for _, projection := range projections {
+		if skillProjectionDeleted(projection) {
+			out[projection.SkillID] = true
+		}
+	}
+	return out
+}
+
+func skillDefinitionBySkillVersion(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, skillID string, skillVersion string) (contracts.SkillDefinition, bool, error) {
+	skillID = strings.TrimSpace(skillID)
+	skillVersion = strings.TrimSpace(skillVersion)
+	if skillID == "" || skillVersion == "" {
+		return contracts.SkillDefinition{}, false, nil
+	}
+	if versions, err := appCore.Packages.ListSkillDefinitionProjectionVersions(ctx, tenantID, agentID, skillID); err != nil {
+		return contracts.SkillDefinition{}, false, err
+	} else {
+		for _, projection := range versions {
+			if projection.SkillID == skillID && projection.SkillVersion == skillVersion && !skillProjectionDeleted(projection) {
+				return projection.Definition, true, nil
+			}
+		}
+	}
+	for _, release := range sortedAgentReleases(appCore.Packages.ListReleases(), tenantID, agentID) {
+		if projections, usedProjection, err := appCore.Packages.ListSkillDefinitionProjections(ctx, tenantID, agentID, release.Version, ""); err != nil {
+			return contracts.SkillDefinition{}, false, err
+		} else if usedProjection {
+			for _, projection := range projections {
+				if projection.SkillID == skillID && projection.SkillVersion == skillVersion && !skillProjectionDeleted(projection) {
+					return projection.Definition, true, nil
+				}
+			}
+			continue
+		}
+		skill, found, _, err := skillDefinitionResourceView(ctx, appCore, tenantID, agentID, release.Version, "", skillID)
+		if err != nil {
+			return contracts.SkillDefinition{}, false, err
+		}
+		if found && skill.Card.Version == skillVersion {
+			return skill, true, nil
+		}
+	}
+	return contracts.SkillDefinition{}, false, nil
+}
+
+func activateSkillDefinitionVersion(ctx context.Context, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, skillID string, skillVersion string) (agentpackage.SkillDefinitionProjection, error) {
+	projection, err := appCore.Packages.ActivateSkillDefinitionProjection(ctx, caller.TenantID, agentID, skillID, skillVersion, caller.CallerID)
+	if err == nil {
+		return projection, nil
+	}
+	if !isGlobalSkillListSkippableError(err) {
+		return agentpackage.SkillDefinitionProjection{}, err
+	}
+	definition, found, lookupErr := skillDefinitionBySkillVersion(ctx, appCore, caller.TenantID, agentID, skillID, skillVersion)
+	if lookupErr != nil {
+		return agentpackage.SkillDefinitionProjection{}, lookupErr
+	}
+	if !found {
+		return agentpackage.SkillDefinitionProjection{}, err
+	}
+	if definition.Card.Version == "" {
+		definition.Card.Version = skillVersion
+	}
+	version, _, versionErr := standaloneAgentSubresourceVersion(ctx, appCore, caller.TenantID, agentID, map[string]any{})
+	if versionErr != nil {
+		return agentpackage.SkillDefinitionProjection{}, versionErr
+	}
+	return appCore.Packages.UpsertSkillDefinitionProjection(ctx, caller.TenantID, agentID, version, definition, caller.CallerID)
+}
 
 func skillDefinitionResourceView(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, draftID string, skillID string) (contracts.SkillDefinition, bool, bool, error) {
 	if version == "" && strings.TrimSpace(draftID) == "" {
 		if skill, found, err := appCore.Packages.GetActiveSkillDefinitionProjection(ctx, tenantID, agentID, skillID); err != nil {
 			return contracts.SkillDefinition{}, false, false, err
 		} else if found {
+			if skillProjectionDeleted(skill) {
+				return contracts.SkillDefinition{}, false, true, nil
+			}
 			return skill.Definition, true, true, nil
 		}
 	}
@@ -22,6 +103,9 @@ func skillDefinitionResourceView(ctx context.Context, appCore *core.Core, tenant
 	if skill, found, err := appCore.Packages.GetSkillDefinitionProjection(ctx, tenantID, agentID, projectionVersion, draftID, skillID); err != nil {
 		return contracts.SkillDefinition{}, false, false, err
 	} else if found {
+		if skillProjectionDeleted(skill) {
+			return contracts.SkillDefinition{}, false, true, nil
+		}
 		return skill.Definition, true, true, nil
 	}
 	agent, _, found, err := agentSubresourceDefinition(ctx, appCore, tenantID, agentID, version, draftID)
@@ -39,6 +123,16 @@ func skillDefinitionResourceView(ctx context.Context, appCore *core.Core, tenant
 func skillDefinitionVersionViews(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, skillID string) ([]map[string]any, error) {
 	releases := sortedAgentReleases(appCore.Packages.ListReleases(), tenantID, agentID)
 	out := make([]map[string]any, 0, len(releases))
+	if versions, err := appCore.Packages.ListSkillDefinitionProjectionVersions(ctx, tenantID, agentID, skillID); err != nil {
+		return nil, err
+	} else {
+		for _, projection := range versions {
+			if skillProjectionDeleted(projection) {
+				continue
+			}
+			out = append(out, skillDefinitionVersionView(ctx, appCore, tenantID, agentID, projection, projection.Status == contracts.ReleaseStable))
+		}
+	}
 	for _, release := range releases {
 		if projections, usedProjection, err := appCore.Packages.ListSkillDefinitionProjections(ctx, tenantID, agentID, release.Version, ""); err != nil {
 			return nil, err
@@ -47,10 +141,12 @@ func skillDefinitionVersionViews(ctx context.Context, appCore *core.Core, tenant
 				if projection.SkillID != skillID {
 					continue
 				}
-				out = append(out, map[string]any{
-					"skill":   projection.Definition,
-					"version": agentVersionResourceView(ctx, appCore, tenantID, agentID, release),
-				})
+				if skillProjectionDeleted(projection) {
+					break
+				}
+				row := skillDefinitionVersionView(ctx, appCore, tenantID, agentID, projection, projection.Status == contracts.ReleaseStable)
+				row["agent_version"] = agentVersionResourceView(ctx, appCore, tenantID, agentID, release)
+				out = append(out, row)
 				break
 			}
 			continue
@@ -63,11 +159,39 @@ func skillDefinitionVersionViews(ctx context.Context, appCore *core.Core, tenant
 			continue
 		}
 		out = append(out, map[string]any{
-			"skill":   skill,
-			"version": agentVersionResourceView(ctx, appCore, tenantID, agentID, release),
+			"skill":         skill,
+			"skill_version": skill.Card.Version,
+			"version":       skill.Card.Version,
+			"agent_version": agentVersionResourceView(ctx, appCore, tenantID, agentID, release),
+			"active":        false,
+			"default":       false,
 		})
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left, _ := out[i]["active"].(bool)
+		right, _ := out[j]["active"].(bool)
+		if left != right {
+			return left
+		}
+		return payloadString(out[i], "skill_version") > payloadString(out[j], "skill_version")
+	})
 	return out, nil
+}
+
+func skillDefinitionVersionView(ctx context.Context, appCore *core.Core, tenantID contracts.TenantID, agentID contracts.AgentID, projection agentpackage.SkillDefinitionProjection, active bool) map[string]any {
+	return map[string]any{
+		"skill":                  skillProjectionView(projection, agentNameForSkill(ctx, appCore, tenantID, agentID)),
+		"skill_version":          projection.SkillVersion,
+		"version":                projection.SkillVersion,
+		"agent_version":          projection.Version,
+		"status":                 projection.Status,
+		"active":                 active,
+		"default":                active,
+		"updated_at":             projection.UpdatedAt.UTC(),
+		"owner_agent_id":         string(projection.AgentID),
+		"owner_agent_name":       agentNameForSkill(ctx, appCore, tenantID, agentID),
+		"skill_definition_state": projection.Status,
+	}
 }
 
 func handleAgentSkills(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, agentID contracts.AgentID, parts []string) {
@@ -97,15 +221,47 @@ func handleAgentSkills(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 						writeRuntimeError(w, err)
 						return
 					}
+					activeByID := make(map[string]contracts.SkillDefinition, len(active))
+					for _, projection := range active {
+						if skillProjectionDeleted(projection) {
+							continue
+						}
+						activeByID[projection.SkillID] = projection.Definition
+					}
 					if !found {
-						skills := make([]contracts.SkillDefinition, 0, len(active))
-						for _, projection := range active {
-							skills = append(skills, projection.Definition)
+						skills := make([]contracts.SkillDefinition, 0, len(activeByID))
+						for _, skill := range activeByID {
+							skills = append(skills, skill)
 						}
 						writeJSON(w, map[string]any{"skills": skills}, http.StatusOK)
 						return
 					}
-					writeJSON(w, map[string]any{"skills": agent.SkillDefinitions}, http.StatusOK)
+					deleted := deletedSkillIDs(active)
+					merged := make([]contracts.SkillDefinition, 0, len(agent.SkillDefinitions)+len(active))
+					seen := make(map[string]bool, len(agent.SkillDefinitions)+len(active))
+					for _, skill := range agent.SkillDefinitions {
+						skillID := skill.Card.SkillID
+						if deleted[skillID] {
+							seen[skillID] = true
+							continue
+						}
+						if activeSkill, ok := activeByID[skillID]; ok {
+							merged = append(merged, activeSkill)
+						} else {
+							merged = append(merged, skill)
+						}
+						seen[skillID] = true
+					}
+					for _, projection := range active {
+						if seen[projection.SkillID] {
+							continue
+						}
+						if skillProjectionDeleted(projection) {
+							continue
+						}
+						merged = append(merged, projection.Definition)
+					}
+					writeJSON(w, map[string]any{"skills": merged}, http.StatusOK)
 					return
 				}
 			}
@@ -116,6 +272,9 @@ func handleAgentSkills(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 			} else if usedProjection {
 				skills := make([]contracts.SkillDefinition, 0, len(projections))
 				for _, projection := range projections {
+					if skillProjectionDeleted(projection) {
+						continue
+					}
 					skills = append(skills, projection.Definition)
 				}
 				writeJSON(w, map[string]any{"skills": skills}, http.StatusOK)
@@ -160,6 +319,16 @@ func handleAgentSkills(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 		}
 		payload, ok := decodeMapPayload(w, r, "invalid skill activate json")
 		if !ok {
+			return
+		}
+		skillVersion := strings.TrimSpace(payloadString(payload, "skill_version"))
+		if skillVersion != "" {
+			projection, err := activateSkillDefinitionVersion(r.Context(), appCore, caller, agentID, parts[0], skillVersion)
+			if err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			writeJSON(w, map[string]any{"skill": skillProjectionView(projection, agentNameForSkill(r.Context(), appCore, caller.TenantID, agentID)), "skill_version": projection.SkillVersion, "active": true, "default": true}, http.StatusOK)
 			return
 		}
 		version := contracts.AgentVersion(payloadString(payload, "agent_version"))
@@ -279,7 +448,7 @@ func upsertAgentSkill(w http.ResponseWriter, r *http.Request, appCore *core.Core
 		return
 	}
 	if draftID == "" {
-		version, _, err := standaloneAgentSubresourceVersion(r.Context(), appCore, caller.TenantID, agentID, payload)
+		version, _, err := standaloneSkillAgentVersion(r.Context(), appCore, caller.TenantID, agentID, payload)
 		if err != nil {
 			writeRuntimeError(w, err)
 			return

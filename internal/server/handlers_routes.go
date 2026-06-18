@@ -323,6 +323,12 @@ func NewHandlerWithCore(appCore *core.Core, logger *slog.Logger) http.Handler {
 			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported agents method", nil), http.StatusMethodNotAllowed)
 		}
 	}))
+	mux.HandleFunc("/v1/skills", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleSkills(w, r, appCore, caller)
+	}))
+	mux.HandleFunc("/v1/skills/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleSkillResource(w, r, appCore, caller, strings.TrimPrefix(r.URL.Path, "/v1/skills/"))
+	}))
 	mux.HandleFunc("/v1/agents/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/agents/"), "/")
 		if path == "" {

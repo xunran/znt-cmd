@@ -4468,8 +4468,9 @@ SELECT tenant_id, agent_id, version, source_kind, source_id,
        skill_id, skill_version, definition_json, updated_at
 FROM agent_skill_definitions
 WHERE tenant_id=$1 AND agent_id=$2 AND source_kind=$3 AND source_id=$4
+  AND status=$5
 ORDER BY skill_id ASC, skill_version ASC`,
-		tenantID, agentID, agentpackage.SkillDefinitionSourceKind, string(agentID))
+		tenantID, agentID, agentpackage.SkillDefinitionSourceKind, string(agentID), contracts.ReleaseStable)
 	if err != nil {
 		return nil, err
 	}
@@ -4495,8 +4496,9 @@ SELECT tenant_id, agent_id, version, source_kind, source_id,
        skill_id, skill_version, definition_json, updated_at
 FROM agent_skill_definitions
 WHERE tenant_id=$1 AND agent_id=$2 AND source_kind=$3 AND source_id=$4 AND skill_id=$5
+  AND status=$6
 ORDER BY updated_at DESC LIMIT 1`,
-		tenantID, agentID, agentpackage.SkillDefinitionSourceKind, string(agentID), strings.TrimSpace(skillID))
+		tenantID, agentID, agentpackage.SkillDefinitionSourceKind, string(agentID), strings.TrimSpace(skillID), contracts.ReleaseStable)
 	skill, err := scanSkillDefinitionProjection(row)
 	if errors.Is(err, storagerepo.ErrNotFound) {
 		return agentpackage.SkillDefinitionProjection{}, false, nil
@@ -4528,10 +4530,19 @@ func (s *PackageStore) UpsertSkillDefinitionProjection(ctx context.Context, skil
 		return err
 	}
 	defer tx.Rollback()
+	if skill.Status == contracts.ReleaseStable {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE agent_skill_definitions
+SET status=$6
+WHERE tenant_id=$1 AND agent_id=$2 AND source_kind=$3 AND source_id=$4 AND skill_id=$5 AND status=$7`,
+			skill.TenantID, skill.AgentID, skill.SourceKind, skill.SourceID, skill.SkillID, contracts.ReleasePublished, contracts.ReleaseStable); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
 DELETE FROM agent_skill_definitions
-WHERE tenant_id=$1 AND agent_id=$2 AND source_kind=$3 AND source_id=$4 AND skill_id=$5`,
-		skill.TenantID, skill.AgentID, skill.SourceKind, skill.SourceID, skill.SkillID); err != nil {
+WHERE tenant_id=$1 AND agent_id=$2 AND source_kind=$3 AND source_id=$4 AND skill_id=$5 AND skill_version=$6`,
+		skill.TenantID, skill.AgentID, skill.SourceKind, skill.SourceID, skill.SkillID, skill.SkillVersion); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -4551,10 +4562,85 @@ func (s *PackageStore) DeleteActiveSkillDefinitionProjection(ctx context.Context
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `
-DELETE FROM agent_skill_definitions
+UPDATE agent_skill_definitions
+SET status=$6,
+    definition_json=jsonb_set(definition_json::jsonb, '{card,status}', '"deleted"'::jsonb, true),
+    updated_at=$7
 WHERE tenant_id=$1 AND agent_id=$2 AND source_kind=$3 AND source_id=$4 AND skill_id=$5`,
-		tenantID, agentID, agentpackage.SkillDefinitionSourceKind, string(agentID), strings.TrimSpace(skillID))
+		tenantID, agentID, agentpackage.SkillDefinitionSourceKind, string(agentID), strings.TrimSpace(skillID), contracts.ReleaseDeprecated, time.Now().UTC())
 	return err
+}
+
+func (s *PackageStore) ListSkillDefinitionProjectionVersions(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, skillID string) ([]agentpackage.SkillDefinitionProjection, error) {
+	if tenantID == "" || agentID == "" {
+		return nil, nil
+	}
+	filterSkillID := strings.TrimSpace(skillID)
+	args := []any{tenantID, agentID, agentpackage.SkillDefinitionSourceKind, string(agentID), contracts.ReleaseStable}
+	whereSkill := ""
+	if filterSkillID != "" {
+		args = append(args, filterSkillID)
+		whereSkill = fmt.Sprintf(" AND skill_id=$%d", len(args))
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT tenant_id, agent_id, version, source_kind, source_id,
+       COALESCE(package_version_id, ''), COALESCE(draft_id, ''), status,
+       skill_id, skill_version, definition_json, updated_at
+FROM agent_skill_definitions
+WHERE tenant_id=$1 AND agent_id=$2 AND source_kind=$3 AND source_id=$4`+whereSkill+`
+ORDER BY
+  CASE WHEN status=$5 THEN 0 ELSE 1 END,
+  updated_at DESC,
+  skill_version DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]agentpackage.SkillDefinitionProjection, 0)
+	for rows.Next() {
+		skill, err := scanSkillDefinitionProjection(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, skill)
+	}
+	return out, rows.Err()
+}
+
+func (s *PackageStore) ActivateSkillDefinitionProjection(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, skillID string, skillVersion string) error {
+	skillID = strings.TrimSpace(skillID)
+	skillVersion = strings.TrimSpace(skillVersion)
+	if tenantID == "" || agentID == "" || skillID == "" || skillVersion == "" {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `
+UPDATE agent_skill_definitions
+SET status=$7, updated_at=$8
+WHERE tenant_id=$1 AND agent_id=$2 AND source_kind=$3 AND source_id=$4 AND skill_id=$5 AND skill_version=$6`,
+		tenantID, agentID, agentpackage.SkillDefinitionSourceKind, string(agentID), skillID, skillVersion, contracts.ReleaseStable, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return contracts.NewRuntimeError(contracts.CodeAgentVersionNotFound, "skill version not found", map[string]any{"skill_id": skillID, "skill_version": skillVersion})
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE agent_skill_definitions
+SET status=$7
+WHERE tenant_id=$1 AND agent_id=$2 AND source_kind=$3 AND source_id=$4 AND skill_id=$5 AND skill_version<>$6 AND status=$8`,
+		tenantID, agentID, agentpackage.SkillDefinitionSourceKind, string(agentID), skillID, skillVersion, contracts.ReleasePublished, contracts.ReleaseStable); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PackageStore) ListCollaboratorProjections(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID, version contracts.AgentVersion, draftID string) ([]agentpackage.CollaboratorProjection, error) {
