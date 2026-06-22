@@ -22,4 +22,4 @@ $env:CLEAN_CORE_HTTP_ADDR = ":8080"
 $env:CLEAN_CORE_ENV = "local"
 $env:CLEAN_CORE_LOG_LEVEL = "error"
 
-$env:CLEAN_CORE_DATABASE_URL = ""
+$env:CLEAN_CORE_DATABASE_URL = "postgres://clean_core:clean_core_dev@127.0.0.1:5432/clean_core?sslmode=disable"
