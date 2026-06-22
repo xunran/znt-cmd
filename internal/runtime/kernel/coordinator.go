@@ -1178,11 +1178,39 @@ func (c Coordinator) merchantLimitForcedToolDecision(ctx context.Context, envelo
 func merchantLimitRunToolID(candidateTools []contracts.ToolCard) (string, bool) {
 	for _, tool := range candidateTools {
 		toolID := strings.TrimSpace(tool.ToolID)
-		if toolID == "znt-merchant-limit.run_merchant_limit_agent" || toolID == "run_merchant_limit_agent" {
+		if isMerchantLimitRunTool(tool) {
 			return toolID, true
 		}
 	}
 	return "", false
+}
+
+func isMerchantLimitRunTool(tool contracts.ToolCard) bool {
+	toolID := strings.TrimSpace(tool.ToolID)
+	if toolID == "" {
+		return false
+	}
+	lowerID := strings.ToLower(toolID)
+	lowerName := strings.ToLower(strings.TrimSpace(tool.Name))
+	if lowerID == "run_merchant_limit_agent" ||
+		lowerID == "znt-merchant-limit.run_merchant_limit_agent" ||
+		lowerName == "run_merchant_limit_agent" ||
+		lowerName == "znt-merchant-limit.run_merchant_limit_agent" {
+		return true
+	}
+	if !strings.HasSuffix(lowerID, ".run_merchant_limit_agent") && !strings.HasSuffix(lowerName, ".run_merchant_limit_agent") {
+		return false
+	}
+	providerText := strings.ToLower(strings.Join([]string{
+		strings.TrimSuffix(lowerID, ".run_merchant_limit_agent"),
+		strings.TrimSuffix(lowerName, ".run_merchant_limit_agent"),
+		tool.GroupID,
+		tool.Description,
+	}, "\n"))
+	return strings.Contains(providerText, "znt-merchant-limit") ||
+		strings.Contains(providerText, "merchant-limit") ||
+		strings.Contains(providerText, "商家测额") ||
+		strings.Contains(providerText, "提钱罐")
 }
 
 func isMerchantLimitAgent(definition contracts.AgentDefinition) bool {

@@ -458,6 +458,7 @@ func TestCoordinatorCompletesFromToolFinalDecision(t *testing.T) {
 }
 
 func TestCoordinatorForcesMerchantLimitToolForBusinessInput(t *testing.T) {
+	const toolID = "toolhost-47-104-8-74-znt-merchant-limit.run_merchant_limit_agent"
 	taskRepo := taskrepo.NewInMemoryTaskRepository()
 	eventRepo := taskrepo.NewInMemoryEventRepository()
 	taskService := taskruntime.NewService(taskRepo, eventRepo)
@@ -468,8 +469,8 @@ func TestCoordinatorForcesMerchantLimitToolForBusinessInput(t *testing.T) {
 	def.Name = "商家测额智能体"
 	def.Description = "面向提钱罐业务的商家测额智能体"
 	def.IdentityPrompt = "你是提钱罐商家测额智能体。"
-	def.Tools.AllowedToolIDs = []string{"znt-merchant-limit.run_merchant_limit_agent"}
-	def.Tools.ExposedToolIDs = []string{"znt-merchant-limit.run_merchant_limit_agent"}
+	def.Tools.AllowedToolIDs = []string{toolID}
+	def.Tools.ExposedToolIDs = []string{toolID}
 	def.Runtime.MaxToolCalls = 1
 	agents := loader.NewStaticLoader(def)
 	model := &modelclient.ScriptedModelClient{Responses: []modelclient.ModelResponse{
@@ -479,9 +480,9 @@ func TestCoordinatorForcesMerchantLimitToolForBusinessInput(t *testing.T) {
 	reg := registry.NewInMemoryRegistry()
 	if err := reg.Register(registry.Tool{
 		Definition: contracts.ToolDefinition{
-			ToolID:           "znt-merchant-limit.run_merchant_limit_agent",
+			ToolID:           toolID,
 			GroupID:          "merchant-limit",
-			Name:             "znt-merchant-limit.run_merchant_limit_agent",
+			Name:             toolID,
 			Description:      "Run merchant limit agent.",
 			InputSchema:      map[string]any{"type": "object"},
 			OutputSchema:     map[string]any{"type": "object"},
@@ -520,7 +521,7 @@ func TestCoordinatorForcesMerchantLimitToolForBusinessInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 1 || calls[0].ToolID != "znt-merchant-limit.run_merchant_limit_agent" {
+	if len(calls) != 1 || calls[0].ToolID != toolID {
 		t.Fatalf("expected one merchant-limit tool call, got %#v", calls)
 	}
 	if calls[0].Arguments["loanNo"] != "2026041072529642" || calls[0].Arguments["applyAmount"] != float64(100000) {
