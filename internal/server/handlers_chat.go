@@ -638,12 +638,84 @@ func syncChatAgentToolBinding(r *http.Request, appCore *core.Core, caller auth.C
 	}
 	toolIDs := exportedChatToolIDs(provider.Exports.Tools)
 	if len(toolIDs) == 0 {
-		return nil, "pending_backend_binding", nil
+		defaultTools := defaultChatAgentExportedTools(provider)
+		if len(defaultTools) == 0 {
+			return nil, "pending_backend_binding", nil
+		}
+		provider.Exports.Tools = append(provider.Exports.Tools, defaultTools...)
+		if appCore.Packages != nil {
+			projectionVersion := provider.Version
+			if projectionVersion == "" {
+				projectionVersion = version
+			}
+			if projectionVersion != "" {
+				for _, tool := range defaultTools {
+					if _, err := appCore.Packages.UpsertExportedToolProjection(r.Context(), provider.TenantID, provider.AgentID, projectionVersion, tool, caller.CallerID); err != nil {
+						return nil, "", err
+					}
+				}
+			}
+		}
+		toolIDs = exportedChatToolIDs(provider.Exports.Tools)
 	}
 	if err := syncAgentExportedTools(r.Context(), appCore, provider, caller.CallerID); err != nil {
 		return nil, "", err
 	}
 	return toolIDs, "active", nil
+}
+
+func defaultChatAgentExportedTools(provider contracts.AgentDefinition) []contracts.AgentExportedTool {
+	if !chatAgentLooksLikeMerchantLimit(provider) {
+		return nil
+	}
+	version := strings.TrimSpace(string(provider.Version))
+	if version == "" {
+		version = "v1"
+	}
+	return []contracts.AgentExportedTool{{
+		ToolID:      string(provider.AgentID) + ".run_merchant_limit_agent",
+		GroupID:     "merchant-limit",
+		Operation:   "run_merchant_limit_agent",
+		Name:        "运行商家测额智能体",
+		Description: "调用商家测额智能体处理请款单基础查询、融资额度分析、申请金额校验、授信、风控、质押店铺和回款查询。",
+		WhenToUse: []string{
+			"用户询问请款单、可融资金额、融资额度、申请金额是否覆盖、授信、风控、质押店铺或回款逾期时使用。",
+		},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"input":       map[string]any{"type": "string"},
+				"rawInput":    map[string]any{"type": "string"},
+				"userInput":   map[string]any{"type": "string"},
+				"loanNo":      map[string]any{"type": "string"},
+				"applyAmount": map[string]any{"type": "number"},
+			},
+		},
+		OutputSchema: map[string]any{"type": "object"},
+		RiskLevel:    contracts.RiskLow,
+		Visibility:   contracts.ToolProtected,
+		Status:       "enabled",
+		Version:      version,
+	}}
+}
+
+func chatAgentLooksLikeMerchantLimit(provider contracts.AgentDefinition) bool {
+	values := []string{
+		string(provider.AgentID),
+		string(provider.SourceProviderID),
+		provider.Name,
+		provider.Description,
+		provider.IdentityPrompt,
+		provider.SystemPrompt,
+		provider.DeveloperPrompt,
+	}
+	joined := strings.ToLower(strings.Join(values, "\n"))
+	return strings.Contains(joined, "znt-merchant-limit") ||
+		strings.Contains(joined, "merchant-limit") ||
+		strings.Contains(joined, "商家测额") ||
+		strings.Contains(joined, "测额") ||
+		strings.Contains(joined, "请款单") ||
+		strings.Contains(joined, "融资额度")
 }
 
 func exportedChatToolIDs(tools []contracts.AgentExportedTool) []string {

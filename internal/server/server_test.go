@@ -503,6 +503,81 @@ func TestChatConversationMerchantLimitBusinessInputInvokesToolAgent(t *testing.T
 	}
 }
 
+func TestChatConversationMerchantLimitMemberWithoutExportsGetsDefaultAgentTool(t *testing.T) {
+	appCore, err := core.New(config.Config{
+		ServiceName: "clean-core",
+		Version:     "test",
+		Env:         "test",
+		HTTPAddr:    ":0",
+		LogLevel:    "error",
+		Readiness:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appCore.Model = &scriptedServerModel{responses: [][]byte{
+		[]byte(`{"type":"reply","reply":{"kind":"answer","text":"商家测额结果：当前可融资金额为 0 元。"}}`),
+		[]byte(`{"type":"reply","reply":{"kind":"answer","text":"当前可融资金额为 0 元，本次申请金额 100,000 元超过当前可融资金额。"}}`),
+	}}
+	appCore.Coordinator.Model = appCore.Model
+	provider := loader.TestAgentDefinition()
+	provider.TenantID = "tenant_1"
+	provider.AgentID = "agent-merchant-limit"
+	provider.Version = "v0.1.1"
+	provider.Name = "商家测额分析"
+	provider.Description = "面向提钱罐业务的商家测额智能体，支持请款单融资额度分析。"
+	provider.IdentityPrompt = "你是提钱罐商家测额智能体。"
+	provider.Exports = contracts.AgentExports{}
+	appCore.AgentRegistry.Put(provider)
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+
+	create := doJSON(handler, http.MethodPost, "/v1/chat/conversations", map[string]any{
+		"name":          "merchant-limit-default-tool",
+		"main_agent_id": "test-agent",
+		"version":       "v1",
+		"member_agents": []map[string]any{{"agent_id": "agent-merchant-limit", "name": "商家测额分析"}},
+	})
+	if create.Code != http.StatusCreated ||
+		!bytes.Contains(create.Body.Bytes(), []byte(`"tool_binding":"active"`)) ||
+		!bytes.Contains(create.Body.Bytes(), []byte(`agent-merchant-limit.run_merchant_limit_agent`)) {
+		t.Fatalf("expected default merchant-limit agent tool binding, got %d body %s", create.Code, create.Body.String())
+	}
+	var created struct {
+		Conversation struct {
+			ConversationID string `json:"conversation_id"`
+		} `json:"conversation"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	send := doJSON(handler, http.MethodPost, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", map[string]any{"text": "请分析请款单 2026041072529642 可融多少，申请金额 100000 元"})
+	if send.Code != http.StatusOK {
+		t.Fatalf("unexpected send status %d body %s", send.Code, send.Body.String())
+	}
+	var sent struct {
+		TraceID  contracts.TraceID `json:"trace_id"`
+		Messages []struct {
+			Text string `json:"text"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(send.Body.Bytes(), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent.Messages) != 2 || !strings.Contains(sent.Messages[1].Text, "当前可融资金额为 0 元") {
+		t.Fatalf("expected merchant-limit integrated reply, got %#v body %s", sent.Messages, send.Body.String())
+	}
+	events, err := appCore.Trace.ListByTrace(context.Background(), sent.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasTraceEvent(events, "agent_tool.invoked") {
+		t.Fatalf("expected merchant-limit default agent_tool invocation, got %#v", events)
+	}
+	if !tracePayloadStringEquals(events, contracts.TraceDecisionCompleted, "source", "merchant_limit_forced_tool") {
+		t.Fatalf("expected forced merchant-limit tool decision trace, got %#v", events)
+	}
+}
+
 func TestChatConversationMerchantLimitManualTestsetRoutes(t *testing.T) {
 	forbiddenPublicText := []string{
 		"not_found",
