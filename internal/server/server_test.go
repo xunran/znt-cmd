@@ -206,6 +206,13 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 	if sent.RunID == "" || sent.TaskID == "" || sent.TraceID == "" || len(sent.Messages) != 2 {
 		t.Fatalf("expected run refs and user/reply messages, got %#v body %s", sent, send.Body.String())
 	}
+	events, err := appCore.Trace.ListByTrace(context.Background(), contracts.TraceID(sent.TraceID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tracePayloadBool(events, contracts.TraceConversationAddresseeJudged, "addressed_to_agent") {
+		t.Fatalf("expected chat message to be addressed to main agent, got events %#v", events)
+	}
 	reply := sent.Messages[1]
 	if reply.SpeakerType != "agent" || reply.Text != "ok" || reply.RunID == "" || reply.TaskID == "" || reply.TraceID == "" {
 		t.Fatalf("expected visible agent reply with run refs, got %#v", reply)
@@ -227,6 +234,90 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 		listed.Messages[1].Text != "ok" ||
 		listed.Messages[1].RunID == "" {
 		t.Fatalf("unexpected messages status %d body %s", messages.Code, messages.Body.String())
+	}
+}
+
+func TestChatConversationAPIAddressesMainAgentForCommonDebugMessages(t *testing.T) {
+	appCore, err := core.New(config.Config{
+		ServiceName: "clean-core",
+		Version:     "test",
+		Env:         "test",
+		HTTPAddr:    ":0",
+		LogLevel:    "error",
+		Readiness:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appCore.Model = &scriptedServerModel{responses: [][]byte{
+		[]byte(`{"type":"reply","reply":{"kind":"answer","text":"hello ok"}}`),
+		[]byte(`{"type":"reply","reply":{"kind":"answer","text":"capability ok"}}`),
+		[]byte(`{"type":"reply","reply":{"kind":"answer","text":"followup ok"}}`),
+		[]byte(`{"type":"no_op","reason":"user asked not to reply","confidence":0.95}`),
+	}}
+	appCore.Coordinator.Model = appCore.Model
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	create := doJSON(handler, http.MethodPost, "/v1/chat/conversations", map[string]any{
+		"name":          "main-agent-debug",
+		"main_agent_id": "test-agent",
+		"version":       "v1",
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("unexpected create status %d body %s", create.Code, create.Body.String())
+	}
+	var created struct {
+		Conversation struct {
+			ConversationID string `json:"conversation_id"`
+		} `json:"conversation"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name         string
+		text         string
+		wantReply    string
+		wantMessages int
+	}{
+		{name: "greeting", text: "hello", wantReply: "hello ok", wantMessages: 2},
+		{name: "capability", text: "what can you do", wantReply: "capability ok", wantMessages: 2},
+		{name: "followup", text: "what about this one", wantReply: "followup ok", wantMessages: 2},
+		{name: "no_reply", text: "please do not reply", wantMessages: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			send := doJSON(handler, http.MethodPost, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", map[string]any{"text": tc.text})
+			if send.Code != http.StatusOK {
+				t.Fatalf("unexpected send status %d body %s", send.Code, send.Body.String())
+			}
+			var sent struct {
+				TraceID  string `json:"trace_id"`
+				Messages []struct {
+					SpeakerType string `json:"speaker_type"`
+					Text        string `json:"text"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(send.Body.Bytes(), &sent); err != nil {
+				t.Fatal(err)
+			}
+			events, err := appCore.Trace.ListByTrace(context.Background(), contracts.TraceID(sent.TraceID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tracePayloadBool(events, contracts.TraceConversationAddresseeJudged, "addressed_to_agent") {
+				t.Fatalf("expected %s to be addressed to main agent, got events %#v", tc.name, events)
+			}
+			if len(sent.Messages) != tc.wantMessages {
+				t.Fatalf("expected %d returned messages, got %#v body %s", tc.wantMessages, sent.Messages, send.Body.String())
+			}
+			if tc.wantReply == "" {
+				return
+			}
+			reply := sent.Messages[len(sent.Messages)-1]
+			if reply.SpeakerType != "agent" || reply.Text != tc.wantReply {
+				t.Fatalf("expected reply %q, got %#v", tc.wantReply, reply)
+			}
+		})
 	}
 }
 
@@ -7261,6 +7352,18 @@ func hasTraceEvent(events []contracts.TraceEvent, eventType string) bool {
 	for _, event := range events {
 		if event.Type == eventType {
 			return true
+		}
+	}
+	return false
+}
+
+func tracePayloadBool(events []contracts.TraceEvent, eventType string, key string) bool {
+	for _, event := range events {
+		if event.Type != eventType {
+			continue
+		}
+		if value, ok := event.Payload[key].(bool); ok {
+			return value
 		}
 	}
 	return false

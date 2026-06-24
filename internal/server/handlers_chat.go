@@ -384,6 +384,7 @@ func handleChatMessageSend(w http.ResponseWriter, r *http.Request, appCore *core
 					MessageID:   messageID,
 					SpeakerID:   userMessage.SpeakerID,
 					SpeakerType: userMessage.SpeakerType,
+					Mentions:    []string{string(mainAgentID)},
 					Text:        text,
 					ThreadID:    conversationID,
 					CreatedAt:   now,
