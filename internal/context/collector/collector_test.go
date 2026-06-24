@@ -129,6 +129,50 @@ func TestSummarizeToolResultIncludesFinalDecisionReply(t *testing.T) {
 	}
 }
 
+func TestSummarizeToolResultPrefersToolAgentResultProtocol(t *testing.T) {
+	summary := summarizeToolResult(contracts.ToolResult{
+		Status: contracts.ToolResultSucceeded,
+		Output: map[string]any{
+			"reply_text": "capability_not_available",
+			"tool_agent_result": map[string]any{
+				"status":            "ok",
+				"provider_agent_id": "provider-agent",
+				"tool_id":           "customer.lookup",
+				"operation":         "lookup",
+				"result_summary":    "customer found",
+				"missing_context":   false,
+				"safe_for_user":     false,
+			},
+		},
+	})
+
+	for _, expected := range []string{
+		"status=ok",
+		"provider_agent_id=provider-agent",
+		"tool_id=customer.lookup",
+		"operation=lookup",
+		"result_summary=customer found",
+		"safe_for_user=false",
+	} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("expected summary to contain %q, got %s", expected, summary)
+		}
+	}
+	if strings.Contains(summary, "capability_not_available") {
+		t.Fatalf("expected raw tool-agent reply to be hidden, got %s", summary)
+	}
+}
+
+func TestSummarizeToolResultSanitizesInternalErrorText(t *testing.T) {
+	summary := summarizeToolResult(contracts.ToolResult{
+		Status: contracts.ToolResultFailed,
+		Error:  &contracts.ToolExecutionError{Message: "capability_not_available trace_id=trace_1"},
+	})
+	if summary != "tool result is not user-ready" {
+		t.Fatalf("expected sanitized error summary, got %s", summary)
+	}
+}
+
 func TestFilterRuntimeHookContextBlocksReportsPluginMetadataAndBudget(t *testing.T) {
 	blocks := []runtimehook.ContextBlock{
 		{

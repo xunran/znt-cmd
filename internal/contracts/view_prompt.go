@@ -86,7 +86,8 @@ type ConversationMessage struct {
 	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
 	ThreadID         string `json:"thread_id,omitempty"`
 
-	Mentions []string `json:"mentions,omitempty"`
+	Mentions []string       `json:"mentions,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type ConversationParticipant struct {

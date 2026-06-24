@@ -33,40 +33,42 @@ type runTimelineEvent struct {
 }
 
 type runDiagnosticsResponse struct {
-	Run            map[string]any          `json:"run"`
-	Summary        runDiagnosticsSummary   `json:"summary"`
-	Routing        []runRouteDiagnostic    `json:"routing"`
-	Strategy       runStrategyDiagnostic   `json:"strategy"`
-	Context        runContextDiagnostic    `json:"context"`
-	Prompt         runPromptDiagnostic     `json:"prompt"`
-	Model          runModelDiagnostic      `json:"model"`
-	Decisions      []runDecisionDiagnostic `json:"decisions"`
-	Tools          []runToolDiagnostic     `json:"tools"`
-	RuntimeHooks   []runtimehook.HookEvent `json:"runtime_hooks"`
-	AuditEvents    []contracts.AuditEvent  `json:"audit_events"`
-	Replay         replay.Report           `json:"replay"`
-	UsageEvidence  usageEvidenceResponse   `json:"usage_evidence"`
-	Timeline       []runTimelineEvent      `json:"timeline"`
-	Artifacts      []contracts.ArtifactID  `json:"artifacts"`
-	TraceEndpoints map[string]string       `json:"trace_endpoints"`
-	Meta           map[string]any          `json:"meta"`
+	Run            map[string]any            `json:"run"`
+	Summary        runDiagnosticsSummary     `json:"summary"`
+	Routing        []runRouteDiagnostic      `json:"routing"`
+	Strategy       runStrategyDiagnostic     `json:"strategy"`
+	Context        runContextDiagnostic      `json:"context"`
+	Prompt         runPromptDiagnostic       `json:"prompt"`
+	Model          runModelDiagnostic        `json:"model"`
+	Decisions      []runDecisionDiagnostic   `json:"decisions"`
+	Tools          []runToolDiagnostic       `json:"tools"`
+	ToolAgentCalls []toolAgentCallDiagnostic `json:"tool_agent_calls,omitempty"`
+	RuntimeHooks   []runtimehook.HookEvent   `json:"runtime_hooks"`
+	AuditEvents    []contracts.AuditEvent    `json:"audit_events"`
+	Replay         replay.Report             `json:"replay"`
+	UsageEvidence  usageEvidenceResponse     `json:"usage_evidence"`
+	Timeline       []runTimelineEvent        `json:"timeline"`
+	Artifacts      []contracts.ArtifactID    `json:"artifacts"`
+	TraceEndpoints map[string]string         `json:"trace_endpoints"`
+	Meta           map[string]any            `json:"meta"`
 }
 
 type traceDiagnosticsResponse struct {
-	TraceID       contracts.TraceID       `json:"trace_id"`
-	TenantID      contracts.TenantID      `json:"tenant_id,omitempty"`
-	Runs          []contracts.AgentRun    `json:"runs"`
-	Summary       runDiagnosticsSummary   `json:"summary"`
-	Routing       []runRouteDiagnostic    `json:"routing"`
-	Strategy      runStrategyDiagnostic   `json:"strategy"`
-	Context       runContextDiagnostic    `json:"context"`
-	Prompt        runPromptDiagnostic     `json:"prompt"`
-	Model         runModelDiagnostic      `json:"model"`
-	Decisions     []runDecisionDiagnostic `json:"decisions"`
-	Replay        replay.Report           `json:"replay"`
-	UsageEvidence usageEvidenceResponse   `json:"usage_evidence"`
-	Timeline      []runTimelineEvent      `json:"timeline"`
-	Meta          map[string]any          `json:"meta"`
+	TraceID        contracts.TraceID         `json:"trace_id"`
+	TenantID       contracts.TenantID        `json:"tenant_id,omitempty"`
+	Runs           []contracts.AgentRun      `json:"runs"`
+	Summary        runDiagnosticsSummary     `json:"summary"`
+	Routing        []runRouteDiagnostic      `json:"routing"`
+	Strategy       runStrategyDiagnostic     `json:"strategy"`
+	Context        runContextDiagnostic      `json:"context"`
+	Prompt         runPromptDiagnostic       `json:"prompt"`
+	Model          runModelDiagnostic        `json:"model"`
+	Decisions      []runDecisionDiagnostic   `json:"decisions"`
+	ToolAgentCalls []toolAgentCallDiagnostic `json:"tool_agent_calls,omitempty"`
+	Replay         replay.Report             `json:"replay"`
+	UsageEvidence  usageEvidenceResponse     `json:"usage_evidence"`
+	Timeline       []runTimelineEvent        `json:"timeline"`
+	Meta           map[string]any            `json:"meta"`
 }
 
 type runDiagnosticsSummary struct {
@@ -230,6 +232,18 @@ type runToolDiagnostic struct {
 	Call      contracts.ToolCall    `json:"call"`
 	Result    *contracts.ToolResult `json:"result,omitempty"`
 	HasResult bool                  `json:"has_result"`
+}
+
+type toolAgentCallDiagnostic struct {
+	ProviderAgentID string               `json:"provider_agent_id,omitempty"`
+	ToolID          string               `json:"tool_id,omitempty"`
+	Operation       string               `json:"operation,omitempty"`
+	Status          string               `json:"status,omitempty"`
+	RunID           contracts.AgentRunID `json:"run_id,omitempty"`
+	TaskID          contracts.TaskID     `json:"task_id,omitempty"`
+	ErrorSummary    string               `json:"error_summary,omitempty"`
+	StartedAt       *time.Time           `json:"started_at,omitempty"`
+	CompletedAt     *time.Time           `json:"completed_at,omitempty"`
 }
 
 func handleRuns(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity) {
@@ -534,6 +548,7 @@ func buildRunDiagnostics(r *http.Request, appCore *core.Core, caller auth.Caller
 		Model:          modelDiagnostics(run, traceEvents),
 		Decisions:      decisionDiagnostics(traceEvents),
 		Tools:          toolDiagnostics(toolCalls, toolResults),
+		ToolAgentCalls: toolAgentCallDiagnostics(traceEvents),
 		RuntimeHooks:   hookEvents,
 		AuditEvents:    auditEvents,
 		Replay:         report,
@@ -642,20 +657,21 @@ func buildTraceDiagnostics(r *http.Request, appCore *core.Core, caller auth.Call
 	}
 	report := replay.Build(events)
 	return traceDiagnosticsResponse{
-		TraceID:       traceID,
-		TenantID:      caller.TenantID,
-		Runs:          runs,
-		Summary:       diagnosticsSummary(baseRun, events, taskEvents, toolCalls, toolResults, auditEvents, hookEvents, report),
-		Routing:       routeDiagnostics(events),
-		Strategy:      strategyDiagnostics(baseRun, events, appCore),
-		Context:       contextDiagnostics(events),
-		Prompt:        promptDiagnostics(baseRun, events),
-		Model:         modelDiagnostics(baseRun, events),
-		Decisions:     decisionDiagnostics(events),
-		Replay:        report,
-		UsageEvidence: buildUsageEvidence(traceID, caller.TenantID, events),
-		Timeline:      buildTimeline(baseRun, events, taskEvents, toolCalls, toolResults, auditEvents, hookEvents),
-		Meta:          runResponseMeta(caller, traceID),
+		TraceID:        traceID,
+		TenantID:       caller.TenantID,
+		Runs:           runs,
+		Summary:        diagnosticsSummary(baseRun, events, taskEvents, toolCalls, toolResults, auditEvents, hookEvents, report),
+		Routing:        routeDiagnostics(events),
+		Strategy:       strategyDiagnostics(baseRun, events, appCore),
+		Context:        contextDiagnostics(events),
+		Prompt:         promptDiagnostics(baseRun, events),
+		Model:          modelDiagnostics(baseRun, events),
+		Decisions:      decisionDiagnostics(events),
+		ToolAgentCalls: toolAgentCallDiagnostics(events),
+		Replay:         report,
+		UsageEvidence:  buildUsageEvidence(traceID, caller.TenantID, events),
+		Timeline:       buildTimeline(baseRun, events, taskEvents, toolCalls, toolResults, auditEvents, hookEvents),
+		Meta:           runResponseMeta(caller, traceID),
 	}, nil
 }
 
@@ -1440,6 +1456,110 @@ func toolDiagnostics(calls []contracts.ToolCall, results []contracts.ToolResult)
 		out = append(out, row)
 	}
 	return out
+}
+
+func toolAgentCallDiagnostics(events []contracts.TraceEvent) []toolAgentCallDiagnostic {
+	byKey := map[string]*toolAgentCallDiagnostic{}
+	order := make([]string, 0)
+	keyFor := func(event contracts.TraceEvent) string {
+		key := strings.Join([]string{
+			stringFromMap(event.Payload, "provider_agent_id"),
+			stringFromMap(event.Payload, "tool_id"),
+			stringFromMap(event.Payload, "operation"),
+		}, "\x00")
+		if strings.Trim(key, "\x00") == "" {
+			key = fmt.Sprintf("%s:%d", event.SpanID, event.CreatedAt.UnixNano())
+		}
+		return key
+	}
+	for _, event := range events {
+		if event.Type != "agent_tool.invoked" && event.Type != "agent_tool.completed" && event.Type != "agent_tool.failed" {
+			continue
+		}
+		key := keyFor(event)
+		row, ok := byKey[key]
+		if !ok {
+			row = &toolAgentCallDiagnostic{
+				ProviderAgentID: stringFromMap(event.Payload, "provider_agent_id"),
+				ToolID:          stringFromMap(event.Payload, "tool_id"),
+				Operation:       stringFromMap(event.Payload, "operation"),
+			}
+			byKey[key] = row
+			order = append(order, key)
+		}
+		switch event.Type {
+		case "agent_tool.invoked":
+			row.Status = "invoked"
+			if row.StartedAt == nil {
+				startedAt := event.CreatedAt
+				row.StartedAt = &startedAt
+			}
+		case "agent_tool.completed":
+			row.Status = firstNonEmpty(stringFromMap(event.Payload, "status"), "completed")
+			row.RunID = contracts.AgentRunID(stringFromMap(event.Payload, "run_id"))
+			row.TaskID = contracts.TaskID(stringFromMap(event.Payload, "task_id"))
+			completedAt := event.CreatedAt
+			row.CompletedAt = &completedAt
+		case "agent_tool.failed":
+			row.Status = "failed"
+			row.ErrorSummary = summarizeDiagnosticError(event.Payload["error"])
+			completedAt := event.CreatedAt
+			row.CompletedAt = &completedAt
+		}
+	}
+	out := make([]toolAgentCallDiagnostic, 0, len(order))
+	for _, key := range order {
+		out = append(out, *byKey[key])
+	}
+	return out
+}
+
+func summarizeDiagnosticError(value any) string {
+	switch current := value.(type) {
+	case string:
+		return truncateDiagnosticText(sanitizeDiagnosticErrorSummary(current), 180)
+	case map[string]any:
+		return truncateDiagnosticText(sanitizeDiagnosticErrorSummary(firstNonEmpty(stringFromMap(current, "message"), stringFromMap(current, "code"))), 180)
+	default:
+		return ""
+	}
+}
+
+func sanitizeDiagnosticErrorSummary(value string) string {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range []string{
+		"capability_not_available",
+		"no operation required",
+		"no-op",
+		"no_op",
+		"tool result schema validation failed",
+		"agent exported tool is not enabled",
+		"trace_id",
+		"run_id",
+		"task_id",
+		"tool_call_id",
+		"stack trace",
+		"panic:",
+		"runtime error",
+		"worker_id",
+	} {
+		if lower == marker || strings.Contains(lower, marker) {
+			return "internal tool error hidden"
+		}
+	}
+	return text
+}
+
+func truncateDiagnosticText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "..."
 }
 
 func runFinalResponse(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) (map[string]any, []contracts.ArtifactID, error) {

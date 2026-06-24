@@ -50,6 +50,8 @@ type ToolCall struct {
 	IdempotencyKey string `json:"idempotency_key"`
 
 	CreatedAt time.Time `json:"created_at"`
+
+	RuntimeContext map[string]any `json:"-"`
 }
 
 type ToolResult struct {

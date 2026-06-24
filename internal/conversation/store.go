@@ -29,6 +29,8 @@ type MessageRecord struct {
 
 type Store interface {
 	UpsertThread(ctx context.Context, thread Thread) error
+	GetThread(ctx context.Context, tenantID contracts.TenantID, conversationID string, threadID string) (Thread, error)
+	ListThreads(ctx context.Context, tenantID contracts.TenantID, kind string, limit int, offset int) ([]Thread, error)
 	AppendMessage(ctx context.Context, message MessageRecord) error
 	RecentMessages(ctx context.Context, tenantID contracts.TenantID, conversationID string, threadID string, limit int) ([]contracts.ConversationMessage, error)
 	GetMessage(ctx context.Context, tenantID contracts.TenantID, conversationID string, messageID string) (contracts.ConversationMessage, error)

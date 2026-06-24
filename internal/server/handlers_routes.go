@@ -109,6 +109,12 @@ func NewHandlerWithCore(appCore *core.Core, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("/v1/runs/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		handleRunResource(w, r, appCore, caller, strings.TrimPrefix(r.URL.Path, "/v1/runs/"))
 	}))
+	mux.HandleFunc("/v1/chat/conversations", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleChatConversations(w, r, appCore, caller)
+	}))
+	mux.HandleFunc("/v1/chat/conversations/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleChatConversationResource(w, r, appCore, caller, strings.TrimPrefix(r.URL.Path, "/v1/chat/conversations/"))
+	}))
 	mux.HandleFunc("/v1/tasks/start", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		handleTaskStartResource(w, r, appCore, caller)
 	}))

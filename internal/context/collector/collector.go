@@ -286,7 +286,7 @@ func (c Collector) MemorySummaries(ctx context.Context, tenantID contracts.Tenan
 
 func summarizeToolResult(result contracts.ToolResult) string {
 	if result.Error != nil {
-		return result.Error.Message
+		return sanitizeToolResultSummaryText(result.Error.Message)
 	}
 	if len(result.Output) > 0 {
 		if summary := summarizeToolOutput(result.Output); summary != "" {
@@ -301,10 +301,13 @@ func summarizeToolResult(result contracts.ToolResult) string {
 }
 
 func summarizeToolOutput(output map[string]any) string {
+	if summary := summarizeToolAgentResult(output["tool_agent_result"]); summary != "" {
+		return summary
+	}
 	parts := make([]string, 0, 8)
 	seen := map[string]struct{}{}
 	add := func(key string, value any) {
-		text := strings.TrimSpace(toolOutputText(value))
+		text := strings.TrimSpace(sanitizeToolResultSummaryText(toolOutputText(value)))
 		if text == "" {
 			return
 		}
@@ -347,6 +350,32 @@ func summarizeToolOutput(output map[string]any) string {
 	return ""
 }
 
+func summarizeToolAgentResult(value any) string {
+	result, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, 6)
+	for _, key := range []string{"status", "provider_agent_id", "tool_id", "operation"} {
+		if text := strings.TrimSpace(toolOutputText(result[key])); text != "" {
+			parts = append(parts, key+"="+text)
+		}
+	}
+	if text := strings.TrimSpace(sanitizeToolResultSummaryText(toolOutputText(result["result_summary"]))); text != "" {
+		parts = append(parts, "result_summary="+text)
+	}
+	if text := strings.TrimSpace(toolOutputText(result["missing_context"])); text != "" {
+		parts = append(parts, "missing_context="+text)
+	}
+	if text := strings.TrimSpace(toolOutputText(result["safe_for_user"])); text != "" {
+		parts = append(parts, "safe_for_user="+text)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return truncateToolResultSummary(strings.Join(parts, "; "))
+}
+
 func nestedToolOutputText(value any, path ...string) string {
 	current := value
 	for _, key := range path {
@@ -385,6 +414,43 @@ func truncateToolResultSummary(text string) string {
 	}
 	runes := []rune(text)
 	return string(runes[:maxToolResultSummaryLength]) + "...(truncated)"
+}
+
+func sanitizeToolResultSummaryText(value string) string {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	suppressed := []string{
+		"capability_not_available",
+		"no operation required",
+		"no-op",
+		"no_op",
+		"tool result schema validation failed",
+		"agent exported tool is not enabled",
+	}
+	for _, item := range suppressed {
+		if lower == item || strings.Contains(lower, item) {
+			return "tool result is not user-ready"
+		}
+	}
+	internalMarkers := []string{
+		"trace_id",
+		"run_id",
+		"task_id",
+		"tool_call_id",
+		"stack trace",
+		"panic:",
+		"runtime error",
+		"worker_id",
+	}
+	for _, item := range internalMarkers {
+		if strings.Contains(lower, item) {
+			return "tool result requires review"
+		}
+	}
+	return text
 }
 
 func eventRunID(event contracts.TaskEvent) string {

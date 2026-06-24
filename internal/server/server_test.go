@@ -145,6 +145,190 @@ func TestCommandAgentRunAndQueries(t *testing.T) {
 	}
 }
 
+func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
+	appCore, err := core.New(config.Config{
+		ServiceName: "clean-core",
+		Version:     "test",
+		Env:         "test",
+		HTTPAddr:    ":0",
+		LogLevel:    "error",
+		Readiness:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	create := doJSON(handler, http.MethodPost, "/v1/chat/conversations", map[string]any{
+		"name":          "测试群聊",
+		"main_agent_id": "test-agent",
+		"version":       "v1",
+		"member_agents": []map[string]any{{"agent_id": "tool-agent", "name": "工具智能体"}},
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("unexpected create status %d body %s", create.Code, create.Body.String())
+	}
+	var created struct {
+		Conversation struct {
+			ConversationID string `json:"conversation_id"`
+			MainAgentID    string `json:"main_agent_id"`
+			MemberCount    int    `json:"member_count"`
+		} `json:"conversation"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Conversation.ConversationID == "" || created.Conversation.MainAgentID != "test-agent" || created.Conversation.MemberCount != 2 {
+		t.Fatalf("unexpected create payload: %#v", created)
+	}
+	addMember := doJSON(handler, http.MethodPost, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/members/agents", map[string]any{"agent_id": "tool-agent-2", "name": "工具智能体二"})
+	if addMember.Code != http.StatusOK || !bytes.Contains(addMember.Body.Bytes(), []byte(`"binding_status":"pending_backend_binding"`)) {
+		t.Fatalf("unexpected add member status %d body %s", addMember.Code, addMember.Body.String())
+	}
+	send := doJSON(handler, http.MethodPost, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", map[string]any{"text": "你好"})
+	if send.Code != http.StatusOK {
+		t.Fatalf("unexpected send status %d body %s", send.Code, send.Body.String())
+	}
+	var sent struct {
+		RunID    string `json:"run_id"`
+		TaskID   string `json:"task_id"`
+		TraceID  string `json:"trace_id"`
+		Messages []struct {
+			SpeakerType string `json:"speaker_type"`
+			Text        string `json:"text"`
+			RunID       string `json:"run_id"`
+			TaskID      string `json:"task_id"`
+			TraceID     string `json:"trace_id"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(send.Body.Bytes(), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.RunID == "" || sent.TaskID == "" || sent.TraceID == "" || len(sent.Messages) != 2 {
+		t.Fatalf("expected run refs and user/reply messages, got %#v body %s", sent, send.Body.String())
+	}
+	reply := sent.Messages[1]
+	if reply.SpeakerType != "agent" || reply.Text != "ok" || reply.RunID == "" || reply.TaskID == "" || reply.TraceID == "" {
+		t.Fatalf("expected visible agent reply with run refs, got %#v", reply)
+	}
+	messages := doJSON(handler, http.MethodGet, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", nil)
+	var listed struct {
+		Messages []struct {
+			SpeakerType string `json:"speaker_type"`
+			Text        string `json:"text"`
+			RunID       string `json:"run_id"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(messages.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if messages.Code != http.StatusOK || len(listed.Messages) != 2 ||
+		listed.Messages[0].SpeakerType != "user" ||
+		listed.Messages[1].SpeakerType != "agent" ||
+		listed.Messages[1].Text != "ok" ||
+		listed.Messages[1].RunID == "" {
+		t.Fatalf("unexpected messages status %d body %s", messages.Code, messages.Body.String())
+	}
+}
+
+func TestChatConversationMemberExportsBecomeRunScopedTools(t *testing.T) {
+	appCore, err := core.New(config.Config{
+		ServiceName: "clean-core",
+		Version:     "test",
+		Env:         "test",
+		HTTPAddr:    ":0",
+		LogLevel:    "error",
+		Readiness:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appCore.Model = &scriptedServerModel{responses: [][]byte{
+		[]byte(`{"type":"tool_call","tool_calls":[{"tool_id":"customer.lookup","name":"customer.lookup","arguments":{"input":"lookup customer"}}]}`),
+		[]byte(`{"type":"reply","reply":{"kind":"answer","text":"provider ok"}}`),
+		[]byte(`{"type":"reply","reply":{"kind":"answer","text":"main ok"}}`),
+	}}
+	appCore.Coordinator.Model = appCore.Model
+	provider := loader.TestAgentDefinition()
+	provider.TenantID = "tenant_1"
+	provider.AgentID = "provider-agent"
+	provider.Name = "Provider Agent"
+	provider.Exports = contracts.AgentExports{Tools: []contracts.AgentExportedTool{{
+		ToolID:       "customer.lookup",
+		Operation:    "lookup",
+		Name:         "Customer lookup",
+		Description:  "Look up customer context.",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+		RiskLevel:    contracts.RiskLow,
+		Visibility:   contracts.ToolProtected,
+		Status:       "enabled",
+		Version:      "v1",
+	}}}
+	appCore.AgentRegistry.Put(provider)
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+
+	create := doJSON(handler, http.MethodPost, "/v1/chat/conversations", map[string]any{
+		"name":          "group tools",
+		"main_agent_id": "test-agent",
+		"version":       "v1",
+		"member_agents": []map[string]any{{"agent_id": "provider-agent", "name": "Provider Agent"}},
+	})
+	if create.Code != http.StatusCreated || !bytes.Contains(create.Body.Bytes(), []byte(`"tool_binding":"active"`)) || !bytes.Contains(create.Body.Bytes(), []byte(`"customer.lookup"`)) {
+		t.Fatalf("expected exported tool member binding, got %d body %s", create.Code, create.Body.String())
+	}
+	var created struct {
+		Conversation struct {
+			ConversationID string `json:"conversation_id"`
+		} `json:"conversation"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	send := doJSON(handler, http.MethodPost, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", map[string]any{"text": "lookup customer"})
+	if send.Code != http.StatusOK {
+		t.Fatalf("unexpected send status %d body %s", send.Code, send.Body.String())
+	}
+	var sent struct {
+		TraceID contracts.TraceID `json:"trace_id"`
+	}
+	if err := json.Unmarshal(send.Body.Bytes(), &sent); err != nil {
+		t.Fatal(err)
+	}
+	events, err := appCore.Trace.ListByTrace(context.Background(), sent.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	parentContextToolFound := false
+	for _, event := range events {
+		if event.Type != "conversation.tool_overlay.applied" {
+			continue
+		}
+		if toolIDs, ok := event.Payload["tool_ids"].([]string); ok && contains(toolIDs, "customer.lookup") {
+			found = true
+		}
+		if toolIDs, ok := event.Payload["tool_ids"].([]string); ok && contains(toolIDs, "parent_context.read") {
+			parentContextToolFound = true
+		}
+		if toolIDs, ok := event.Payload["tool_ids"].([]any); ok {
+			for _, toolID := range toolIDs {
+				if toolID == "customer.lookup" {
+					found = true
+				}
+				if toolID == "parent_context.read" {
+					parentContextToolFound = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected conversation tool overlay trace with customer.lookup, got %#v", events)
+	}
+	if !parentContextToolFound {
+		t.Fatalf("expected provider agent run to allow parent_context.read, got %#v", events)
+	}
+}
+
 func TestOptimizerCommandDispatchCoverageForContractWarnings(t *testing.T) {
 	appCore, err := core.New(config.Config{
 		ServiceName: "clean-core",

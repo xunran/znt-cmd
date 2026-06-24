@@ -43,6 +43,62 @@ func (s *InMemoryStore) UpsertThread(_ context.Context, thread Thread) error {
 	return nil
 }
 
+func (s *InMemoryStore) GetThread(_ context.Context, tenantID contracts.TenantID, conversationID string, threadID string) (Thread, error) {
+	if threadID == "" {
+		threadID = conversationID
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	thread, ok := s.threads[threadKey(tenantID, conversationID, threadID)]
+	if !ok {
+		return Thread{}, storagerepo.ErrNotFound
+	}
+	return cloneThread(thread), nil
+}
+
+func (s *InMemoryStore) ListThreads(_ context.Context, tenantID contracts.TenantID, kind string, limit int, offset int) ([]Thread, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]Thread, 0)
+	for _, thread := range s.threads {
+		if thread.TenantID != tenantID {
+			continue
+		}
+		if kind != "" && thread.Kind != kind {
+			continue
+		}
+		out = append(out, cloneThread(thread))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left := out[i].UpdatedAt
+		if left.IsZero() {
+			left = out[i].CreatedAt
+		}
+		right := out[j].UpdatedAt
+		if right.IsZero() {
+			right = out[j].CreatedAt
+		}
+		if left.Equal(right) {
+			return out[i].ConversationID > out[j].ConversationID
+		}
+		return left.After(right)
+	})
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(out) {
+		return []Thread{}, nil
+	}
+	if limit <= 0 {
+		limit = len(out)
+	}
+	end := offset + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return append([]Thread(nil), out[offset:end]...), nil
+}
+
 func (s *InMemoryStore) AppendMessage(_ context.Context, message MessageRecord) error {
 	if message.TenantID == "" || strings.TrimSpace(message.ConversationID) == "" || strings.TrimSpace(message.Message.MessageID) == "" {
 		return contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "conversation message requires tenant_id, conversation_id and message_id", nil)
@@ -91,7 +147,7 @@ func (s *InMemoryStore) RecentMessages(_ context.Context, tenantID contracts.Ten
 	}
 	out := make([]contracts.ConversationMessage, 0, len(keys))
 	for _, key := range keys {
-		out = append(out, s.messages[key].Message)
+		out = append(out, messageWithMetadata(s.messages[key]))
 	}
 	return out, nil
 }
@@ -103,7 +159,30 @@ func (s *InMemoryStore) GetMessage(_ context.Context, tenantID contracts.TenantI
 	if !ok {
 		return contracts.ConversationMessage{}, storagerepo.ErrNotFound
 	}
-	return record.Message, nil
+	return messageWithMetadata(record), nil
+}
+
+func cloneThread(thread Thread) Thread {
+	if thread.ExternalRefs != nil {
+		refs := map[string]string{}
+		for key, value := range thread.ExternalRefs {
+			refs[key] = value
+		}
+		thread.ExternalRefs = refs
+	}
+	return thread
+}
+
+func messageWithMetadata(record MessageRecord) contracts.ConversationMessage {
+	message := record.Message
+	if record.Metadata != nil {
+		metadata := map[string]any{}
+		for key, value := range record.Metadata {
+			metadata[key] = value
+		}
+		message.Metadata = metadata
+	}
+	return message
 }
 
 func sameMessage(left MessageRecord, right MessageRecord) bool {

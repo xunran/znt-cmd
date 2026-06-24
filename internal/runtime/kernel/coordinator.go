@@ -40,6 +40,10 @@ import (
 	"znt/pkg/idgen"
 )
 
+const genericVisibleFailureReply = "抱歉，这个请求暂时无法处理。"
+
+const conversationAllowedToolIDsExternalRef = "chat_allowed_tool_ids"
+
 type Coordinator struct {
 	Agents                       loader.Loader
 	Runs                         runrepo.Repository
@@ -828,6 +832,8 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 		return RunResult{}, true, err
 	}
 	activeDefinition = applyEffectiveStrategiesToRuntimeDefinition(activeDefinition, effective)
+	var conversationToolIDs []string
+	activeDefinition, effective.Tools, conversationToolIDs = applyConversationToolOverlay(envelope, activeDefinition, effective.Tools)
 	policySet = effective.Policy
 	if activeDefinition.Runtime.MaxSteps > 0 && run.StepCount > activeDefinition.Runtime.MaxSteps {
 		return RunResult{}, true, contracts.NewRuntimeError(contracts.CodeModelError, "max steps exceeded", nil)
@@ -866,6 +872,13 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 	c.recordModelStrategySelected(ctx, envelope, activeDefinition, runID, taskID, strategyReport.StrategyHash)
 	c.recordRuntimeStrategyApplied(ctx, envelope, runID, taskID, strategyReport.StrategyHash, effective.Runtime, activeDefinition.Runtime)
 	c.recordRepairStrategyApplied(ctx, envelope, runID, taskID, strategyReport.StrategyHash, effective.Repair, activeDefinition.Runtime)
+	if len(conversationToolIDs) > 0 {
+		c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, "conversation.tool_overlay.applied", map[string]any{
+			"conversation_id": envelope.Context.Conversation.ConversationID,
+			"tool_ids":        conversationToolIDs,
+			"source":          conversationAllowedToolIDsExternalRef,
+		})
+	}
 	candidates, err := c.Tools.Candidates(ctx, activeDefinition, policySet, task.Objective)
 	if err != nil {
 		return RunResult{}, true, err
@@ -1676,6 +1689,7 @@ func (c Coordinator) applyMemoryWriteHook(ctx context.Context, envelope contract
 func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, policySet contracts.PolicySet, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, decision contracts.Decision, candidates tooldiscovery.CandidateSet) (RunResult, bool, error) {
 	switch decision.Type {
 	case contracts.DecisionTypeReply:
+		reply := visibleReplyForDecision(decision.Reply, true)
 		if _, _, _, err := c.Tasks.ApplyCommand(ctx, taskruntime.CommandInput{
 			TaskID:    taskID,
 			Command:   contracts.CmdComplete,
@@ -1690,10 +1704,10 @@ func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvel
 		if err != nil {
 			return RunResult{}, true, err
 		}
-		c.recordResponse(ctx, envelope, runID, taskID, stepID, "reply", run.Status, decision.Reply)
-		c.syncReply(ctx, envelope, runID, taskID, decision.Reply)
+		c.recordResponse(ctx, envelope, runID, taskID, stepID, "reply", run.Status, reply)
+		c.syncReply(ctx, envelope, runID, taskID, reply)
 		c.observeHook(ctx, runtimehook.OnRunFinished, envelope, definition, runID, taskID, map[string]any{"status": run.Status, "decision_type": decision.Type})
-		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Reply: decision.Reply}, true, nil
+		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Reply: reply}, true, nil
 	case contracts.DecisionTypeAskClarification:
 		if _, _, _, err := c.Tasks.ApplyCommand(ctx, taskruntime.CommandInput{
 			TaskID:    taskID,
@@ -1730,10 +1744,9 @@ func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvel
 		if err != nil {
 			return RunResult{}, true, err
 		}
-		reply := &contracts.DecisionReply{Kind: contracts.ReplyStatusUpdate, Text: "no operation required"}
-		c.recordResponse(ctx, envelope, runID, taskID, stepID, "no_op", run.Status, reply)
+		c.recordResponse(ctx, envelope, runID, taskID, stepID, "no_op", run.Status, nil)
 		c.observeHook(ctx, runtimehook.OnRunFinished, envelope, definition, runID, taskID, map[string]any{"status": run.Status, "decision_type": decision.Type})
-		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Reply: reply}, true, nil
+		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status}, true, nil
 	case contracts.DecisionTypeUnsupported:
 		if _, _, _, err := c.Tasks.ApplyCommand(ctx, taskruntime.CommandInput{
 			TaskID:    taskID,
@@ -1750,7 +1763,7 @@ func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvel
 		if err != nil {
 			return RunResult{}, true, err
 		}
-		reply := &contracts.DecisionReply{Kind: contracts.ReplyRefusal, Text: decision.Reason}
+		reply := visibleReplyForDecision(&contracts.DecisionReply{Kind: contracts.ReplyRefusal, Text: decision.Reason}, true)
 		c.recordResponse(ctx, envelope, runID, taskID, stepID, "unsupported", run.Status, reply)
 		c.observeHook(ctx, runtimehook.OnRunFinished, envelope, definition, runID, taskID, map[string]any{"status": run.Status, "decision_type": decision.Type})
 		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Reply: reply}, true, nil
@@ -1769,8 +1782,11 @@ func (c Coordinator) dispatch(ctx context.Context, envelope contracts.AgentEnvel
 		if err != nil {
 			return RunResult{}, true, err
 		}
-		c.recordResponse(ctx, envelope, runID, taskID, stepID, "error", run.Status, &contracts.DecisionReply{Kind: contracts.ReplyRefusal, Text: runtimeErr.Message})
-		c.syncRunFailed(ctx, envelope, runID, taskID, runtimeErr.Message)
+		reply := visibleReplyForDecision(&contracts.DecisionReply{Kind: contracts.ReplyRefusal, Text: runtimeErr.Message}, true)
+		c.recordResponse(ctx, envelope, runID, taskID, stepID, "error", run.Status, reply)
+		if reply != nil {
+			c.syncRunFailed(ctx, envelope, runID, taskID, reply.Text)
+		}
 		c.observeHook(ctx, runtimehook.OnRunFinished, envelope, definition, runID, taskID, map[string]any{"status": run.Status, "decision_type": decision.Type, "error": runtimeErr.ToTracePayload()})
 		return RunResult{RunID: runID, TaskID: taskID, Status: run.Status, Error: runtimeErr}, true, runtimeErr
 	case contracts.DecisionTypeToolCall:
@@ -1809,6 +1825,7 @@ func (c Coordinator) dispatchToolCalls(ctx context.Context, envelope contracts.A
 		if _, ok := call.Arguments["trace_id"]; !ok {
 			call.Arguments["trace_id"] = string(envelope.TraceID)
 		}
+		call.RuntimeContext = map[string]any{"parent_context": parentContextForToolCall(envelope, runID, taskID)}
 		call = applyKnowledgeUseStrategyToToolCall(call, definition.Strategies.Knowledge)
 		if call.ToolID == "origin.agent.delegate" {
 			if _, ok := call.Arguments["parent_task_id"]; !ok {
@@ -2146,6 +2163,102 @@ func toolFailureRuntimeError(result contracts.ToolResult) *contracts.RuntimeErro
 	return contracts.NewRuntimeError(contracts.CodeToolExecutionFailed, string(result.Status), nil)
 }
 
+func visibleReplyForDecision(reply *contracts.DecisionReply, fallbackOnUnsafe bool) *contracts.DecisionReply {
+	if reply == nil {
+		if fallbackOnUnsafe {
+			return &contracts.DecisionReply{Kind: contracts.ReplyRefusal, Text: genericVisibleFailureReply}
+		}
+		return nil
+	}
+	text := strings.TrimSpace(reply.Text)
+	if text == "" {
+		if fallbackOnUnsafe {
+			out := *reply
+			out.Text = genericVisibleFailureReply
+			if out.Kind == "" {
+				out.Kind = contracts.ReplyRefusal
+			}
+			return &out
+		}
+		return nil
+	}
+	if isSuppressedVisibleReplyText(text) {
+		return nil
+	}
+	if isUnsafeVisibleReplyText(text) {
+		if !fallbackOnUnsafe {
+			return nil
+		}
+		out := *reply
+		out.Text = genericVisibleFailureReply
+		if out.Kind == "" {
+			out.Kind = contracts.ReplyRefusal
+		}
+		return &out
+	}
+	out := *reply
+	out.Text = text
+	if out.Kind == "" {
+		out.Kind = contracts.ReplyAnswer
+	}
+	return &out
+}
+
+func isSuppressedVisibleReplyText(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	switch normalized {
+	case "no operation required", "no operation needed", "no action required", "no action needed", "noop", "no_op", "not_addressed_to_agent":
+		return true
+	default:
+		return false
+	}
+}
+
+func isUnsafeVisibleReplyText(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if isSuppressedVisibleReplyText(normalized) {
+		return true
+	}
+	unsafeTokens := []string{
+		"capability_not_available",
+		"decision_schema_error",
+		"tool_execution_failed",
+		"tool_policy_denied",
+		"tool_not_found",
+		"model_error",
+		"model_timeout",
+		"unsupported command",
+		"runtime driver",
+		"provider_agent_id",
+		"source_run_id",
+		"source_task_id",
+		"trace_id",
+		"run_id",
+		"task_id",
+		"stack trace",
+		"panic:",
+	}
+	for _, token := range unsafeTokens {
+		if strings.Contains(normalized, token) {
+			return true
+		}
+	}
+	return looksLikeInternalErrorCode(text)
+}
+
+func looksLikeInternalErrorCode(text string) bool {
+	words := strings.FieldsFunc(text, func(r rune) bool {
+		return !(r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	})
+	for _, word := range words {
+		if len(word) < 5 || word != strings.ToUpper(word) || !strings.Contains(word, "_") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func (c Coordinator) completeModel(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, stepID string, bundle contracts.PromptBundle) (modelclient.ModelResponse, error) {
 	attempts := definition.Runtime.MaxModelRetries + 1
 	if attempts < 1 {
@@ -2447,6 +2560,70 @@ func applyKnowledgeUseStrategyToToolCall(call contracts.ToolCall, strategy contr
 
 func isKnowledgeSearchCall(call contracts.ToolCall) bool {
 	return strings.TrimSpace(call.ToolID) == "origin.knowledge.search" || strings.TrimSpace(call.Name) == "origin.knowledge.search"
+}
+
+func parentContextForToolCall(envelope contracts.AgentEnvelope, runID contracts.AgentRunID, taskID contracts.TaskID) map[string]any {
+	parent := map[string]any{
+		"trace_id": string(envelope.TraceID),
+		"run_id":   string(runID),
+		"task_id":  string(taskID),
+	}
+	if envelope.Context.Conversation != nil {
+		conversation := envelope.Context.Conversation
+		refs := cloneStringMapRuntime(conversation.ExternalRefs)
+		delete(refs, conversationAllowedToolIDsExternalRef)
+		parent["conversation"] = map[string]any{
+			"provider":        conversation.Provider,
+			"kind":            conversation.Kind,
+			"conversation_id": conversation.ConversationID,
+			"thread_id":       conversation.ThreadID,
+			"external_refs":   refs,
+			"current_message": runtimeMessageForParentContext(conversation.CurrentMessage),
+		}
+	}
+	return parent
+}
+
+func runtimeMessageForParentContext(message *contracts.RuntimeMessage) map[string]any {
+	if message == nil {
+		return nil
+	}
+	return map[string]any{
+		"message_id":    message.MessageID,
+		"speaker_id":    message.SpeakerID,
+		"speaker_type":  message.SpeakerType,
+		"speaker_name":  message.SpeakerName,
+		"text":          message.Text,
+		"thread_id":     message.ThreadID,
+		"mentions":      append([]string(nil), message.Mentions...),
+		"created_at":    message.CreatedAt,
+		"metadata":      cloneAnyMap(message.Metadata),
+		"reply_to_id":   message.ReplyToMessageID,
+		"external_id":   message.ExternalMessageID,
+		"parent_source": "main_agent_tool_call",
+	}
+}
+
+func cloneStringMapRuntime(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func cloneArgumentMap(arguments map[string]any) map[string]any {
@@ -2765,6 +2942,34 @@ func applyEffectiveStrategiesToRuntimeDefinition(definition contracts.AgentDefin
 		definition.Tools.DeniedToolIDs = appendUniqueRuntimeString(definition.Tools.DeniedToolIDs, "origin.agent.delegate")
 	}
 	return definition
+}
+
+func applyConversationToolOverlay(envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, strategy contracts.ToolUseStrategy) (contracts.AgentDefinition, contracts.ToolUseStrategy, []string) {
+	toolIDs := conversationAllowedToolIDs(envelope)
+	if len(toolIDs) == 0 {
+		return definition, strategy, nil
+	}
+	for _, toolID := range toolIDs {
+		definition.Tools.AllowedToolIDs = appendUniqueRuntimeString(definition.Tools.AllowedToolIDs, toolID)
+		strategy.AllowedToolIDs = appendUniqueRuntimeString(strategy.AllowedToolIDs, toolID)
+	}
+	return definition, strategy, toolIDs
+}
+
+func conversationAllowedToolIDs(envelope contracts.AgentEnvelope) []string {
+	if envelope.Context.Conversation == nil || len(envelope.Context.Conversation.ExternalRefs) == 0 {
+		return nil
+	}
+	raw := envelope.Context.Conversation.ExternalRefs[conversationAllowedToolIDsExternalRef]
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	toolIDs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		toolIDs = appendUniqueRuntimeString(toolIDs, part)
+	}
+	return toolIDs
 }
 
 func cloneStrings(values []string) []string {

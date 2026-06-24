@@ -52,6 +52,7 @@ import (
 	toolhandoff "znt/internal/tool/handoff"
 	toolinvoke "znt/internal/tool/invoke"
 	"znt/internal/tool/originext"
+	"znt/internal/tool/parentcontext"
 	"znt/internal/tool/registry"
 	toolrepo "znt/internal/tool/repository"
 	toolruntime "znt/internal/tool/runtime"
@@ -221,6 +222,9 @@ func New(cfg config.Config) (*Core, error) {
 	approvals := approval.NewService(auditLogger, traceRecorder)
 	governanceProcesses := processgovernance.NewService(governanceProcessStore, auditLogger, traceRecorder)
 	if err := registry.RegisterBuiltinsWithArtifacts(tools, artifacts); err != nil {
+		return nil, err
+	}
+	if err := parentcontext.Register(tools, conversationStore); err != nil {
 		return nil, err
 	}
 	toolCatalog := toolcatalog.NewServiceWithStore(tools, auditLogger, toolCatalogStore)

@@ -1057,6 +1057,45 @@ DO UPDATE SET
 	return err
 }
 
+func (s *ConversationStore) GetThread(ctx context.Context, tenantID contracts.TenantID, conversationID string, threadID string) (conversationstore.Thread, error) {
+	if threadID == "" {
+		threadID = conversationID
+	}
+	return scanConversationThread(s.db.QueryRowContext(ctx, conversationThreadSelectSQL()+` WHERE tenant_id=$1 AND conversation_id=$2 AND thread_id=$3`, tenantID, conversationID, threadID))
+}
+
+func (s *ConversationStore) ListThreads(ctx context.Context, tenantID contracts.TenantID, kind string, limit int, offset int) ([]conversationstore.Thread, error) {
+	args := []any{tenantID}
+	query := conversationThreadSelectSQL() + ` WHERE tenant_id=$1`
+	if kind != "" {
+		args = append(args, kind)
+		query += fmt.Sprintf(" AND kind=$%d", len(args))
+	}
+	query += ` ORDER BY updated_at DESC, conversation_id DESC`
+	if limit > 0 {
+		args = append(args, limit)
+		query += fmt.Sprintf(" LIMIT $%d", len(args))
+	}
+	if offset > 0 {
+		args = append(args, offset)
+		query += fmt.Sprintf(" OFFSET $%d", len(args))
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]conversationstore.Thread, 0)
+	for rows.Next() {
+		thread, err := scanConversationThread(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, thread)
+	}
+	return out, rows.Err()
+}
+
 func (s *ConversationStore) AppendMessage(ctx context.Context, message conversationstore.MessageRecord) error {
 	if message.ThreadID == "" {
 		message.ThreadID = message.ConversationID
@@ -1145,7 +1184,7 @@ func (s *ConversationStore) GetMessage(ctx context.Context, tenantID contracts.T
 }
 
 func conversationMessageSelectSQL() string {
-	return `SELECT message_id, external_message_id, speaker_id, speaker_type, speaker_name, text, created_at, reply_to_message_id, thread_id, mentions FROM conversation_messages`
+	return `SELECT message_id, external_message_id, speaker_id, speaker_type, speaker_name, text, created_at, reply_to_message_id, thread_id, mentions, metadata FROM conversation_messages`
 }
 
 func scanConversationMessage(row interface {
@@ -1153,8 +1192,8 @@ func scanConversationMessage(row interface {
 }) (contracts.ConversationMessage, error) {
 	var message contracts.ConversationMessage
 	var externalMessageID, speakerName, replyToMessageID sql.NullString
-	var mentions []byte
-	if err := row.Scan(&message.MessageID, &externalMessageID, &message.SpeakerID, &message.SpeakerType, &speakerName, &message.Text, &message.CreatedAt, &replyToMessageID, &message.ThreadID, &mentions); err != nil {
+	var mentions, metadata []byte
+	if err := row.Scan(&message.MessageID, &externalMessageID, &message.SpeakerID, &message.SpeakerType, &speakerName, &message.Text, &message.CreatedAt, &replyToMessageID, &message.ThreadID, &mentions, &metadata); err != nil {
 		return contracts.ConversationMessage{}, mapSQLError(err)
 	}
 	message.ExternalMessageID = externalMessageID.String
@@ -1163,8 +1202,33 @@ func scanConversationMessage(row interface {
 	if err := scanJSON(mentions, &message.Mentions); err != nil {
 		return contracts.ConversationMessage{}, err
 	}
+	_ = scanJSON(metadata, &message.Metadata)
 	message.CreatedAt = message.CreatedAt.UTC()
 	return message, nil
+}
+
+func conversationThreadSelectSQL() string {
+	return `SELECT tenant_id, conversation_id, thread_id, kind, provider, external_refs, last_message_at, created_at, updated_at FROM conversation_threads`
+}
+
+func scanConversationThread(row interface {
+	Scan(dest ...any) error
+}) (conversationstore.Thread, error) {
+	var thread conversationstore.Thread
+	var tenantID string
+	var refs []byte
+	var lastMessageAt sql.NullTime
+	if err := row.Scan(&tenantID, &thread.ConversationID, &thread.ThreadID, &thread.Kind, &thread.Provider, &refs, &lastMessageAt, &thread.CreatedAt, &thread.UpdatedAt); err != nil {
+		return conversationstore.Thread{}, mapSQLError(err)
+	}
+	thread.TenantID = contracts.TenantID(tenantID)
+	if err := scanJSON(refs, &thread.ExternalRefs); err != nil {
+		return conversationstore.Thread{}, err
+	}
+	thread.LastMessageAt = timeValue(lastMessageAt)
+	thread.CreatedAt = thread.CreatedAt.UTC()
+	thread.UpdatedAt = thread.UpdatedAt.UTC()
+	return thread, nil
 }
 
 type ToolRepository struct {

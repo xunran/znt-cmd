@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,129 @@ func TestCoordinatorReplyRun(t *testing.T) {
 	}
 	if !hasTraceType(traces, contracts.TraceModelDelta) || !hasTraceType(traces, contracts.TraceDecisionCompleted) {
 		t.Fatalf("expected streaming and decision completion traces, got %#v", traces)
+	}
+}
+
+func TestCoordinatorNoOpCompletesWithoutVisibleReply(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	runRepo := runrepo.NewInMemoryRepository()
+	traceRecorder := trace.NewInMemoryRecorder()
+	agents := loader.NewStaticLoader(loader.TestAgentDefinition())
+	model := &modelclient.ScriptedModelClient{Responses: []modelclient.ModelResponse{
+		{RawDecisionJSON: []byte(`{"type":"no_op","reason":"no_response_required","confidence":0.9}`)},
+	}}
+	coordinator := NewCoordinator(agents, runRepo, taskService, taskRepo, traceRecorder, model)
+
+	result, err := coordinator.HandleEnvelope(context.Background(), contracts.AgentEnvelope{
+		EnvelopeID: "env_no_op_1",
+		TraceID:    "trace_no_op_1",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "那你先去忙吧"},
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", UserID: "user_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("expected no-op run to complete, got %#v", result)
+	}
+	if result.Reply != nil {
+		t.Fatalf("expected no visible reply for no-op decision, got %#v", result.Reply)
+	}
+	traces, err := traceRecorder.ListByRun(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range traces {
+		if strings.Contains(fmt.Sprint(event.Payload), "no operation required") {
+			t.Fatalf("no-op trace must not expose internal status text: %#v", event)
+		}
+	}
+}
+
+func TestCoordinatorSuppressesModelNoOpReplyText(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	runRepo := runrepo.NewInMemoryRepository()
+	traceRecorder := trace.NewInMemoryRecorder()
+	agents := loader.NewStaticLoader(loader.TestAgentDefinition())
+	model := &modelclient.ScriptedModelClient{Responses: []modelclient.ModelResponse{
+		{RawDecisionJSON: []byte(`{"type":"reply","reply":{"kind":"status_update","text":"no operation required"},"confidence":0.9}`)},
+	}}
+	coordinator := NewCoordinator(agents, runRepo, taskService, taskRepo, traceRecorder, model)
+
+	result, err := coordinator.HandleEnvelope(context.Background(), contracts.AgentEnvelope{
+		EnvelopeID: "env_no_op_text_1",
+		TraceID:    "trace_no_op_text_1",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "你先去忙吧"},
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", UserID: "user_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != contracts.RunCompleted {
+		t.Fatalf("expected run to complete, got %#v", result)
+	}
+	if result.Reply != nil {
+		t.Fatalf("expected no visible reply for model no-op text, got %#v", result.Reply)
+	}
+	traces, err := traceRecorder.ListByRun(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range traces {
+		if event.Type == contracts.TraceResponseSent && strings.Contains(fmt.Sprint(event.Payload), "no operation required") {
+			t.Fatalf("response trace must not expose no-op text: %#v", event)
+		}
+	}
+}
+
+func TestCoordinatorMasksInternalUnsupportedReason(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	runRepo := runrepo.NewInMemoryRepository()
+	traceRecorder := trace.NewInMemoryRecorder()
+	agents := loader.NewStaticLoader(loader.TestAgentDefinition())
+	model := &modelclient.ScriptedModelClient{Responses: []modelclient.ModelResponse{
+		{RawDecisionJSON: []byte(`{"type":"unsupported","reason":"capability_not_available","confidence":0.9}`)},
+	}}
+	coordinator := NewCoordinator(agents, runRepo, taskService, taskRepo, traceRecorder, model)
+
+	result, err := coordinator.HandleEnvelope(context.Background(), contracts.AgentEnvelope{
+		EnvelopeID: "env_unsupported_1",
+		TraceID:    "trace_unsupported_1",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "给我说说"},
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", UserID: "user_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reply == nil {
+		t.Fatal("expected safe visible fallback reply")
+	}
+	if strings.Contains(result.Reply.Text, "capability_not_available") || result.Reply.Text != genericVisibleFailureReply {
+		t.Fatalf("expected internal reason to be masked, got %#v", result.Reply)
+	}
+	traces, err := traceRecorder.ListByRun(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range traces {
+		if event.Type == contracts.TraceResponseSent && strings.Contains(fmt.Sprint(event.Payload), "capability_not_available") {
+			t.Fatalf("response trace must not expose internal reason: %#v", event)
+		}
 	}
 }
 
@@ -454,6 +578,74 @@ func TestCoordinatorCompletesFromToolFinalDecision(t *testing.T) {
 	}
 	if !foundFinalDecisionTrace {
 		t.Fatalf("expected final_decision decision trace, got %#v", events)
+	}
+}
+
+func TestCoordinatorAddsParentContextToToolCalls(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	runRepo := runrepo.NewInMemoryRepository()
+	traceRecorder := trace.NewInMemoryRecorder()
+	def := loader.TestAgentDefinition()
+	def.Tools.AllowedToolIDs = []string{"echo"}
+	def.Runtime.MaxToolCalls = 1
+	coordinator := NewCoordinator(loader.NewStaticLoader(def), runRepo, taskService, taskRepo, traceRecorder, &modelclient.ScriptedModelClient{Responses: []modelclient.ModelResponse{
+		{RawDecisionJSON: []byte(`{"type":"tool_call","tool_calls":[{"tool_id":"echo","name":"echo","arguments":{"message":"hello"}}]}`)},
+		{RawDecisionJSON: []byte(`{"type":"reply","reply":{"kind":"answer","text":"done"}}`)},
+	}})
+	reg := registry.NewInMemoryRegistry()
+	if err := registry.RegisterBuiltins(reg); err != nil {
+		t.Fatal(err)
+	}
+	coordinator.Tools = tooldiscovery.StaticCandidateProvider{Cards: reg.Cards(), Registry: reg}
+	coordinator.ToolRepo = toolrepo.NewInMemoryRepository()
+	coordinator.ToolRuntime = toolruntime.New(reg, toolpolicy.New(nil), traceRecorder)
+
+	result, err := coordinator.HandleEnvelope(context.Background(), contracts.AgentEnvelope{
+		EnvelopeID: "env_parent_context",
+		TraceID:    "trace_parent_context",
+		Target:     contracts.AgentTarget{AgentID: "test-agent", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "hello"},
+		Context: contracts.RuntimeContext{
+			TenantID: "tenant_1",
+			UserID:   "user_1",
+			Conversation: &contracts.RuntimeConversation{
+				Provider:       "znt-cmd",
+				Kind:           "group",
+				ConversationID: "chat_1",
+				ThreadID:       "chat_1",
+				ExternalRefs:   map[string]string{"name": "group", conversationAllowedToolIDsExternalRef: "customer.lookup"},
+				CurrentMessage: &contracts.RuntimeMessage{MessageID: "msg_1", SpeakerID: "user_1", SpeakerType: "user", Text: "hello", ThreadID: "chat_1"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, err := coordinator.ToolRepo.ListCallsByRun(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", calls)
+	}
+	if _, leaked := calls[0].Arguments["_parent_context"]; leaked {
+		t.Fatalf("parent context should not be stored in tool arguments, got %#v", calls[0].Arguments)
+	}
+	parent, ok := calls[0].RuntimeContext["parent_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected parent context in tool call runtime context, got %#v", calls[0].RuntimeContext)
+	}
+	conversation, ok := parent["conversation"].(map[string]any)
+	if !ok || conversation["conversation_id"] != "chat_1" {
+		t.Fatalf("expected parent conversation context, got %#v", parent)
+	}
+	refs, _ := conversation["external_refs"].(map[string]string)
+	if _, leaked := refs[conversationAllowedToolIDsExternalRef]; leaked {
+		t.Fatalf("parent context should not leak run-scoped tool overlay, got %#v", refs)
 	}
 }
 

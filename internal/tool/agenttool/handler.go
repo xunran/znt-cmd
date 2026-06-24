@@ -79,6 +79,17 @@ func (h Handler) ExecuteAgentTool(ctx context.Context, call contracts.ToolCall, 
 	if h.StartAgentRun == nil {
 		return nil, nil, contracts.NewRuntimeError(contracts.CodeExecutionDomainUnavailable, "agent_tool runner is not configured", map[string]any{"tool_id": call.ToolID, "provider_agent_id": providerAgentID})
 	}
+	runtimeContext := contracts.RuntimeContext{
+		TenantID:  call.TenantID,
+		RequestID: call.IdempotencyKey,
+	}
+	if parentConversation := parentRuntimeConversation(call.RuntimeContext); parentConversation != nil {
+		runtimeContext.Conversation = parentConversation
+		if runtimeContext.Conversation.ExternalRefs == nil {
+			runtimeContext.Conversation.ExternalRefs = map[string]string{}
+		}
+		runtimeContext.Conversation.ExternalRefs["chat_allowed_tool_ids"] = "parent_context.read"
+	}
 	result, err := h.StartAgentRun(ctx, contracts.AgentEnvelope{
 		EnvelopeID: idgen.New("envelope"),
 		TraceID:    contracts.TraceID(traceID(call)),
@@ -100,10 +111,7 @@ func (h Handler) ExecuteAgentTool(ctx context.Context, call contracts.ToolCall, 
 			"source_run_id":       string(call.RunID),
 			"source_task_id":      string(call.TaskID),
 		},
-		Context: contracts.RuntimeContext{
-			TenantID:  call.TenantID,
-			RequestID: call.IdempotencyKey,
-		},
+		Context:   runtimeContext,
 		CreatedAt: now(h.Now),
 	})
 	if err != nil {
@@ -126,16 +134,17 @@ func (h Handler) ExecuteAgentTool(ctx context.Context, call contracts.ToolCall, 
 		})
 		return nil, result.ArtifactRefs, result.Error
 	}
+	toolAgentResult := buildToolAgentResult(manifest.ToolID, providerAgentID, operation, result)
 	output := map[string]any{
 		"provider_agent_id": providerAgentID,
 		"operation":         operation,
 		"run_id":            result.RunID,
 		"task_id":           result.TaskID,
 		"status":            result.Status,
+		"tool_agent_result": toolAgentResult,
 	}
-	if result.Reply != nil {
-		output["reply"] = result.Reply
-		output["reply_text"] = result.Reply.Text
+	if text := stringValue(toolAgentResult, "result_summary"); text != "" {
+		output["reply_text"] = text
 	}
 	if result.Ask != nil {
 		output["ask"] = result.Ask
@@ -152,6 +161,88 @@ func (h Handler) ExecuteAgentTool(ctx context.Context, call contracts.ToolCall, 
 	return output, result.ArtifactRefs, nil
 }
 
+func buildToolAgentResult(toolID string, providerAgentID contracts.AgentID, operation string, result RunResult) map[string]any {
+	status := "ok"
+	missingContext := false
+	riskFlags := []string{"requires_main_agent_review"}
+	summary := ""
+	businessResult := map[string]any{}
+	if result.Reply != nil {
+		summary = result.Reply.Text
+	}
+	if result.Ask != nil {
+		status = "needs_clarification"
+		missingContext = true
+		summary = result.Ask.Question
+		businessResult["ask"] = result.Ask
+	}
+	if result.Status != "" && result.Status != contracts.RunCompleted && status == "ok" {
+		status = string(result.Status)
+	}
+	summary, sanitized := sanitizeToolAgentResultText(summary)
+	if sanitized {
+		riskFlags = append(riskFlags, "tool_agent_output_sanitized")
+	}
+	if summary != "" {
+		businessResult["summary"] = summary
+	}
+	return map[string]any{
+		"status":            status,
+		"provider_agent_id": providerAgentID,
+		"tool_id":           toolID,
+		"operation":         operation,
+		"run_id":            result.RunID,
+		"task_id":           result.TaskID,
+		"result_summary":    summary,
+		"business_result":   businessResult,
+		"risk_flags":        riskFlags,
+		"missing_context":   missingContext,
+		"safe_for_user":     false,
+	}
+}
+
+func sanitizeToolAgentResultText(value string) (string, bool) {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return "", false
+	}
+	lower := strings.ToLower(text)
+	suppressed := []string{
+		"capability_not_available",
+		"no operation required",
+		"no-op",
+		"no_op",
+		"tool result schema validation failed",
+		"agent exported tool is not enabled",
+	}
+	for _, item := range suppressed {
+		if lower == item || strings.Contains(lower, item) {
+			return "tool agent returned no user-ready content", true
+		}
+	}
+	internalMarkers := []string{
+		"trace_id",
+		"run_id",
+		"task_id",
+		"stack trace",
+		"panic:",
+		"runtime error",
+		"worker_id",
+		"tool_call_id",
+	}
+	for _, item := range internalMarkers {
+		if strings.Contains(lower, item) {
+			return "tool agent returned content that requires review", true
+		}
+	}
+	const limit = 1200
+	runes := []rune(text)
+	if len(runes) > limit {
+		return string(runes[:limit]) + "...(truncated)", true
+	}
+	return text, false
+}
+
 func agentToolInput(tool contracts.AgentExportedTool, operation string, arguments map[string]any) string {
 	for _, key := range []string{"input", "task", "objective"} {
 		if value, _ := arguments[key].(string); strings.TrimSpace(value) != "" {
@@ -166,6 +257,57 @@ func agentToolInput(tool contracts.AgentExportedTool, operation string, argument
 		operation = tool.ToolID
 	}
 	return fmt.Sprintf("Execute exported tool %s (%s) with arguments: %s", tool.ToolID, operation, string(encoded))
+}
+
+func parentRuntimeConversation(runtimeContext map[string]any) *contracts.RuntimeConversation {
+	parent, ok := runtimeContext["parent_context"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	rawConversation, ok := parent["conversation"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	conversationID := strings.TrimSpace(stringFromMap(rawConversation, "conversation_id"))
+	if conversationID == "" {
+		return nil
+	}
+	conversation := &contracts.RuntimeConversation{
+		Provider:       stringFromMap(rawConversation, "provider"),
+		Kind:           stringFromMap(rawConversation, "kind"),
+		ConversationID: conversationID,
+		ThreadID:       stringFromMap(rawConversation, "thread_id"),
+		ExternalRefs:   stringMapFromAny(rawConversation["external_refs"]),
+		CurrentMessage: runtimeMessageFromAny(rawConversation["current_message"]),
+	}
+	if conversation.ThreadID == "" {
+		conversation.ThreadID = conversation.ConversationID
+	}
+	return conversation
+}
+
+func runtimeMessageFromAny(value any) *contracts.RuntimeMessage {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	messageID := stringFromMap(raw, "message_id")
+	text := stringFromMap(raw, "text")
+	if strings.TrimSpace(messageID) == "" && strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return &contracts.RuntimeMessage{
+		MessageID:         messageID,
+		ExternalMessageID: stringFromMap(raw, "external_id"),
+		SpeakerID:         stringFromMap(raw, "speaker_id"),
+		SpeakerType:       stringFromMap(raw, "speaker_type"),
+		SpeakerName:       stringFromMap(raw, "speaker_name"),
+		ReplyToMessageID:  stringFromMap(raw, "reply_to_id"),
+		ThreadID:          stringFromMap(raw, "thread_id"),
+		Text:              text,
+		Mentions:          stringSliceFromAny(raw["mentions"]),
+		Metadata:          anyMapFromAny(raw["metadata"]),
+	}
 }
 
 func (h Handler) record(ctx context.Context, call contracts.ToolCall, eventType string, payload map[string]any) error {
@@ -217,4 +359,64 @@ func traceID(call contracts.ToolCall) string {
 func stringValue(values map[string]any, key string) string {
 	value, _ := values[key].(string)
 	return value
+}
+
+func stringFromMap(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+func stringMapFromAny(value any) map[string]string {
+	raw, ok := value.(map[string]string)
+	if ok {
+		out := make(map[string]string, len(raw))
+		for key, current := range raw {
+			out[key] = current
+		}
+		return out
+	}
+	rawAny, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := map[string]string{}
+	for key, current := range rawAny {
+		if text, ok := current.(string); ok {
+			out[key] = text
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func stringSliceFromAny(value any) []string {
+	raw, ok := value.([]string)
+	if ok {
+		return append([]string(nil), raw...)
+	}
+	rawAny, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(rawAny))
+	for _, current := range rawAny {
+		if text, ok := current.(string); ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func anyMapFromAny(value any) map[string]any {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]any, len(raw))
+	for key, current := range raw {
+		out[key] = current
+	}
+	return out
 }
