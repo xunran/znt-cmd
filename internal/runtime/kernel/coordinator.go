@@ -1150,7 +1150,10 @@ func (c Coordinator) modelDecision(ctx context.Context, envelope contracts.Agent
 
 func (c Coordinator) merchantLimitForcedToolDecision(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, userInput string, candidateTools []contracts.ToolCard) (contracts.Decision, bool) {
 	toolID, ok := merchantLimitRunToolID(candidateTools)
-	if !ok || !isMerchantLimitAgent(definition) || !isMerchantLimitBusinessInput(userInput) {
+	if !ok || !isMerchantLimitBusinessInput(userInput) {
+		return contracts.Decision{}, false
+	}
+	if c.merchantLimitToolAlreadySucceeded(ctx, runID, toolID) {
 		return contracts.Decision{}, false
 	}
 	arguments := map[string]any{
@@ -1186,6 +1189,29 @@ func (c Coordinator) merchantLimitForcedToolDecision(ctx context.Context, envelo
 	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceDecisionCompleted, payload)
 	c.observeHook(ctx, runtimehook.OnModelDecision, envelope, definition, runID, taskID, map[string]any{"decision": decision, "source": "merchant_limit_forced_tool"})
 	return decision, true
+}
+
+func (c Coordinator) merchantLimitToolAlreadySucceeded(ctx context.Context, runID contracts.AgentRunID, toolID string) bool {
+	if c.ToolRepo == nil || runID == "" || strings.TrimSpace(toolID) == "" {
+		return false
+	}
+	calls, err := c.ToolRepo.ListCallsByRun(ctx, runID)
+	if err != nil {
+		return false
+	}
+	for _, call := range calls {
+		if call.ToolID != toolID {
+			continue
+		}
+		result, ok, err := c.ToolRepo.GetResultByCall(ctx, call.ToolCallID)
+		if err != nil || !ok {
+			continue
+		}
+		if result.Status == contracts.ToolResultSucceeded {
+			return true
+		}
+	}
+	return false
 }
 
 func merchantLimitRunToolID(candidateTools []contracts.ToolCard) (string, bool) {
@@ -1253,11 +1279,17 @@ func isMerchantLimitBusinessInput(input string) bool {
 	return strings.Contains(text, "请款单") ||
 		strings.Contains(text, "可融") ||
 		strings.Contains(text, "融资额度") ||
+		strings.Contains(text, "申请金额") ||
 		strings.Contains(text, "授信") ||
 		strings.Contains(text, "风控") ||
 		strings.Contains(text, "质押") ||
 		strings.Contains(text, "回款") ||
-		strings.Contains(text, "逾期")
+		strings.Contains(text, "逾期") ||
+		strings.Contains(text, "这笔单") ||
+		strings.Contains(text, "那笔单") ||
+		strings.Contains(text, "这单") ||
+		strings.Contains(text, "那单") ||
+		strings.Contains(text, "刚才那单")
 }
 
 func merchantLimitApplyAmount(input string) (float64, bool) {

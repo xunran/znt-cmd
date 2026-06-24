@@ -735,6 +735,77 @@ func TestCoordinatorForcesMerchantLimitToolForBusinessInput(t *testing.T) {
 	}
 }
 
+func TestCoordinatorForcesMerchantLimitToolForMainAgentBusinessInput(t *testing.T) {
+	const toolID = "toolhost-47-104-8-74-znt-merchant-limit.run_merchant_limit_agent"
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	eventRepo := taskrepo.NewInMemoryEventRepository()
+	taskService := taskruntime.NewService(taskRepo, eventRepo)
+	runRepo := runrepo.NewInMemoryRepository()
+	traceRecorder := trace.NewInMemoryRecorder()
+	def := loader.TestAgentDefinition()
+	def.AgentID = "znt-guan"
+	def.Name = "罐罐"
+	def.Description = "企业协作主智能体"
+	def.Tools.AllowedToolIDs = []string{toolID}
+	def.Tools.ExposedToolIDs = []string{toolID}
+	def.Runtime.MaxToolCalls = 1
+	agents := loader.NewStaticLoader(def)
+	model := &modelclient.ScriptedModelClient{Responses: []modelclient.ModelResponse{
+		{RawDecisionJSON: []byte(`{"type":"reply","reply":{"kind":"answer","text":"我的工具集没有接入请款单业务系统。"}}`), ModelProvider: "stub", ModelName: "scripted"},
+	}}
+	coordinator := NewCoordinator(agents, runRepo, taskService, taskRepo, traceRecorder, model)
+	reg := registry.NewInMemoryRegistry()
+	if err := reg.Register(registry.Tool{
+		Definition: contracts.ToolDefinition{
+			ToolID:           toolID,
+			GroupID:          "merchant-limit",
+			Name:             toolID,
+			Description:      "Run znt-merchant-limit merchant limit agent.",
+			InputSchema:      map[string]any{"type": "object"},
+			OutputSchema:     map[string]any{"type": "object"},
+			RiskLevel:        contracts.RiskLow,
+			Visibility:       contracts.ToolProtected,
+			ExecutionProfile: "local",
+			Version:          "v1",
+		},
+		Executor: finalDecisionExecutor{Text: "当前可融资金额为 88,000 元。\n本次申请金额 100,000 元，暂不能完全覆盖。"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	coordinator.Tools = tooldiscovery.StaticCandidateProvider{Cards: reg.Cards(), Registry: reg}
+	coordinator.ToolRepo = toolrepo.NewInMemoryRepository()
+	coordinator.ToolRuntime = toolruntime.New(reg, toolpolicy.New(nil), traceRecorder)
+
+	result, err := coordinator.HandleEnvelope(context.Background(), contracts.AgentEnvelope{
+		EnvelopeID: "env_main_agent_merchant_limit_forced",
+		TraceID:    "trace_main_agent_merchant_limit_forced",
+		Target:     contracts.AgentTarget{AgentID: "znt-guan", Version: "v1"},
+		Caller:     contracts.AgentCaller{CallerID: "user_1", CallerType: "user", TenantID: "tenant_1"},
+		Command:    "agent.run",
+		Payload:    map[string]any{"input": "请分析请款单 2026041072529642 可融多少，申请金额 100000 元"},
+		Context:    contracts.RuntimeContext{TenantID: "tenant_1", UserID: "user_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != contracts.RunCompleted || result.Reply == nil || !strings.Contains(result.Reply.Text, "当前可融资金额为 88,000 元") {
+		t.Fatalf("expected forced merchant-limit final reply, got %#v", result)
+	}
+	if model.Calls != 0 {
+		t.Fatalf("expected forced route to bypass model, got %d calls", model.Calls)
+	}
+	calls, err := coordinator.ToolRepo.ListCallsByRun(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].ToolID != toolID {
+		t.Fatalf("expected one merchant-limit tool call, got %#v", calls)
+	}
+	if calls[0].Arguments["loanNo"] != "2026041072529642" || calls[0].Arguments["applyAmount"] != float64(100000) {
+		t.Fatalf("expected extracted loanNo and applyAmount, got %#v", calls[0].Arguments)
+	}
+}
+
 func TestRuntimeHooksObserveAndPatchData(t *testing.T) {
 	taskRepo := taskrepo.NewInMemoryTaskRepository()
 	eventRepo := taskrepo.NewInMemoryEventRepository()

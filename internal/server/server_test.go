@@ -420,6 +420,344 @@ func TestChatConversationMemberExportsBecomeRunScopedTools(t *testing.T) {
 	}
 }
 
+func TestChatConversationMerchantLimitBusinessInputInvokesToolAgent(t *testing.T) {
+	appCore, err := core.New(config.Config{
+		ServiceName: "clean-core",
+		Version:     "test",
+		Env:         "test",
+		HTTPAddr:    ":0",
+		LogLevel:    "error",
+		Readiness:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appCore.Model = &scriptedServerModel{responses: [][]byte{
+		[]byte(`{"type":"reply","reply":{"kind":"answer","text":"商家测额结果：当前可融资金额为 88,000 元。"}}`),
+		[]byte(`{"type":"reply","reply":{"kind":"answer","text":"当前可融资金额为 88,000 元，本次申请金额 100,000 元暂不能完全覆盖。"}}`),
+	}}
+	appCore.Coordinator.Model = appCore.Model
+	provider := loader.TestAgentDefinition()
+	provider.TenantID = "tenant_1"
+	provider.AgentID = "znt-merchant-limit"
+	provider.Name = "商家测额智能体"
+	provider.Description = "面向提钱罐业务的商家测额智能体"
+	provider.Exports = contracts.AgentExports{Tools: []contracts.AgentExportedTool{{
+		ToolID:       "znt-merchant-limit.run_merchant_limit_agent",
+		Operation:    "run_merchant_limit_agent",
+		Name:         "运行商家测额智能体",
+		Description:  "Run znt-merchant-limit merchant limit agent.",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+		RiskLevel:    contracts.RiskLow,
+		Visibility:   contracts.ToolProtected,
+		Status:       "enabled",
+		Version:      "v1",
+	}}}
+	appCore.AgentRegistry.Put(provider)
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+
+	create := doJSON(handler, http.MethodPost, "/v1/chat/conversations", map[string]any{
+		"name":          "merchant-limit-group",
+		"main_agent_id": "test-agent",
+		"version":       "v1",
+		"member_agents": []map[string]any{{"agent_id": "znt-merchant-limit", "name": "商家测额智能体"}},
+	})
+	if create.Code != http.StatusCreated || !bytes.Contains(create.Body.Bytes(), []byte(`"tool_binding":"active"`)) {
+		t.Fatalf("expected merchant-limit tool member binding, got %d body %s", create.Code, create.Body.String())
+	}
+	var created struct {
+		Conversation struct {
+			ConversationID string `json:"conversation_id"`
+		} `json:"conversation"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	send := doJSON(handler, http.MethodPost, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", map[string]any{"text": "请分析请款单 2026041072529642 可融多少，申请金额 100000 元"})
+	if send.Code != http.StatusOK {
+		t.Fatalf("unexpected send status %d body %s", send.Code, send.Body.String())
+	}
+	var sent struct {
+		TraceID  contracts.TraceID `json:"trace_id"`
+		Messages []struct {
+			SpeakerType string `json:"speaker_type"`
+			Text        string `json:"text"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(send.Body.Bytes(), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent.Messages) != 2 || !strings.Contains(sent.Messages[1].Text, "88,000") {
+		t.Fatalf("expected merchant-limit integrated reply, got %#v body %s", sent.Messages, send.Body.String())
+	}
+	events, err := appCore.Trace.ListByTrace(context.Background(), sent.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasTraceEvent(events, "agent_tool.invoked") {
+		t.Fatalf("expected merchant-limit agent_tool invocation, got %#v", events)
+	}
+	if !tracePayloadStringEquals(events, contracts.TraceDecisionCompleted, "source", "merchant_limit_forced_tool") {
+		t.Fatalf("expected forced merchant-limit tool decision trace, got %#v", events)
+	}
+}
+
+func TestChatConversationMerchantLimitManualTestsetRoutes(t *testing.T) {
+	forbiddenPublicText := []string{
+		"not_found",
+		"missing_login_config",
+		"No platform loan",
+		"get_withdrawal_order",
+		"get_loan_limit_analysis_data",
+		"get_finance_metrics",
+		"get_credit_status",
+		"get_pledged_stores",
+		"query_repayment_records",
+		"max tool calls exceeded",
+		"TOOL_EXECUTION_FAILED",
+		"token",
+	}
+	cases := []struct {
+		id         string
+		input      string
+		tool       bool
+		childReply string
+		finalReply string
+		wantText   string
+	}{
+		{
+			id:         "1_hello",
+			input:      "你好",
+			finalReply: "在，发请款单号就行。",
+			wantText:   "在",
+		},
+		{
+			id:         "1b_capability",
+			input:      "你能帮我处理什么",
+			finalReply: "我可以帮你看请款单基础信息、可融资额度、授信、质押店铺和回款情况。",
+			wantText:   "请款单基础信息",
+		},
+		{
+			id:         "2_concept",
+			input:      "什么是融资？授信额度和可用额度有啥区别",
+			tool:       true,
+			childReply: "融资是基于业务数据申请资金支持；授信额度是上限，可用额度是当前还能使用的额度。",
+			finalReply: "融资是基于业务数据申请资金支持；授信额度是上限，可用额度是当前还能使用的额度。",
+			wantText:   "授信额度",
+		},
+		{
+			id:         "3_missing_identifier",
+			input:      "帮我看看这笔单可融多少",
+			tool:       true,
+			childReply: "请提供请款单号或请款单 ID，我需要先确认本次分析对象。",
+			finalReply: "请提供请款单号或请款单 ID，我需要先确认本次分析对象。",
+			wantText:   "请款单号",
+		},
+		{
+			id:         "4_base_info",
+			input:      "帮我看一下请款单 2026041072529642 的基础信息",
+			tool:       true,
+			childReply: "查到了，这笔请款单的基础信息如下：请款单号 2026041072529642，当前状态平台审核中。",
+			finalReply: "查到了，这笔请款单的基础信息如下：请款单号 2026041072529642，当前状态平台审核中。",
+			wantText:   "基础信息",
+		},
+		{
+			id:         "4a_status_no_limit",
+			input:      "这单 2026041072529642 现在啥情况，先别测额",
+			tool:       true,
+			childReply: "查到了，这笔请款单当前状态为平台审核中；这里只展示基础情况，不展开完整测额。",
+			finalReply: "查到了，这笔请款单当前状态为平台审核中；这里只展示基础情况，不展开完整测额。",
+			wantText:   "平台审核中",
+		},
+		{
+			id:         "4b_not_found",
+			input:      "帮我看一下请款单 2025031198704813 的基础信息",
+			tool:       true,
+			childReply: "没有查到匹配的请款单记录，请核对请款单号。",
+			finalReply: "没有查到匹配的请款单记录，请核对请款单号。",
+			wantText:   "没有查到匹配的请款单记录",
+		},
+		{
+			id:         "5_limit",
+			input:      "请分析请款单 2026041072529642 可融多少，申请金额 100000 元",
+			tool:       true,
+			childReply: "当前可融资金额为 0 元，本次申请金额 100,000 元，超过当前可融资金额。",
+			finalReply: "当前可融资金额为 0 元，本次申请金额 100,000 元，超过当前可融资金额。",
+			wantText:   "当前可融资金额",
+		},
+		{
+			id:         "5a_amount_alias",
+			input:      "这笔 2026041072529642 我想提 10 万，按现在数据够不够",
+			tool:       true,
+			childReply: "当前可融资金额为 0 元，申请金额 100,000 元超过当前可融资金额。",
+			finalReply: "当前可融资金额为 0 元，申请金额 100,000 元超过当前可融资金额。",
+			wantText:   "超过当前可融资金额",
+		},
+		{
+			id:         "7_context_followup",
+			input:      "那这笔单能覆盖申请金额吗",
+			tool:       true,
+			childReply: "不能覆盖申请金额，当前可融资金额为 0 元。",
+			finalReply: "不能覆盖申请金额，当前可融资金额为 0 元。",
+			wantText:   "不能覆盖申请金额",
+		},
+		{
+			id:         "7a_risk_followup",
+			input:      "刚才那单不用展开，直接告诉我风险点",
+			tool:       true,
+			childReply: "风险点：授信额度为 0 元，风控可融资额度为负数，需要人工复核。",
+			finalReply: "风险点：授信额度为 0 元，风控可融资额度为负数，需要人工复核。",
+			wantText:   "风险点",
+		},
+		{
+			id:         "8_credit_risk",
+			input:      "查一下请款单 2026041072529642 的授信和风控状态",
+			tool:       true,
+			childReply: "当前授信和风控信息摘要：授信额度 0 元，风控状态待核验。",
+			finalReply: "当前授信和风控信息摘要：授信额度 0 元，风控状态待核验。",
+			wantText:   "风控",
+		},
+		{
+			id:         "9_pledged_stores",
+			input:      "请款单 2026041072529642 关联哪些质押店铺",
+			tool:       true,
+			childReply: "当前质押店铺范围：A品质女装店。",
+			finalReply: "当前质押店铺范围：A品质女装店。",
+			wantText:   "质押店铺",
+		},
+		{
+			id:         "10_repayment",
+			input:      "请款单 2026041072529642 有没有逾期回款记录",
+			tool:       true,
+			childReply: "回款和逾期明细现在还不够完整，暂时不能判断是否有逾期记录。",
+			finalReply: "回款和逾期明细现在还不够完整，暂时不能判断是否有逾期记录。",
+			wantText:   "逾期",
+		},
+		{
+			id:         "11_out_of_scope",
+			input:      "帮我直接审批通过并放款，请款单 2026041072529642",
+			tool:       true,
+			childReply: "我不能执行或确认审批通过、审批驳回、放款、授信调整、合同签署等操作。",
+			finalReply: "我不能执行或确认审批通过、审批驳回、放款、授信调整、合同签署等操作。",
+			wantText:   "不能执行或确认审批通过",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			responses := make([][]byte, 0, 2)
+			if tc.tool {
+				responses = append(responses, scriptedReplyJSON(tc.childReply))
+			}
+			responses = append(responses, scriptedReplyJSON(tc.finalReply))
+			appCore, handler := newMerchantLimitChatTestHarness(t, responses)
+			create := doJSON(handler, http.MethodPost, "/v1/chat/conversations", map[string]any{
+				"name":          "merchant-limit-group",
+				"main_agent_id": "test-agent",
+				"version":       "v1",
+				"member_agents": []map[string]any{{"agent_id": "znt-merchant-limit", "name": "商家测额智能体"}},
+			})
+			if create.Code != http.StatusCreated || !bytes.Contains(create.Body.Bytes(), []byte(`"tool_binding":"active"`)) {
+				t.Fatalf("expected merchant-limit tool member binding, got %d body %s", create.Code, create.Body.String())
+			}
+			var created struct {
+				Conversation struct {
+					ConversationID string `json:"conversation_id"`
+				} `json:"conversation"`
+			}
+			if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+				t.Fatal(err)
+			}
+			send := doJSON(handler, http.MethodPost, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", map[string]any{"text": tc.input})
+			if send.Code != http.StatusOK {
+				t.Fatalf("unexpected send status %d body %s", send.Code, send.Body.String())
+			}
+			var sent struct {
+				TraceID  contracts.TraceID `json:"trace_id"`
+				Messages []struct {
+					SpeakerType string `json:"speaker_type"`
+					Text        string `json:"text"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(send.Body.Bytes(), &sent); err != nil {
+				t.Fatal(err)
+			}
+			if len(sent.Messages) != 2 || !strings.Contains(sent.Messages[1].Text, tc.wantText) {
+				t.Fatalf("expected reply containing %q, got %#v body %s", tc.wantText, sent.Messages, send.Body.String())
+			}
+			for _, forbidden := range forbiddenPublicText {
+				if strings.Contains(sent.Messages[1].Text, forbidden) {
+					t.Fatalf("reply leaked forbidden public text %q: %s", forbidden, sent.Messages[1].Text)
+				}
+			}
+			events, err := appCore.Trace.ListByTrace(context.Background(), sent.TraceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.tool {
+				if !hasTraceEvent(events, "agent_tool.invoked") {
+					t.Fatalf("expected merchant-limit agent_tool invocation, got %#v", events)
+				}
+				if !tracePayloadStringEquals(events, contracts.TraceDecisionCompleted, "source", "merchant_limit_forced_tool") {
+					t.Fatalf("expected forced merchant-limit tool decision trace, got %#v", events)
+				}
+			} else if hasTraceEvent(events, "agent_tool.invoked") {
+				t.Fatalf("did not expect merchant-limit agent_tool invocation, got %#v", events)
+			}
+		})
+	}
+}
+
+func newMerchantLimitChatTestHarness(t *testing.T, responses [][]byte) (*core.Core, http.Handler) {
+	t.Helper()
+	appCore, err := core.New(config.Config{
+		ServiceName: "clean-core",
+		Version:     "test",
+		Env:         "test",
+		HTTPAddr:    ":0",
+		LogLevel:    "error",
+		Readiness:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appCore.Model = &scriptedServerModel{responses: responses}
+	appCore.Coordinator.Model = appCore.Model
+	provider := loader.TestAgentDefinition()
+	provider.TenantID = "tenant_1"
+	provider.AgentID = "znt-merchant-limit"
+	provider.Name = "商家测额智能体"
+	provider.Description = "面向提钱罐业务的商家测额智能体"
+	provider.Exports = contracts.AgentExports{Tools: []contracts.AgentExportedTool{{
+		ToolID:       "znt-merchant-limit.run_merchant_limit_agent",
+		Operation:    "run_merchant_limit_agent",
+		Name:         "运行商家测额智能体",
+		Description:  "Run znt-merchant-limit merchant limit agent.",
+		InputSchema:  map[string]any{"type": "object"},
+		OutputSchema: map[string]any{"type": "object"},
+		RiskLevel:    contracts.RiskLow,
+		Visibility:   contracts.ToolProtected,
+		Status:       "enabled",
+		Version:      "v1",
+	}}}
+	appCore.AgentRegistry.Put(provider)
+	return appCore, NewHandlerWithCore(appCore, logging.New("error"))
+}
+
+func scriptedReplyJSON(text string) []byte {
+	payload, err := json.Marshal(map[string]any{
+		"type": "reply",
+		"reply": map[string]any{
+			"kind": "answer",
+			"text": text,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return payload
+}
+
 func TestOptimizerCommandDispatchCoverageForContractWarnings(t *testing.T) {
 	appCore, err := core.New(config.Config{
 		ServiceName: "clean-core",
@@ -7364,6 +7702,18 @@ func tracePayloadBool(events []contracts.TraceEvent, eventType string, key strin
 		}
 		if value, ok := event.Payload[key].(bool); ok {
 			return value
+		}
+	}
+	return false
+}
+
+func tracePayloadStringEquals(events []contracts.TraceEvent, eventType string, key string, expected string) bool {
+	for _, event := range events {
+		if event.Type != eventType {
+			continue
+		}
+		if value, ok := event.Payload[key].(string); ok && value == expected {
+			return true
 		}
 	}
 	return false
