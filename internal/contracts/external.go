@@ -27,6 +27,24 @@ type ExternalTaskBinding struct {
 	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
+type ExternalDeliveryOutboxItem struct {
+	OutboxID       string         `json:"outbox_id"`
+	TenantID       TenantID       `json:"tenant_id"`
+	Provider       string         `json:"provider"`
+	ExternalTaskID ExternalTaskID `json:"external_task_id"`
+	CoreTaskID     TaskID         `json:"core_task_id,omitempty"`
+	EventType      string         `json:"event_type"`
+	Channel        string         `json:"channel"`
+	Payload        map[string]any `json:"payload"`
+	IdempotencyKey string         `json:"idempotency_key"`
+	Status         string         `json:"status"`
+	AttemptCount   int            `json:"attempt_count"`
+	LastError      string         `json:"last_error,omitempty"`
+	NextAttemptAt  time.Time      `json:"next_attempt_at,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+}
+
 type ParticipantSummary struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
@@ -34,13 +52,15 @@ type ParticipantSummary struct {
 }
 
 type SendExternalMessageRequest struct {
-	Ref     ExternalTaskRef `json:"ref"`
-	Message string          `json:"message"`
+	Ref            ExternalTaskRef `json:"ref"`
+	Message        string          `json:"message"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 }
 
 type AttachArtifactRequest struct {
-	Ref         ExternalTaskRef `json:"ref"`
-	ArtifactRef ArtifactRef     `json:"artifact_ref"`
+	Ref            ExternalTaskRef `json:"ref"`
+	ArtifactRef    ArtifactRef     `json:"artifact_ref"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 }
 
 type CollaborationAccessRequest struct {

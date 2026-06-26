@@ -14,6 +14,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	agentpackage "znt/internal/agentdef/package"
+	"znt/internal/agentdelegation"
 	"znt/internal/contracts"
 	conversationstore "znt/internal/conversation"
 	"znt/internal/eval"
@@ -37,6 +38,7 @@ type Repositories struct {
 	ToolCatalog         *ToolCatalogStore
 	ServiceConnections  *ServiceConnectionStore
 	RuntimeHooks        *RuntimeHookStore
+	AgentDelegations    *AgentDelegationStore
 	Trace               *TraceRecorder
 	Audit               *AuditLogger
 	Artifacts           *ArtifactStore
@@ -110,6 +112,7 @@ func NewRepositories(db *sql.DB) *Repositories {
 		ToolCatalog:         &ToolCatalogStore{db: db},
 		ServiceConnections:  &ServiceConnectionStore{db: db},
 		RuntimeHooks:        &RuntimeHookStore{db: db},
+		AgentDelegations:    &AgentDelegationStore{db: db},
 		Trace:               &TraceRecorder{db: db},
 		Audit:               auditLogger,
 		Artifacts:           &ArtifactStore{db: db},
@@ -2519,6 +2522,139 @@ func runtimeHookBindingSpecificity(binding runtimehook.Binding, tenantID contrac
 		score++
 	}
 	return score
+}
+
+type AgentDelegationStore struct {
+	db *sql.DB
+}
+
+func (s *AgentDelegationStore) Upsert(ctx context.Context, delegation agentdelegation.Delegation) error {
+	now := time.Now().UTC()
+	if delegation.CreatedAt.IsZero() {
+		delegation.CreatedAt = now
+	}
+	if delegation.UpdatedAt.IsZero() {
+		delegation.UpdatedAt = now
+	}
+	metadata, err := jsonValue(delegation.Metadata)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO agent_delegations (
+  delegation_id, tenant_id, trace_id, parent_run_id, parent_task_id,
+  source_tool_call_id, tool_id, operation, provider_agent_id,
+  child_run_id, child_task_id, status, result_status, result_summary,
+  error_summary, metadata_json, started_at, completed_at, created_at, updated_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+ON CONFLICT (tenant_id, source_tool_call_id)
+DO UPDATE SET
+  trace_id=EXCLUDED.trace_id,
+  parent_run_id=EXCLUDED.parent_run_id,
+  parent_task_id=EXCLUDED.parent_task_id,
+  tool_id=EXCLUDED.tool_id,
+  operation=EXCLUDED.operation,
+  provider_agent_id=EXCLUDED.provider_agent_id,
+  child_run_id=EXCLUDED.child_run_id,
+  child_task_id=EXCLUDED.child_task_id,
+  status=EXCLUDED.status,
+  result_status=EXCLUDED.result_status,
+  result_summary=EXCLUDED.result_summary,
+  error_summary=EXCLUDED.error_summary,
+  metadata_json=EXCLUDED.metadata_json,
+  started_at=COALESCE(agent_delegations.started_at, EXCLUDED.started_at),
+  completed_at=EXCLUDED.completed_at,
+  updated_at=EXCLUDED.updated_at`,
+		delegation.DelegationID, delegation.TenantID, nullString(string(delegation.TraceID)),
+		nullString(string(delegation.ParentRunID)), nullString(string(delegation.ParentTaskID)),
+		delegation.ToolCallID, delegation.ToolID, nullString(delegation.Operation), delegation.ProviderAgentID,
+		nullString(string(delegation.ChildRunID)), nullString(string(delegation.ChildTaskID)),
+		delegation.Status, nullString(delegation.ResultStatus), nullString(delegation.ResultSummary),
+		nullString(delegation.ErrorSummary), metadata, nullTime(delegation.StartedAt), nullTime(delegation.CompletedAt),
+		delegation.CreatedAt.UTC(), delegation.UpdatedAt.UTC(),
+	)
+	return err
+}
+
+func (s *AgentDelegationStore) ListByParentRun(ctx context.Context, tenantID contracts.TenantID, parentRunID contracts.AgentRunID) ([]agentdelegation.Delegation, error) {
+	rows, err := s.db.QueryContext(ctx, agentDelegationSelectSQL()+`
+WHERE tenant_id=$1 AND parent_run_id=$2
+ORDER BY COALESCE(started_at, created_at, updated_at), delegation_id`, tenantID, parentRunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgentDelegations(rows)
+}
+
+func (s *AgentDelegationStore) ListByTrace(ctx context.Context, tenantID contracts.TenantID, traceID contracts.TraceID) ([]agentdelegation.Delegation, error) {
+	rows, err := s.db.QueryContext(ctx, agentDelegationSelectSQL()+`
+WHERE tenant_id=$1 AND trace_id=$2
+ORDER BY COALESCE(started_at, created_at, updated_at), delegation_id`, tenantID, traceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgentDelegations(rows)
+}
+
+func agentDelegationSelectSQL() string {
+	return `SELECT delegation_id, tenant_id, trace_id, parent_run_id, parent_task_id,
+source_tool_call_id, tool_id, operation, provider_agent_id, child_run_id, child_task_id,
+status, result_status, result_summary, error_summary, metadata_json, started_at, completed_at,
+created_at, updated_at FROM agent_delegations `
+}
+
+func scanAgentDelegations(rows *sql.Rows) ([]agentdelegation.Delegation, error) {
+	out := make([]agentdelegation.Delegation, 0)
+	for rows.Next() {
+		item, err := scanAgentDelegation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func scanAgentDelegation(row interface {
+	Scan(dest ...any) error
+}) (agentdelegation.Delegation, error) {
+	var tenantID, sourceToolCallID, toolID, providerAgentID string
+	var traceID, parentRunID, parentTaskID, operation, childRunID, childTaskID, resultStatus, resultSummary, errorSummary sql.NullString
+	var metadataJSON []byte
+	var startedAt, completedAt sql.NullTime
+	item := agentdelegation.Delegation{}
+	err := row.Scan(
+		&item.DelegationID, &tenantID, &traceID, &parentRunID, &parentTaskID,
+		&sourceToolCallID, &toolID, &operation, &providerAgentID, &childRunID, &childTaskID,
+		&item.Status, &resultStatus, &resultSummary, &errorSummary, &metadataJSON,
+		&startedAt, &completedAt, &item.CreatedAt, &item.UpdatedAt,
+	)
+	if err != nil {
+		return agentdelegation.Delegation{}, mapSQLError(err)
+	}
+	item.TenantID = contracts.TenantID(tenantID)
+	item.TraceID = contracts.TraceID(traceID.String)
+	item.ParentRunID = contracts.AgentRunID(parentRunID.String)
+	item.ParentTaskID = contracts.TaskID(parentTaskID.String)
+	item.ToolCallID = contracts.ToolCallID(sourceToolCallID)
+	item.ToolID = toolID
+	item.Operation = operation.String
+	item.ProviderAgentID = contracts.AgentID(providerAgentID)
+	item.ChildRunID = contracts.AgentRunID(childRunID.String)
+	item.ChildTaskID = contracts.TaskID(childTaskID.String)
+	item.ResultStatus = resultStatus.String
+	item.ResultSummary = resultSummary.String
+	item.ErrorSummary = errorSummary.String
+	if err := scanJSON(metadataJSON, &item.Metadata); err != nil {
+		return agentdelegation.Delegation{}, err
+	}
+	item.StartedAt = timePtr(startedAt)
+	item.CompletedAt = timePtr(completedAt)
+	item.CreatedAt = item.CreatedAt.UTC()
+	item.UpdatedAt = item.UpdatedAt.UTC()
+	return item, nil
 }
 
 type TraceRecorder struct {
@@ -5596,6 +5732,144 @@ WHERE provider=$1 AND external_task_id=$2`,
 		return storagerepo.ErrNotFound
 	}
 	return nil
+}
+
+func (s *ExternalTaskBindingStore) EnqueueDelivery(ctx context.Context, item contracts.ExternalDeliveryOutboxItem) (contracts.ExternalDeliveryOutboxItem, error) {
+	payload, err := json.Marshal(item.Payload)
+	if err != nil {
+		return contracts.ExternalDeliveryOutboxItem{}, err
+	}
+	if item.AttemptCount < 0 {
+		item.AttemptCount = 0
+	}
+	var outboxID string
+	err = s.db.QueryRowContext(ctx, `
+INSERT INTO external_delivery_outbox (
+  outbox_id, tenant_id, provider, external_task_id, core_task_id, event_type,
+  channel, payload_json, idempotency_key, status, attempt_count, last_error,
+  next_attempt_at, created_at, updated_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+ON CONFLICT (tenant_id, idempotency_key) DO UPDATE SET
+  payload_json=EXCLUDED.payload_json,
+  status=EXCLUDED.status,
+  updated_at=EXCLUDED.updated_at
+RETURNING outbox_id`,
+		item.OutboxID, item.TenantID, item.Provider, item.ExternalTaskID, nullString(string(item.CoreTaskID)),
+		item.EventType, item.Channel, payload, item.IdempotencyKey, item.Status, item.AttemptCount,
+		nullString(item.LastError), nullableTime(item.NextAttemptAt), item.CreatedAt.UTC(), item.UpdatedAt.UTC(),
+	).Scan(&outboxID)
+	if err != nil {
+		return contracts.ExternalDeliveryOutboxItem{}, err
+	}
+	item.OutboxID = outboxID
+	return item, nil
+}
+
+func (s *ExternalTaskBindingStore) MarkDeliveryAttempt(ctx context.Context, outboxID string, status string, lastError string, nextAttemptAt time.Time, updatedAt time.Time) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE external_delivery_outbox
+SET status=$2,
+    attempt_count=attempt_count+1,
+    last_error=$3,
+    next_attempt_at=$4,
+    updated_at=$5
+WHERE outbox_id=$1`,
+		outboxID, status, nullString(lastError), nullableTime(nextAttemptAt), updatedAt.UTC(),
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return storagerepo.ErrNotFound
+	}
+	return nil
+}
+
+func (s *ExternalTaskBindingStore) GetDelivery(ctx context.Context, tenantID contracts.TenantID, outboxID string) (contracts.ExternalDeliveryOutboxItem, bool, error) {
+	item, err := scanExternalDelivery(s.db.QueryRowContext(ctx, externalDeliverySelectSQL()+" WHERE tenant_id=$1 AND outbox_id=$2", tenantID, outboxID))
+	if errors.Is(err, storagerepo.ErrNotFound) {
+		return contracts.ExternalDeliveryOutboxItem{}, false, nil
+	}
+	return item, err == nil, err
+}
+
+func (s *ExternalTaskBindingStore) ListDeliveriesDue(ctx context.Context, tenantID contracts.TenantID, statuses []string, limit int, now time.Time) ([]contracts.ExternalDeliveryOutboxItem, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if len(statuses) == 0 {
+		statuses = []string{"failed", "pending"}
+	}
+	statusPlaceholders := make([]string, 0, len(statuses))
+	args := []any{tenantID}
+	for _, status := range statuses {
+		args = append(args, status)
+		statusPlaceholders = append(statusPlaceholders, fmt.Sprintf("$%d", len(args)))
+	}
+	args = append(args, now.UTC(), limit)
+	rows, err := s.db.QueryContext(ctx, externalDeliverySelectSQL()+fmt.Sprintf(`
+WHERE tenant_id=$1
+  AND status IN (%s)
+  AND (next_attempt_at IS NULL OR next_attempt_at <= $%d)
+ORDER BY created_at ASC
+LIMIT $%d`, strings.Join(statusPlaceholders, ","), len(args)-1, len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]contracts.ExternalDeliveryOutboxItem, 0)
+	for rows.Next() {
+		item, err := scanExternalDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func externalDeliverySelectSQL() string {
+	return `SELECT outbox_id, tenant_id, provider, external_task_id, core_task_id,
+event_type, channel, payload_json, idempotency_key, status, attempt_count,
+last_error, next_attempt_at, created_at, updated_at FROM external_delivery_outbox`
+}
+
+func scanExternalDelivery(row interface {
+	Scan(dest ...any) error
+}) (contracts.ExternalDeliveryOutboxItem, error) {
+	var externalTaskID, coreTaskID, lastError sql.NullString
+	var payloadJSON []byte
+	var nextAttemptAt sql.NullTime
+	item := contracts.ExternalDeliveryOutboxItem{}
+	err := row.Scan(&item.OutboxID, &item.TenantID, &item.Provider, &externalTaskID, &coreTaskID,
+		&item.EventType, &item.Channel, &payloadJSON, &item.IdempotencyKey, &item.Status,
+		&item.AttemptCount, &lastError, &nextAttemptAt, &item.CreatedAt, &item.UpdatedAt)
+	if err != nil {
+		return contracts.ExternalDeliveryOutboxItem{}, mapSQLError(err)
+	}
+	if err := json.Unmarshal(payloadJSON, &item.Payload); err != nil {
+		return contracts.ExternalDeliveryOutboxItem{}, err
+	}
+	item.ExternalTaskID = contracts.ExternalTaskID(externalTaskID.String)
+	item.CoreTaskID = contracts.TaskID(coreTaskID.String)
+	item.LastError = lastError.String
+	if nextAttemptAt.Valid {
+		item.NextAttemptAt = nextAttemptAt.Time.UTC()
+	}
+	item.CreatedAt = item.CreatedAt.UTC()
+	item.UpdatedAt = item.UpdatedAt.UTC()
+	return item, nil
+}
+
+func nullableTime(value time.Time) sql.NullTime {
+	if value.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: value.UTC(), Valid: true}
 }
 
 func scanExternalTaskBinding(row interface {

@@ -198,6 +198,7 @@ func buildConversationContext(envelope contracts.AgentEnvelope, definition contr
 	current := contracts.ConversationMessage{
 		SpeakerID:   speakerID,
 		SpeakerType: speakerType,
+		SpeakerName: envelope.Caller.DisplayName,
 		Text:        userInput,
 		CreatedAt:   envelope.CreatedAt,
 	}
@@ -210,7 +211,7 @@ func buildConversationContext(envelope contracts.AgentEnvelope, definition contr
 		current.ExternalMessageID = message.ExternalMessageID
 		current.SpeakerID = contextconversation.FirstNonEmpty(message.SpeakerID, current.SpeakerID)
 		current.SpeakerType = contextconversation.FirstNonEmpty(message.SpeakerType, current.SpeakerType)
-		current.SpeakerName = message.SpeakerName
+		current.SpeakerName = contextconversation.FirstNonEmpty(message.SpeakerName, current.SpeakerName)
 		current.ReplyToMessageID = message.ReplyToMessageID
 		current.ThreadID = contextconversation.FirstNonEmpty(message.ThreadID, runtimeConversation.ThreadID)
 		current.Mentions = append(current.Mentions, message.Mentions...)
@@ -269,6 +270,9 @@ func (c Coordinator) appendConversationInputEvent(ctx context.Context, envelope 
 		"auth_caller_id":   envelope.Caller.CallerID,
 		"auth_caller_type": envelope.Caller.CallerType,
 	}
+	if envelope.Caller.DisplayName != "" {
+		payload["auth_caller_display_name"] = envelope.Caller.DisplayName
+	}
 	actorID := envelope.Caller.CallerID
 	actorType := envelope.Caller.CallerType
 	if conversation := envelope.Context.Conversation; conversation != nil {
@@ -282,6 +286,7 @@ func (c Coordinator) appendConversationInputEvent(ctx context.Context, envelope 
 			payload["reply_to_message_id"] = current.ReplyToMessageID
 			payload["speaker_id"] = current.SpeakerID
 			payload["speaker_type"] = current.SpeakerType
+			payload["speaker_name"] = current.SpeakerName
 			actorID = contextconversation.FirstNonEmpty(current.SpeakerID, actorID)
 			actorType = contextconversation.FirstNonEmpty(current.SpeakerType, actorType)
 		}
@@ -396,6 +401,7 @@ func runtimeConversationMessage(envelope contracts.AgentEnvelope, input string, 
 		MessageID:   string(envelope.EnvelopeID),
 		SpeakerID:   envelope.Caller.CallerID,
 		SpeakerType: envelope.Caller.CallerType,
+		SpeakerName: envelope.Caller.DisplayName,
 		Text:        input,
 		CreatedAt:   envelope.CreatedAt,
 	}
@@ -415,7 +421,8 @@ func runtimeConversationMessage(envelope contracts.AgentEnvelope, input string, 
 			message.ExternalMessageID = current.ExternalMessageID
 			message.SpeakerID = contextconversation.FirstNonEmpty(current.SpeakerID, message.SpeakerID)
 			message.SpeakerType = contextconversation.FirstNonEmpty(current.SpeakerType, message.SpeakerType)
-			message.SpeakerName = current.SpeakerName
+			message.SpeakerName = contextconversation.FirstNonEmpty(current.SpeakerName, message.SpeakerName)
+			message.Metadata = current.Metadata
 			message.ReplyToMessageID = current.ReplyToMessageID
 			message.ThreadID = contextconversation.FirstNonEmpty(current.ThreadID, message.ThreadID)
 			message.Mentions = append(message.Mentions, current.Mentions...)

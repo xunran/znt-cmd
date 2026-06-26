@@ -53,7 +53,7 @@ func NewHandlerWithCore(appCore *core.Core, logger *slog.Logger) http.Handler {
 		if envelope.Context.TenantID == "" {
 			envelope.Context.TenantID = caller.TenantID
 		}
-		envelope.Caller = contracts.AgentCaller{CallerID: caller.CallerID, CallerType: caller.CallerType, TenantID: caller.TenantID}
+		envelope.Caller = contracts.AgentCaller{CallerID: caller.CallerID, CallerType: caller.CallerType, DisplayName: caller.DisplayName, TenantID: caller.TenantID}
 		envelope.CreatedAt = time.Now().UTC()
 		result, err := dispatchCommand(r, appCore, metrics, envelope, caller)
 		if err != nil {

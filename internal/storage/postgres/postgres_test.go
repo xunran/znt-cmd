@@ -8,6 +8,7 @@ import (
 
 	"znt/internal/agentcapability"
 	agentpackage "znt/internal/agentdef/package"
+	"znt/internal/agentdelegation"
 	"znt/internal/agentfactory"
 	"znt/internal/asset/artifact"
 	"znt/internal/crossgroup"
@@ -38,6 +39,7 @@ func TestRepositoryTypesImplementRuntimeInterfaces(t *testing.T) {
 	var _ toolrepo.Repository = (*ToolRepository)(nil)
 	var _ toolcatalog.Store = (*ToolCatalogStore)(nil)
 	var _ runtimehook.Store = (*RuntimeHookStore)(nil)
+	var _ agentdelegation.Repository = (*AgentDelegationStore)(nil)
 	var _ trace.Recorder = (*TraceRecorder)(nil)
 	var _ audit.Logger = (*AuditLogger)(nil)
 	var _ artifact.Store = (*ArtifactStore)(nil)

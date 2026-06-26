@@ -32,7 +32,7 @@ func handleTaskStartResource(w http.ResponseWriter, r *http.Request, appCore *co
 		Target:     contracts.AgentTarget{AgentID: agentID, Version: version},
 		Payload:    payload,
 		Context:    contracts.RuntimeContext{TenantID: caller.TenantID},
-		Caller:     contracts.AgentCaller{CallerID: caller.CallerID, CallerType: caller.CallerType, TenantID: caller.TenantID},
+		Caller:     contracts.AgentCaller{CallerID: caller.CallerID, CallerType: caller.CallerType, DisplayName: caller.DisplayName, TenantID: caller.TenantID},
 		CreatedAt:  time.Now().UTC(),
 	}
 	result, err := taskStart(r, appCore, envelope, caller)

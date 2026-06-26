@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"znt/internal/agentdef/loader"
+	"znt/internal/agentdelegation"
 	"znt/internal/contracts"
 	"znt/internal/governance/trace"
 	"znt/internal/tool/catalog"
@@ -29,6 +30,7 @@ type Handler struct {
 	AgentRunnable func(ctx context.Context, tenantID contracts.TenantID, agentID contracts.AgentID) error
 	StartAgentRun func(ctx context.Context, envelope contracts.AgentEnvelope) (RunResult, error)
 	Trace         trace.Recorder
+	Delegations   agentdelegation.Repository
 	Now           func() time.Time
 }
 
@@ -70,21 +72,62 @@ func (h Handler) ExecuteAgentTool(ctx context.Context, call contracts.ToolCall, 
 	if operation == "" {
 		operation = exported.ToolID
 	}
+	startedAt := now(h.Now)
+	delegationID := idgen.New("delegation")
+	delegation := agentdelegation.Delegation{
+		DelegationID:    delegationID,
+		TenantID:        call.TenantID,
+		TraceID:         contracts.TraceID(traceID(call)),
+		ParentRunID:     call.RunID,
+		ParentTaskID:    call.TaskID,
+		ToolCallID:      call.ToolCallID,
+		ToolID:          manifest.ToolID,
+		Operation:       operation,
+		ProviderAgentID: providerAgentID,
+		Status:          agentdelegation.StatusInvoked,
+		StartedAt:       &startedAt,
+		CreatedAt:       startedAt,
+		UpdatedAt:       startedAt,
+	}
+	_ = h.recordDelegation(ctx, delegation)
 	_ = h.record(ctx, call, "agent_tool.invoked", map[string]any{
-		"trace_id":          traceID(call),
-		"provider_agent_id": providerAgentID,
-		"operation":         operation,
-		"tool_id":           manifest.ToolID,
+		"delegation_id":       delegationID,
+		"trace_id":            traceID(call),
+		"parent_run_id":       call.RunID,
+		"parent_task_id":      call.TaskID,
+		"source_tool_call_id": call.ToolCallID,
+		"provider_agent_id":   providerAgentID,
+		"operation":           operation,
+		"tool_id":             manifest.ToolID,
 	})
 	if h.StartAgentRun == nil {
-		return nil, nil, contracts.NewRuntimeError(contracts.CodeExecutionDomainUnavailable, "agent_tool runner is not configured", map[string]any{"tool_id": call.ToolID, "provider_agent_id": providerAgentID})
+		err := contracts.NewRuntimeError(contracts.CodeExecutionDomainUnavailable, "agent_tool runner is not configured", map[string]any{"tool_id": call.ToolID, "provider_agent_id": providerAgentID})
+		completedAt := now(h.Now)
+		delegation.Status = agentdelegation.StatusFailed
+		delegation.ErrorSummary = sanitizeToolAgentErrorSummary(err)
+		delegation.CompletedAt = &completedAt
+		delegation.UpdatedAt = completedAt
+		_ = h.recordDelegation(ctx, delegation)
+		_ = h.record(ctx, call, "agent_tool.failed", map[string]any{
+			"delegation_id":       delegationID,
+			"trace_id":            traceID(call),
+			"parent_run_id":       call.RunID,
+			"parent_task_id":      call.TaskID,
+			"source_tool_call_id": call.ToolCallID,
+			"provider_agent_id":   providerAgentID,
+			"operation":           operation,
+			"tool_id":             manifest.ToolID,
+			"error":               err.Error(),
+		})
+		return nil, nil, err
 	}
+	providerInput := agentToolInput(*exported, operation, call.Arguments)
 	runtimeContext := contracts.RuntimeContext{
 		TenantID:  call.TenantID,
 		RequestID: call.IdempotencyKey,
 	}
 	if parentConversation := parentRuntimeConversation(call.RuntimeContext); parentConversation != nil {
-		runtimeContext.Conversation = parentConversation
+		runtimeContext.Conversation = conversationForProviderAgentRun(parentConversation, providerInput, call.ToolID, providerAgentID)
 		if runtimeContext.Conversation.ExternalRefs == nil {
 			runtimeContext.Conversation.ExternalRefs = map[string]string{}
 		}
@@ -103,7 +146,7 @@ func (h Handler) ExecuteAgentTool(ctx context.Context, call contracts.ToolCall, 
 		},
 		Command: "agent.run",
 		Payload: map[string]any{
-			"input":               agentToolInput(*exported, operation, call.Arguments),
+			"input":               providerInput,
 			"tool_id":             manifest.ToolID,
 			"operation":           operation,
 			"arguments":           call.Arguments,
@@ -115,22 +158,47 @@ func (h Handler) ExecuteAgentTool(ctx context.Context, call contracts.ToolCall, 
 		CreatedAt: now(h.Now),
 	})
 	if err != nil {
+		completedAt := now(h.Now)
+		delegation.Status = agentdelegation.StatusFailed
+		delegation.ErrorSummary = sanitizeToolAgentErrorSummary(err)
+		delegation.CompletedAt = &completedAt
+		delegation.UpdatedAt = completedAt
+		_ = h.recordDelegation(ctx, delegation)
 		_ = h.record(ctx, call, "agent_tool.failed", map[string]any{
-			"trace_id":          traceID(call),
-			"provider_agent_id": providerAgentID,
-			"operation":         operation,
-			"tool_id":           manifest.ToolID,
-			"error":             err.Error(),
+			"delegation_id":       delegationID,
+			"trace_id":            traceID(call),
+			"parent_run_id":       call.RunID,
+			"parent_task_id":      call.TaskID,
+			"source_tool_call_id": call.ToolCallID,
+			"provider_agent_id":   providerAgentID,
+			"operation":           operation,
+			"tool_id":             manifest.ToolID,
+			"error":               err.Error(),
 		})
 		return nil, result.ArtifactRefs, err
 	}
 	if result.Error != nil {
+		completedAt := now(h.Now)
+		delegation.Status = agentdelegation.StatusFailed
+		delegation.ChildRunID = result.RunID
+		delegation.ChildTaskID = result.TaskID
+		delegation.ResultStatus = string(result.Status)
+		delegation.ErrorSummary = sanitizeToolAgentErrorSummary(result.Error)
+		delegation.CompletedAt = &completedAt
+		delegation.UpdatedAt = completedAt
+		_ = h.recordDelegation(ctx, delegation)
 		_ = h.record(ctx, call, "agent_tool.failed", map[string]any{
-			"trace_id":          traceID(call),
-			"provider_agent_id": providerAgentID,
-			"operation":         operation,
-			"tool_id":           manifest.ToolID,
-			"error":             result.Error.ToTracePayload(),
+			"delegation_id":       delegationID,
+			"trace_id":            traceID(call),
+			"parent_run_id":       call.RunID,
+			"parent_task_id":      call.TaskID,
+			"source_tool_call_id": call.ToolCallID,
+			"provider_agent_id":   providerAgentID,
+			"operation":           operation,
+			"tool_id":             manifest.ToolID,
+			"run_id":              result.RunID,
+			"task_id":             result.TaskID,
+			"error":               result.Error.ToTracePayload(),
 		})
 		return nil, result.ArtifactRefs, result.Error
 	}
@@ -149,16 +217,36 @@ func (h Handler) ExecuteAgentTool(ctx context.Context, call contracts.ToolCall, 
 	if result.Ask != nil {
 		output["ask"] = result.Ask
 	}
+	completedAt := now(h.Now)
+	delegation.Status = agentdelegation.StatusCompleted
+	delegation.ChildRunID = result.RunID
+	delegation.ChildTaskID = result.TaskID
+	delegation.ResultStatus = stringValue(toolAgentResult, "status")
+	delegation.ResultSummary = stringValue(toolAgentResult, "result_summary")
+	delegation.CompletedAt = &completedAt
+	delegation.UpdatedAt = completedAt
+	_ = h.recordDelegation(ctx, delegation)
 	_ = h.record(ctx, call, "agent_tool.completed", map[string]any{
-		"trace_id":          traceID(call),
-		"provider_agent_id": providerAgentID,
-		"operation":         operation,
-		"tool_id":           manifest.ToolID,
-		"run_id":            result.RunID,
-		"task_id":           result.TaskID,
-		"status":            result.Status,
+		"delegation_id":       delegationID,
+		"trace_id":            traceID(call),
+		"parent_run_id":       call.RunID,
+		"parent_task_id":      call.TaskID,
+		"source_tool_call_id": call.ToolCallID,
+		"provider_agent_id":   providerAgentID,
+		"operation":           operation,
+		"tool_id":             manifest.ToolID,
+		"run_id":              result.RunID,
+		"task_id":             result.TaskID,
+		"status":              result.Status,
 	})
 	return output, result.ArtifactRefs, nil
+}
+
+func (h Handler) recordDelegation(ctx context.Context, delegation agentdelegation.Delegation) error {
+	if h.Delegations == nil {
+		return nil
+	}
+	return h.Delegations.Upsert(ctx, delegation)
 }
 
 func buildToolAgentResult(toolID string, providerAgentID contracts.AgentID, operation string, result RunResult) map[string]any {
@@ -167,6 +255,16 @@ func buildToolAgentResult(toolID string, providerAgentID contracts.AgentID, oper
 	riskFlags := []string{"requires_main_agent_review"}
 	summary := ""
 	businessResult := map[string]any{}
+	review := map[string]any{
+		"permission_review": map[string]any{
+			"decision": "requires_main_agent_review",
+			"reason":   "tool agent output is never directly visible to the user",
+		},
+		"business_sufficiency": map[string]any{
+			"status":        "sufficient",
+			"missing_facts": []string{},
+		},
+	}
 	if result.Reply != nil {
 		summary = result.Reply.Text
 	}
@@ -175,6 +273,10 @@ func buildToolAgentResult(toolID string, providerAgentID contracts.AgentID, oper
 		missingContext = true
 		summary = result.Ask.Question
 		businessResult["ask"] = result.Ask
+		review["business_sufficiency"] = map[string]any{
+			"status":        "needs_clarification",
+			"missing_facts": []string{"tool_agent_requested_user_clarification"},
+		}
 	}
 	if result.Status != "" && result.Status != contracts.RunCompleted && status == "ok" {
 		status = string(result.Status)
@@ -182,11 +284,22 @@ func buildToolAgentResult(toolID string, providerAgentID contracts.AgentID, oper
 	summary, sanitized := sanitizeToolAgentResultText(summary)
 	if sanitized {
 		riskFlags = append(riskFlags, "tool_agent_output_sanitized")
+		review["permission_review"] = map[string]any{
+			"decision": "sanitized",
+			"reason":   "internal or non-user-ready content was removed",
+		}
 	}
 	if summary != "" {
 		businessResult["summary"] = summary
+	} else if !missingContext {
+		review["business_sufficiency"] = map[string]any{
+			"status":        "insufficient",
+			"missing_facts": []string{"tool_agent_result_summary"},
+		}
+		riskFlags = append(riskFlags, "business_sufficiency_insufficient")
 	}
 	return map[string]any{
+		"schema_version":    "tool_agent_result.v1",
 		"status":            status,
 		"provider_agent_id": providerAgentID,
 		"tool_id":           toolID,
@@ -198,6 +311,7 @@ func buildToolAgentResult(toolID string, providerAgentID contracts.AgentID, oper
 		"risk_flags":        riskFlags,
 		"missing_context":   missingContext,
 		"safe_for_user":     false,
+		"review":            review,
 	}
 }
 
@@ -243,6 +357,38 @@ func sanitizeToolAgentResultText(value string) (string, bool) {
 	return text, false
 }
 
+func sanitizeToolAgentErrorSummary(value any) string {
+	switch current := value.(type) {
+	case nil:
+		return ""
+	case *contracts.RuntimeError:
+		if current == nil {
+			return ""
+		}
+		return sanitizeToolAgentErrorText(current.Message)
+	case contracts.RuntimeError:
+		return sanitizeToolAgentErrorText(current.Message)
+	case error:
+		return sanitizeToolAgentErrorText(current.Error())
+	case string:
+		return sanitizeToolAgentErrorText(current)
+	default:
+		return "tool agent failed"
+	}
+}
+
+func sanitizeToolAgentErrorText(value string) string {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return ""
+	}
+	summary, sanitized := sanitizeToolAgentResultText(text)
+	if sanitized {
+		return summary
+	}
+	return summary
+}
+
 func agentToolInput(tool contracts.AgentExportedTool, operation string, arguments map[string]any) string {
 	for _, key := range []string{"input", "task", "objective"} {
 		if value, _ := arguments[key].(string); strings.TrimSpace(value) != "" {
@@ -284,6 +430,57 @@ func parentRuntimeConversation(runtimeContext map[string]any) *contracts.Runtime
 		conversation.ThreadID = conversation.ConversationID
 	}
 	return conversation
+}
+
+func conversationForProviderAgentRun(conversation *contracts.RuntimeConversation, input string, callerToolID string, providerAgentID contracts.AgentID) *contracts.RuntimeConversation {
+	if conversation == nil {
+		return nil
+	}
+	parentMessage := conversation.CurrentMessage
+	if parentRecent, ok := conversationMessageFromRuntime(parentMessage); ok {
+		conversation.RecentMessages = append(conversation.RecentMessages, parentRecent)
+	}
+	metadata := map[string]any{"source": "agent_tool_request"}
+	if parentMessage != nil {
+		if parentMessage.MessageID != "" {
+			metadata["parent_message_id"] = parentMessage.MessageID
+		}
+		if parentMessage.SpeakerID != "" {
+			metadata["parent_speaker_id"] = parentMessage.SpeakerID
+		}
+	}
+	conversation.CurrentMessage = &contracts.RuntimeMessage{
+		MessageID:   idgen.New("msg"),
+		SpeakerID:   string(callerToolID),
+		SpeakerType: "agent_tool",
+		ThreadID:    conversation.ThreadID,
+		Text:        strings.TrimSpace(input),
+		Mentions:    []string{string(providerAgentID)},
+		Metadata:    metadata,
+	}
+	return conversation
+}
+
+func conversationMessageFromRuntime(message *contracts.RuntimeMessage) (contracts.ConversationMessage, bool) {
+	if message == nil {
+		return contracts.ConversationMessage{}, false
+	}
+	if strings.TrimSpace(message.MessageID) == "" && strings.TrimSpace(message.Text) == "" {
+		return contracts.ConversationMessage{}, false
+	}
+	return contracts.ConversationMessage{
+		MessageID:         message.MessageID,
+		ExternalMessageID: message.ExternalMessageID,
+		SpeakerID:         message.SpeakerID,
+		SpeakerType:       message.SpeakerType,
+		SpeakerName:       message.SpeakerName,
+		Text:              message.Text,
+		CreatedAt:         message.CreatedAt,
+		ReplyToMessageID:  message.ReplyToMessageID,
+		ThreadID:          message.ThreadID,
+		Mentions:          append([]string(nil), message.Mentions...),
+		Metadata:          cloneMap(message.Metadata),
+	}, true
 }
 
 func runtimeMessageFromAny(value any) *contracts.RuntimeMessage {
@@ -412,6 +609,17 @@ func stringSliceFromAny(value any) []string {
 func anyMapFromAny(value any) map[string]any {
 	raw, ok := value.(map[string]any)
 	if !ok {
+		return nil
+	}
+	out := make(map[string]any, len(raw))
+	for key, current := range raw {
+		out[key] = current
+	}
+	return out
+}
+
+func cloneMap(raw map[string]any) map[string]any {
+	if len(raw) == 0 {
 		return nil
 	}
 	out := make(map[string]any, len(raw))

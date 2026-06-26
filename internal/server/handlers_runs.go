@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"znt/internal/agentdelegation"
 	"znt/internal/app/auth"
 	"znt/internal/app/core"
 	"znt/internal/contracts"
@@ -235,15 +236,21 @@ type runToolDiagnostic struct {
 }
 
 type toolAgentCallDiagnostic struct {
-	ProviderAgentID string               `json:"provider_agent_id,omitempty"`
-	ToolID          string               `json:"tool_id,omitempty"`
-	Operation       string               `json:"operation,omitempty"`
-	Status          string               `json:"status,omitempty"`
-	RunID           contracts.AgentRunID `json:"run_id,omitempty"`
-	TaskID          contracts.TaskID     `json:"task_id,omitempty"`
-	ErrorSummary    string               `json:"error_summary,omitempty"`
-	StartedAt       *time.Time           `json:"started_at,omitempty"`
-	CompletedAt     *time.Time           `json:"completed_at,omitempty"`
+	DelegationID     string               `json:"delegation_id,omitempty"`
+	ProviderAgentID  string               `json:"provider_agent_id,omitempty"`
+	ToolID           string               `json:"tool_id,omitempty"`
+	Operation        string               `json:"operation,omitempty"`
+	Status           string               `json:"status,omitempty"`
+	ResultStatus     string               `json:"result_status,omitempty"`
+	ResultSummary    string               `json:"result_summary,omitempty"`
+	ParentRunID      contracts.AgentRunID `json:"parent_run_id,omitempty"`
+	ParentTaskID     contracts.TaskID     `json:"parent_task_id,omitempty"`
+	SourceToolCallID contracts.ToolCallID `json:"source_tool_call_id,omitempty"`
+	RunID            contracts.AgentRunID `json:"run_id,omitempty"`
+	TaskID           contracts.TaskID     `json:"task_id,omitempty"`
+	ErrorSummary     string               `json:"error_summary,omitempty"`
+	StartedAt        *time.Time           `json:"started_at,omitempty"`
+	CompletedAt      *time.Time           `json:"completed_at,omitempty"`
 }
 
 func handleRuns(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity) {
@@ -535,6 +542,10 @@ func buildRunDiagnostics(r *http.Request, appCore *core.Core, caller auth.Caller
 	if err != nil {
 		return runDiagnosticsResponse{}, err
 	}
+	agentDelegations, err := agentDelegationsForRun(r, appCore, caller, run)
+	if err != nil {
+		return runDiagnosticsResponse{}, err
+	}
 	timeline := buildTimeline(run, traceEvents, taskEvents, toolCalls, toolResults, auditEvents, hookEvents)
 	report := replay.Build(traceEvents)
 	usage := buildUsageEvidence(run.TraceID, caller.TenantID, traceEvents)
@@ -548,7 +559,7 @@ func buildRunDiagnostics(r *http.Request, appCore *core.Core, caller auth.Caller
 		Model:          modelDiagnostics(run, traceEvents),
 		Decisions:      decisionDiagnostics(traceEvents),
 		Tools:          toolDiagnostics(toolCalls, toolResults),
-		ToolAgentCalls: toolAgentCallDiagnostics(traceEvents),
+		ToolAgentCalls: toolAgentCallDiagnostics(traceEvents, agentDelegations),
 		RuntimeHooks:   hookEvents,
 		AuditEvents:    auditEvents,
 		Replay:         report,
@@ -628,6 +639,7 @@ func buildTraceDiagnostics(r *http.Request, appCore *core.Core, caller auth.Call
 	var toolResults []contracts.ToolResult
 	var auditEvents []contracts.AuditEvent
 	var hookEvents []runtimehook.HookEvent
+	var agentDelegations []agentdelegation.Delegation
 	for _, run := range runs {
 		runTaskEvents, err := taskEventsForRun(r, appCore, caller, run)
 		if err != nil {
@@ -650,6 +662,11 @@ func buildTraceDiagnostics(r *http.Request, appCore *core.Core, caller auth.Call
 			return traceDiagnosticsResponse{}, err
 		}
 		hookEvents = append(hookEvents, runHookEvents...)
+		runDelegations, err := agentDelegationsForRun(r, appCore, caller, run)
+		if err != nil {
+			return traceDiagnosticsResponse{}, err
+		}
+		agentDelegations = append(agentDelegations, runDelegations...)
 	}
 	var baseRun contracts.AgentRun
 	if len(runs) > 0 {
@@ -667,7 +684,7 @@ func buildTraceDiagnostics(r *http.Request, appCore *core.Core, caller auth.Call
 		Prompt:         promptDiagnostics(baseRun, events),
 		Model:          modelDiagnostics(baseRun, events),
 		Decisions:      decisionDiagnostics(events),
-		ToolAgentCalls: toolAgentCallDiagnostics(events),
+		ToolAgentCalls: toolAgentCallDiagnostics(events, agentDelegations),
 		Replay:         report,
 		UsageEvidence:  buildUsageEvidence(traceID, caller.TenantID, events),
 		Timeline:       buildTimeline(baseRun, events, taskEvents, toolCalls, toolResults, auditEvents, hookEvents),
@@ -815,6 +832,28 @@ func hookEventsForRun(r *http.Request, appCore *core.Core, caller auth.CallerIde
 		}
 	}
 	return out, nil
+}
+
+func agentDelegationsForRun(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) ([]agentdelegation.Delegation, error) {
+	if appCore.AgentDelegations == nil {
+		return []agentdelegation.Delegation{}, nil
+	}
+	items, err := appCore.AgentDelegations.ListByParentRun(r.Context(), caller.TenantID, run.RunID)
+	if err != nil {
+		if agentDelegationSchemaNotReady(err) {
+			return []agentdelegation.Delegation{}, nil
+		}
+		return nil, err
+	}
+	return items, nil
+}
+
+func agentDelegationSchemaNotReady(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "agent_delegations") && (strings.Contains(message, "does not exist") || strings.Contains(message, "undefined_table") || strings.Contains(message, "sqlstate 42p01"))
 }
 
 func buildTimeline(run contracts.AgentRun, traceEvents []contracts.TraceEvent, taskEvents []contracts.TaskEvent, toolCalls []contracts.ToolCall, toolResults []contracts.ToolResult, auditEvents []contracts.AuditEvent, hookEvents []runtimehook.HookEvent) []runTimelineEvent {
@@ -1458,11 +1497,16 @@ func toolDiagnostics(calls []contracts.ToolCall, results []contracts.ToolResult)
 	return out
 }
 
-func toolAgentCallDiagnostics(events []contracts.TraceEvent) []toolAgentCallDiagnostic {
+func toolAgentCallDiagnostics(events []contracts.TraceEvent, delegations []agentdelegation.Delegation) []toolAgentCallDiagnostic {
+	if len(delegations) > 0 {
+		return toolAgentCallDiagnosticsFromDelegations(delegations)
+	}
 	byKey := map[string]*toolAgentCallDiagnostic{}
 	order := make([]string, 0)
 	keyFor := func(event contracts.TraceEvent) string {
 		key := strings.Join([]string{
+			stringFromMap(event.Payload, "delegation_id"),
+			stringFromMap(event.Payload, "source_tool_call_id"),
 			stringFromMap(event.Payload, "provider_agent_id"),
 			stringFromMap(event.Payload, "tool_id"),
 			stringFromMap(event.Payload, "operation"),
@@ -1480,9 +1524,13 @@ func toolAgentCallDiagnostics(events []contracts.TraceEvent) []toolAgentCallDiag
 		row, ok := byKey[key]
 		if !ok {
 			row = &toolAgentCallDiagnostic{
-				ProviderAgentID: stringFromMap(event.Payload, "provider_agent_id"),
-				ToolID:          stringFromMap(event.Payload, "tool_id"),
-				Operation:       stringFromMap(event.Payload, "operation"),
+				DelegationID:     stringFromMap(event.Payload, "delegation_id"),
+				ProviderAgentID:  stringFromMap(event.Payload, "provider_agent_id"),
+				ToolID:           stringFromMap(event.Payload, "tool_id"),
+				Operation:        stringFromMap(event.Payload, "operation"),
+				ParentRunID:      contracts.AgentRunID(stringFromMap(event.Payload, "parent_run_id")),
+				ParentTaskID:     contracts.TaskID(stringFromMap(event.Payload, "parent_task_id")),
+				SourceToolCallID: contracts.ToolCallID(stringFromMap(event.Payload, "source_tool_call_id")),
 			}
 			byKey[key] = row
 			order = append(order, key)
@@ -1496,6 +1544,7 @@ func toolAgentCallDiagnostics(events []contracts.TraceEvent) []toolAgentCallDiag
 			}
 		case "agent_tool.completed":
 			row.Status = firstNonEmpty(stringFromMap(event.Payload, "status"), "completed")
+			row.ResultStatus = stringFromMap(event.Payload, "status")
 			row.RunID = contracts.AgentRunID(stringFromMap(event.Payload, "run_id"))
 			row.TaskID = contracts.TaskID(stringFromMap(event.Payload, "task_id"))
 			completedAt := event.CreatedAt
@@ -1510,6 +1559,30 @@ func toolAgentCallDiagnostics(events []contracts.TraceEvent) []toolAgentCallDiag
 	out := make([]toolAgentCallDiagnostic, 0, len(order))
 	for _, key := range order {
 		out = append(out, *byKey[key])
+	}
+	return out
+}
+
+func toolAgentCallDiagnosticsFromDelegations(delegations []agentdelegation.Delegation) []toolAgentCallDiagnostic {
+	out := make([]toolAgentCallDiagnostic, 0, len(delegations))
+	for _, item := range delegations {
+		out = append(out, toolAgentCallDiagnostic{
+			DelegationID:     item.DelegationID,
+			ProviderAgentID:  string(item.ProviderAgentID),
+			ToolID:           item.ToolID,
+			Operation:        item.Operation,
+			Status:           item.Status,
+			ResultStatus:     item.ResultStatus,
+			ResultSummary:    item.ResultSummary,
+			ParentRunID:      item.ParentRunID,
+			ParentTaskID:     item.ParentTaskID,
+			SourceToolCallID: item.ToolCallID,
+			RunID:            item.ChildRunID,
+			TaskID:           item.ChildTaskID,
+			ErrorSummary:     item.ErrorSummary,
+			StartedAt:        item.StartedAt,
+			CompletedAt:      item.CompletedAt,
+		})
 	}
 	return out
 }

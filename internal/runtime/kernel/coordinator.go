@@ -1050,6 +1050,9 @@ func (c Coordinator) step(ctx context.Context, envelope contracts.AgentEnvelope,
 	if err != nil {
 		return RunResult{}, true, err
 	}
+	if replacement, ok := c.requiredToolExpectationDecision(ctx, envelope, activeDefinition, runID, taskID, userInput, candidates.Tools, decision); ok {
+		decision = replacement
+	}
 	if err := c.applyMemoryWriteHook(ctx, envelope, activeDefinition, policySet, effective.Memory, runID, taskID, task.Objective, candidates, view, bundle, decision); err != nil {
 		return RunResult{}, true, err
 	}
@@ -1187,7 +1190,35 @@ func (c Coordinator) merchantLimitForcedToolDecision(ctx context.Context, envelo
 	}
 	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceDecisionCreated, payload)
 	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, contracts.TraceDecisionCompleted, payload)
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, "expected_tool_missing", map[string]any{
+		"expected_tool_id":        toolID,
+		"replacement_decision_id": decision.DecisionID,
+		"reason":                  "required_tool_expectation_gate",
+		"source":                  "merchant_limit_forced_tool",
+	})
 	c.observeHook(ctx, runtimehook.OnModelDecision, envelope, definition, runID, taskID, map[string]any{"decision": decision, "source": "merchant_limit_forced_tool"})
+	return decision, true
+}
+
+func (c Coordinator) requiredToolExpectationDecision(ctx context.Context, envelope contracts.AgentEnvelope, definition contracts.AgentDefinition, runID contracts.AgentRunID, taskID contracts.TaskID, userInput string, candidateTools []contracts.ToolCard, modelDecision contracts.Decision) (contracts.Decision, bool) {
+	if modelDecision.Type == contracts.DecisionTypeToolCall {
+		return contracts.Decision{}, false
+	}
+	decision, ok := c.merchantLimitForcedToolDecision(ctx, envelope, definition, runID, taskID, userInput, candidateTools)
+	if !ok {
+		return contracts.Decision{}, false
+	}
+	toolID := ""
+	if len(decision.ToolCalls) > 0 {
+		toolID = decision.ToolCalls[0].ToolID
+	}
+	c.recordTrace(ctx, envelope.TraceID, envelope.Context.TenantID, runID, taskID, "expected_tool_missing", map[string]any{
+		"expected_tool_id":       toolID,
+		"original_decision_id":   modelDecision.DecisionID,
+		"original_decision_type": modelDecision.Type,
+		"replacement_decision_id": decision.DecisionID,
+		"reason":                 "required_tool_expectation_gate",
+	})
 	return decision, true
 }
 
@@ -1273,11 +1304,19 @@ func isMerchantLimitBusinessInput(input string) bool {
 	if text == "" {
 		return false
 	}
+	if isMerchantLimitUnsafeActionInput(text) {
+		return false
+	}
 	if firstRegexpSubmatch(text, `\b(20\d{10,})\b`) != "" {
 		return true
 	}
+	if isMerchantLimitConceptOnlyInput(text) {
+		return false
+	}
 	return strings.Contains(text, "请款单") ||
 		strings.Contains(text, "可融") ||
+		strings.Contains(text, "能融") ||
+		strings.Contains(text, "最多能融") ||
 		strings.Contains(text, "融资额度") ||
 		strings.Contains(text, "申请金额") ||
 		strings.Contains(text, "授信") ||
@@ -1287,9 +1326,121 @@ func isMerchantLimitBusinessInput(input string) bool {
 		strings.Contains(text, "逾期") ||
 		strings.Contains(text, "这笔单") ||
 		strings.Contains(text, "那笔单") ||
+		strings.Contains(text, "这个单") ||
+		strings.Contains(text, "当前单") ||
+		strings.Contains(text, "这个商户") ||
+		strings.Contains(text, "当前商户") ||
 		strings.Contains(text, "这单") ||
 		strings.Contains(text, "那单") ||
 		strings.Contains(text, "刚才那单")
+}
+
+func isMerchantLimitConceptOnlyInput(text string) bool {
+	conceptSignals := []string{
+		"什么是",
+		"啥是",
+		"是什么意思",
+		"有啥区别",
+		"有什么区别",
+		"区别",
+		"解释一下",
+		"讲一下",
+		"概念",
+	}
+	hasConceptSignal := false
+	for _, signal := range conceptSignals {
+		if strings.Contains(text, signal) {
+			hasConceptSignal = true
+			break
+		}
+	}
+	if !hasConceptSignal {
+		return false
+	}
+	objectSignals := []string{
+		"请款单",
+		"这笔单",
+		"那笔单",
+		"这单",
+		"那单",
+		"这个单",
+		"当前单",
+		"刚才那单",
+		"这个商户",
+		"当前商户",
+	}
+	for _, signal := range objectSignals {
+		if strings.Contains(text, signal) {
+			return false
+		}
+	}
+	dataQuerySignals := []string{
+		"查",
+		"看",
+		"分析",
+		"测",
+		"评估",
+		"判断",
+		"够不够",
+		"覆盖",
+		"可融多少",
+		"最多能融",
+		"分别是多少",
+		"当前",
+	}
+	for _, signal := range dataQuerySignals {
+		if strings.Contains(text, signal) {
+			return false
+		}
+	}
+	return true
+}
+
+func isMerchantLimitUnsafeActionInput(text string) bool {
+	commandSignals := []string{
+		"帮我",
+		"直接",
+		"把",
+		"给我",
+		"替我",
+		"执行",
+		"操作",
+		"随便",
+	}
+	hasCommand := false
+	for _, signal := range commandSignals {
+		if strings.Contains(text, signal) {
+			hasCommand = true
+			break
+		}
+	}
+	if !hasCommand {
+		return false
+	}
+	actionSignals := []string{
+		"审批通过",
+		"直接审批",
+		"直接放款",
+		"通过并放款",
+		"确认放款",
+		"确认审批",
+		"改成",
+		"改一下",
+		"修改",
+		"更改",
+		"调整状态",
+		"状态改",
+		"驳回",
+		"提交审批",
+		"签署合同",
+		"合同签署",
+	}
+	for _, signal := range actionSignals {
+		if strings.Contains(text, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func merchantLimitApplyAmount(input string) (float64, bool) {

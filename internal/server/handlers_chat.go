@@ -20,6 +20,8 @@ import (
 
 const chatProvider = "znt-cmd"
 const chatAllowedToolIDsExternalRef = "chat_allowed_tool_ids"
+const chatConversationStatusActive = "active"
+const chatConversationStatusArchived = "archived"
 
 type createChatConversationRequest struct {
 	Name         string                   `json:"name"`
@@ -40,8 +42,11 @@ type chatMemberAgentRequest struct {
 }
 
 type sendChatMessageRequest struct {
-	Text      string `json:"text"`
-	MessageID string `json:"message_id,omitempty"`
+	Text        string `json:"text"`
+	MessageID   string `json:"message_id,omitempty"`
+	SpeakerName string `json:"speaker_name,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	UserName    string `json:"user_name,omitempty"`
 }
 
 func handleChatConversations(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity) {
@@ -62,11 +67,14 @@ func handleChatConversationResource(w http.ResponseWriter, r *http.Request, appC
 		return
 	}
 	if suffix == "" {
-		if r.Method != http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
+			handleChatConversationDetail(w, r, appCore, caller, conversationID)
+		case http.MethodDelete:
+			handleChatConversationArchive(w, r, appCore, caller, conversationID)
+		default:
 			writeError(w, contracts.NewRuntimeError(contracts.CodeDecisionSchemaError, "unsupported chat conversation method", nil), http.StatusMethodNotAllowed)
-			return
 		}
-		handleChatConversationDetail(w, r, appCore, caller, conversationID)
 		return
 	}
 	switch suffix {
@@ -143,6 +151,7 @@ func handleChatConversationCreate(w http.ResponseWriter, r *http.Request, appCor
 			"name":               name,
 			"main_agent_id":      string(mainAgentID),
 			"main_agent_version": string(payload.Version),
+			"status":             chatConversationStatusActive,
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -184,9 +193,16 @@ func handleChatConversationList(w http.ResponseWriter, r *http.Request, appCore 
 		writeRuntimeError(w, err)
 		return
 	}
+	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	if status == "" {
+		status = chatConversationStatusActive
+	}
 	out := make([]map[string]any, 0, len(threads))
 	for _, thread := range threads {
 		if thread.Provider != "" && thread.Provider != chatProvider {
+			continue
+		}
+		if !chatConversationStatusMatches(thread, status) {
 			continue
 		}
 		members, _ := appCore.Identity.ListGroupMembers(r.Context(), caller.TenantID, contracts.GroupID(thread.ConversationID))
@@ -203,6 +219,29 @@ func handleChatConversationDetail(w http.ResponseWriter, r *http.Request, appCor
 	}
 	members, _ := appCore.Identity.ListGroupMembers(r.Context(), caller.TenantID, contracts.GroupID(conversationID))
 	writeJSON(w, map[string]any{"conversation": chatConversationView(thread, members), "members": chatMemberViews(members)}, http.StatusOK)
+}
+
+func handleChatConversationArchive(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, conversationID string) {
+	thread, err := appCore.Conversations.GetThread(r.Context(), caller.TenantID, conversationID, conversationID)
+	if err != nil {
+		writeChatNotFoundOrError(w, err)
+		return
+	}
+	now := time.Now().UTC()
+	refs := cloneStringMap(thread.ExternalRefs)
+	refs["status"] = chatConversationStatusArchived
+	refs["archived_at"] = now.Format(time.RFC3339Nano)
+	if caller.CallerID != "" {
+		refs["archived_by"] = caller.CallerID
+	}
+	thread.ExternalRefs = refs
+	thread.UpdatedAt = now
+	if err := appCore.Conversations.UpsertThread(r.Context(), thread); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	members, _ := appCore.Identity.ListGroupMembers(r.Context(), caller.TenantID, contracts.GroupID(conversationID))
+	writeJSON(w, map[string]any{"conversation": chatConversationView(thread, members), "archived": true}, http.StatusOK)
 }
 
 func handleChatMembers(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, conversationID string) {
@@ -321,13 +360,17 @@ func handleChatMessageSend(w http.ResponseWriter, r *http.Request, appCore *core
 		messageID = idgen.New("msg")
 	}
 	now := time.Now().UTC()
+	members, _ := appCore.Identity.ListGroupMembers(r.Context(), caller.TenantID, contracts.GroupID(conversationID))
+	speakerName := chatCallerDisplayName(caller, payload, members)
 	userMessage := contracts.ConversationMessage{
 		MessageID:   messageID,
 		SpeakerID:   caller.CallerID,
 		SpeakerType: caller.CallerType,
+		SpeakerName: speakerName,
 		Text:        text,
 		ThreadID:    conversationID,
 		CreatedAt:   now,
+		Metadata:    chatCallerMetadata(caller, speakerName),
 	}
 	if userMessage.SpeakerType == "" {
 		userMessage.SpeakerType = "user"
@@ -340,7 +383,7 @@ func handleChatMessageSend(w http.ResponseWriter, r *http.Request, appCore *core
 		ConversationID: conversationID,
 		ThreadID:       conversationID,
 		Message:        userMessage,
-		Metadata:       map[string]any{"source": "chat_user"},
+		Metadata:       chatMessageMetadata("chat_user", caller, speakerName),
 	}); err != nil {
 		writeRuntimeError(w, err)
 		return
@@ -352,7 +395,6 @@ func handleChatMessageSend(w http.ResponseWriter, r *http.Request, appCore *core
 		return
 	}
 	recent, _ := appCore.Conversations.RecentMessages(r.Context(), caller.TenantID, conversationID, conversationID, 20)
-	members, _ := appCore.Identity.ListGroupMembers(r.Context(), caller.TenantID, contracts.GroupID(conversationID))
 	externalRefs := cloneStringMap(thread.ExternalRefs)
 	if toolIDs := chatAllowedToolIDs(members); len(toolIDs) > 0 {
 		externalRefs[chatAllowedToolIDsExternalRef] = strings.Join(toolIDs, ",")
@@ -365,9 +407,10 @@ func handleChatMessageSend(w http.ResponseWriter, r *http.Request, appCore *core
 			Version: contracts.AgentVersion(thread.ExternalRefs["main_agent_version"]),
 		},
 		Caller: contracts.AgentCaller{
-			CallerID:   caller.CallerID,
-			CallerType: caller.CallerType,
-			TenantID:   caller.TenantID,
+			CallerID:    caller.CallerID,
+			CallerType:  caller.CallerType,
+			DisplayName: speakerName,
+			TenantID:    caller.TenantID,
 		},
 		Command: "agent.run",
 		Payload: map[string]any{"input": text},
@@ -384,13 +427,15 @@ func handleChatMessageSend(w http.ResponseWriter, r *http.Request, appCore *core
 					MessageID:   messageID,
 					SpeakerID:   userMessage.SpeakerID,
 					SpeakerType: userMessage.SpeakerType,
+					SpeakerName: userMessage.SpeakerName,
 					Mentions:    []string{string(mainAgentID)},
 					Text:        text,
 					ThreadID:    conversationID,
 					CreatedAt:   now,
+					Metadata:    chatCallerMetadata(caller, speakerName),
 				},
 				RecentMessages: recent,
-				Participants:   chatParticipants(mainAgentID, members),
+				Participants:   chatParticipants(mainAgentID, members, chatCurrentUserParticipant(userMessage)),
 			},
 		},
 		CreatedAt: now,
@@ -434,6 +479,10 @@ func appendMainAgentReply(r *http.Request, appCore *core.Core, caller auth.Calle
 		return nil, nil
 	}
 	now := time.Now().UTC()
+	thread, threadErr := appCore.Conversations.GetThread(r.Context(), caller.TenantID, conversationID, conversationID)
+	if threadErr == nil && !thread.LastMessageAt.IsZero() && !now.After(thread.LastMessageAt) {
+		now = thread.LastMessageAt.Add(time.Nanosecond)
+	}
 	message := contracts.ConversationMessage{
 		MessageID:   idgen.New("msg"),
 		SpeakerID:   string(mainAgentID),
@@ -456,7 +505,7 @@ func appendMainAgentReply(r *http.Request, appCore *core.Core, caller auth.Calle
 	}); err != nil {
 		return nil, err
 	}
-	if thread, err := appCore.Conversations.GetThread(r.Context(), caller.TenantID, conversationID, conversationID); err == nil {
+	if threadErr == nil {
 		thread.LastMessageAt = now
 		thread.UpdatedAt = now
 		_ = appCore.Conversations.UpsertThread(r.Context(), thread)
@@ -508,6 +557,7 @@ func chatConversationView(thread conversationstore.Thread, members []contracts.G
 		"conversation_id":    thread.ConversationID,
 		"thread_id":          thread.ThreadID,
 		"name":               thread.ExternalRefs["name"],
+		"status":             chatConversationStatus(thread),
 		"kind":               thread.Kind,
 		"provider":           thread.Provider,
 		"main_agent_id":      mainAgentID,
@@ -517,6 +567,29 @@ func chatConversationView(thread conversationstore.Thread, members []contracts.G
 		"updated_at":         thread.UpdatedAt,
 		"last_message_at":    thread.LastMessageAt,
 	}
+}
+
+func chatConversationStatus(thread conversationstore.Thread) string {
+	status := strings.ToLower(strings.TrimSpace(thread.ExternalRefs["status"]))
+	switch status {
+	case chatConversationStatusArchived:
+		return chatConversationStatusArchived
+	case chatConversationStatusActive, "":
+		return chatConversationStatusActive
+	default:
+		return status
+	}
+}
+
+func chatConversationStatusMatches(thread conversationstore.Thread, status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" || status == chatConversationStatusActive {
+		return chatConversationStatus(thread) == chatConversationStatusActive
+	}
+	if status == "all" {
+		return true
+	}
+	return chatConversationStatus(thread) == status
 }
 
 func chatMemberViews(members []contracts.GroupMemberProfile) []map[string]any {
@@ -566,10 +639,16 @@ func activeChatMembers(members []contracts.GroupMemberProfile) []contracts.Group
 	return out
 }
 
-func chatParticipants(mainAgentID contracts.AgentID, members []contracts.GroupMemberProfile) []contracts.ConversationParticipant {
-	out := make([]contracts.ConversationParticipant, 0, len(members))
+func chatParticipants(mainAgentID contracts.AgentID, members []contracts.GroupMemberProfile, currentUser contracts.ConversationParticipant) []contracts.ConversationParticipant {
+	out := make([]contracts.ConversationParticipant, 0, len(members)+1)
+	if currentUser.ID != "" {
+		out = append(out, currentUser)
+	}
 	for _, member := range members {
 		if member.Status == contracts.MemberStatusLeft {
+			continue
+		}
+		if member.MemberType == contracts.MemberTypeHuman {
 			continue
 		}
 		role := "tool_agent"
@@ -577,6 +656,9 @@ func chatParticipants(mainAgentID contracts.AgentID, members []contracts.GroupMe
 			if current == "main_agent" {
 				role = "origin-coordinator"
 			}
+		}
+		if currentUser.ID != "" && string(member.MemberID) == currentUser.ID {
+			continue
 		}
 		out = append(out, contracts.ConversationParticipant{
 			ID:   string(member.MemberID),
@@ -598,6 +680,58 @@ func chatParticipants(mainAgentID contracts.AgentID, members []contracts.GroupMe
 		}
 	}
 	return out
+}
+
+func chatCallerDisplayName(caller auth.CallerIdentity, payload sendChatMessageRequest, members []contracts.GroupMemberProfile) string {
+	if value := firstNonEmpty(
+		strings.TrimSpace(payload.SpeakerName),
+		strings.TrimSpace(payload.DisplayName),
+		strings.TrimSpace(payload.UserName),
+		strings.TrimSpace(caller.DisplayName),
+	); value != "" {
+		return value
+	}
+	for _, member := range members {
+		if member.Status == contracts.MemberStatusLeft || member.DisplayName == "" {
+			continue
+		}
+		if member.MemberType != contracts.MemberTypeHuman && member.MemberType != "user" {
+			continue
+		}
+		if strings.EqualFold(member.ExternalUserID, caller.CallerID) || strings.EqualFold(string(member.MemberID), caller.CallerID) {
+			return strings.TrimSpace(member.DisplayName)
+		}
+	}
+	return ""
+}
+
+func chatCurrentUserParticipant(message contracts.ConversationMessage) contracts.ConversationParticipant {
+	if strings.TrimSpace(message.SpeakerID) == "" {
+		return contracts.ConversationParticipant{}
+	}
+	return contracts.ConversationParticipant{
+		ID:   message.SpeakerID,
+		Type: firstNonEmpty(strings.TrimSpace(message.SpeakerType), "user"),
+		Name: strings.TrimSpace(message.SpeakerName),
+		Role: "current_user",
+	}
+}
+
+func chatCallerMetadata(caller auth.CallerIdentity, displayName string) map[string]any {
+	metadata := map[string]any{
+		"caller_id":   caller.CallerID,
+		"caller_type": caller.CallerType,
+	}
+	if displayName = strings.TrimSpace(displayName); displayName != "" {
+		metadata["display_name"] = displayName
+	}
+	return metadata
+}
+
+func chatMessageMetadata(source string, caller auth.CallerIdentity, displayName string) map[string]any {
+	metadata := chatCallerMetadata(caller, displayName)
+	metadata["source"] = source
+	return metadata
 }
 
 func upsertChatAgentMember(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, conversationID string, agentID contracts.AgentID, version contracts.AgentVersion, displayName string, role string, status string, toolIDs []string, bindingStatus string) error {

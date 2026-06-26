@@ -87,8 +87,9 @@ func (s Syncer) ArtifactCreatedWithContext(ctx context.Context, binding *contrac
 		return
 	}
 	err := s.Bridge.AttachArtifact(ctx, contracts.AttachArtifactRequest{
-		Ref:         externalRef(binding),
-		ArtifactRef: ref,
+		Ref:            externalRef(binding),
+		ArtifactRef:    ref,
+		IdempotencyKey: s.idempotencyKey(binding, syncCtx, "artifact_created", string(ref.ArtifactID)),
 	})
 	s.observe(ctx, binding, syncCtx, "artifact_created", "artifact", err)
 }
@@ -101,10 +102,30 @@ func (s Syncer) send(ctx context.Context, binding *contracts.ExternalTaskBinding
 		message = eventType
 	}
 	err := s.Bridge.SendMessage(ctx, contracts.SendExternalMessageRequest{
-		Ref:     externalRef(binding),
-		Message: "[" + eventType + "] " + message,
+		Ref:            externalRef(binding),
+		Message:        "[" + eventType + "] " + message,
+		IdempotencyKey: s.idempotencyKey(binding, syncCtx, eventType, message),
 	})
 	s.observe(ctx, binding, syncCtx, eventType, "message", err)
+}
+
+func (s Syncer) idempotencyKey(binding *contracts.ExternalTaskBinding, syncCtx SyncContext, eventType string, suffix string) string {
+	if binding == nil {
+		return ""
+	}
+	base := binding.Provider + ":" + string(binding.ExternalTaskID) + ":" + eventType
+	if syncCtx.RunID != "" {
+		base += ":" + string(syncCtx.RunID)
+	}
+	if syncCtx.TaskID != "" {
+		base += ":" + string(syncCtx.TaskID)
+	} else if binding.CoreTaskID != "" {
+		base += ":" + string(binding.CoreTaskID)
+	}
+	if suffix != "" {
+		base += ":" + suffix
+	}
+	return base
 }
 
 func externalRef(binding *contracts.ExternalTaskBinding) contracts.ExternalTaskRef {

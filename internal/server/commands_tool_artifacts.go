@@ -26,9 +26,10 @@ func externalToolInvoke(r *http.Request, appCore *core.Core, envelope contracts.
 	result, err := appCore.ExternalTools.Invoke(r.Context(), toolinvoke.Request{
 		Envelope: envelope,
 		Caller: contracts.AgentCaller{
-			CallerID:   caller.CallerID,
-			CallerType: caller.CallerType,
-			TenantID:   caller.TenantID,
+			CallerID:    caller.CallerID,
+			CallerType:  caller.CallerType,
+			DisplayName: caller.DisplayName,
+			TenantID:    caller.TenantID,
 		},
 		IdempotencyKey:  idempotencyFromRequest(r, envelope, toolID),
 		ApprovalGranted: approvalGranted,

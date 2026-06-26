@@ -17,10 +17,11 @@ const (
 )
 
 type CallerIdentity struct {
-	CallerID   string             `json:"caller_id"`
-	CallerType string             `json:"caller_type"`
-	TenantID   contracts.TenantID `json:"tenant_id"`
-	Roles      []Role             `json:"roles"`
+	CallerID    string             `json:"caller_id"`
+	CallerType  string             `json:"caller_type"`
+	DisplayName string             `json:"display_name,omitempty"`
+	TenantID    contracts.TenantID `json:"tenant_id"`
+	Roles       []Role             `json:"roles"`
 }
 
 type contextKey struct{}
@@ -55,11 +56,27 @@ func (a Authenticator) Authenticate(r *http.Request) (CallerIdentity, bool) {
 		roles = parseRoles(raw)
 	}
 	return CallerIdentity{
-		CallerID:   callerID,
-		CallerType: callerType,
-		TenantID:   tenantID,
-		Roles:      roles,
+		CallerID:    callerID,
+		CallerType:  callerType,
+		DisplayName: callerDisplayName(r),
+		TenantID:    tenantID,
+		Roles:       roles,
 	}, true
+}
+
+func callerDisplayName(r *http.Request) string {
+	for _, header := range []string{
+		"X-Caller-Display-Name",
+		"X-Caller-Name",
+		"X-User-Display-Name",
+		"X-User-Name",
+		"X-User-Nickname",
+	} {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func WithCaller(ctx context.Context, caller CallerIdentity) context.Context {

@@ -157,6 +157,9 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	model := &scriptedServerModel{}
+	appCore.Model = model
+	appCore.Coordinator.Model = model
 	handler := NewHandlerWithCore(appCore, logging.New("error"))
 	create := doJSON(handler, http.MethodPost, "/v1/chat/conversations", map[string]any{
 		"name":          "测试群聊",
@@ -184,7 +187,10 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 	if addMember.Code != http.StatusOK || !bytes.Contains(addMember.Body.Bytes(), []byte(`"binding_status":"pending_backend_binding"`)) {
 		t.Fatalf("unexpected add member status %d body %s", addMember.Code, addMember.Body.String())
 	}
-	send := doJSON(handler, http.MethodPost, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", map[string]any{"text": "你好"})
+	send := doJSONWithHeaders(handler, http.MethodPost, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", map[string]any{"text": "你好"}, map[string]string{
+		"X-Caller-ID":           "user_03a530b2",
+		"X-Caller-Display-Name": "lunlun",
+	})
 	if send.Code != http.StatusOK {
 		t.Fatalf("unexpected send status %d body %s", send.Code, send.Body.String())
 	}
@@ -194,6 +200,8 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 		TraceID  string `json:"trace_id"`
 		Messages []struct {
 			SpeakerType string `json:"speaker_type"`
+			SpeakerID   string `json:"speaker_id"`
+			SpeakerName string `json:"speaker_name"`
 			Text        string `json:"text"`
 			RunID       string `json:"run_id"`
 			TaskID      string `json:"task_id"`
@@ -205,6 +213,21 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 	}
 	if sent.RunID == "" || sent.TaskID == "" || sent.TraceID == "" || len(sent.Messages) != 2 {
 		t.Fatalf("expected run refs and user/reply messages, got %#v body %s", sent, send.Body.String())
+	}
+	if sent.Messages[0].SpeakerID != "user_03a530b2" || sent.Messages[0].SpeakerName != "lunlun" {
+		t.Fatalf("expected current user speaker identity in response, got %#v", sent.Messages[0])
+	}
+	if len(model.requests) == 0 {
+		t.Fatal("expected model request to be captured")
+	}
+	prompt := model.requests[len(model.requests)-1].PromptBundle
+	if !strings.Contains(prompt.Context, "current_speaker_id=user_03a530b2") ||
+		!strings.Contains(prompt.Context, "current_speaker_name=lunlun") ||
+		!strings.Contains(prompt.Context, "user_03a530b2 type=user name=lunlun role=current_user") {
+		t.Fatalf("expected prompt context to include current speaker identity, got %s", prompt.Context)
+	}
+	if !strings.Contains(strings.Join(prompt.Constraints, "\n"), "when asked who the current user is") {
+		t.Fatalf("expected identity grounding constraint, got %#v", prompt.Constraints)
 	}
 	events, err := appCore.Trace.ListByTrace(context.Background(), contracts.TraceID(sent.TraceID))
 	if err != nil {
@@ -221,6 +244,8 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 	var listed struct {
 		Messages []struct {
 			SpeakerType string `json:"speaker_type"`
+			SpeakerID   string `json:"speaker_id"`
+			SpeakerName string `json:"speaker_name"`
 			Text        string `json:"text"`
 			RunID       string `json:"run_id"`
 		} `json:"messages"`
@@ -230,10 +255,69 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 	}
 	if messages.Code != http.StatusOK || len(listed.Messages) != 2 ||
 		listed.Messages[0].SpeakerType != "user" ||
+		listed.Messages[0].SpeakerID != "user_03a530b2" ||
+		listed.Messages[0].SpeakerName != "lunlun" ||
 		listed.Messages[1].SpeakerType != "agent" ||
 		listed.Messages[1].Text != "ok" ||
 		listed.Messages[1].RunID == "" {
 		t.Fatalf("unexpected messages status %d body %s", messages.Code, messages.Body.String())
+	}
+}
+
+func TestChatConversationAPIArchivesConversationFromActiveList(t *testing.T) {
+	appCore, err := core.New(config.Config{
+		ServiceName: "clean-core",
+		Version:     "test",
+		Env:         "test",
+		HTTPAddr:    ":0",
+		LogLevel:    "error",
+		Readiness:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandlerWithCore(appCore, logging.New("error"))
+	create := doJSON(handler, http.MethodPost, "/v1/chat/conversations", map[string]any{
+		"name":          "临时测试群聊",
+		"main_agent_id": "test-agent",
+		"version":       "v1",
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("unexpected create status %d body %s", create.Code, create.Body.String())
+	}
+	var created struct {
+		Conversation struct {
+			ConversationID string `json:"conversation_id"`
+			Status         string `json:"status"`
+		} `json:"conversation"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Conversation.ConversationID == "" || created.Conversation.Status != "active" {
+		t.Fatalf("unexpected create payload: %#v", created)
+	}
+	archive := doJSON(handler, http.MethodDelete, "/v1/chat/conversations/"+created.Conversation.ConversationID, nil)
+	if archive.Code != http.StatusOK {
+		t.Fatalf("unexpected archive status %d body %s", archive.Code, archive.Body.String())
+	}
+	if !bytes.Contains(archive.Body.Bytes(), []byte(`"status":"archived"`)) {
+		t.Fatalf("expected archived status, body %s", archive.Body.String())
+	}
+	active := doJSON(handler, http.MethodGet, "/v1/chat/conversations?status=active", nil)
+	if active.Code != http.StatusOK {
+		t.Fatalf("unexpected active list status %d body %s", active.Code, active.Body.String())
+	}
+	if bytes.Contains(active.Body.Bytes(), []byte(created.Conversation.ConversationID)) {
+		t.Fatalf("archived conversation should be hidden from active list: %s", active.Body.String())
+	}
+	archived := doJSON(handler, http.MethodGet, "/v1/chat/conversations?status=archived", nil)
+	if archived.Code != http.StatusOK || !bytes.Contains(archived.Body.Bytes(), []byte(created.Conversation.ConversationID)) {
+		t.Fatalf("expected archived list to include conversation, status %d body %s", archived.Code, archived.Body.String())
+	}
+	all := doJSON(handler, http.MethodGet, "/v1/chat/conversations?status=all", nil)
+	if all.Code != http.StatusOK || !bytes.Contains(all.Body.Bytes(), []byte(created.Conversation.ConversationID)) {
+		t.Fatalf("expected all list to include conversation, status %d body %s", all.Code, all.Body.String())
 	}
 }
 
@@ -501,6 +585,20 @@ func TestChatConversationMerchantLimitBusinessInputInvokesToolAgent(t *testing.T
 	if !tracePayloadStringEquals(events, contracts.TraceDecisionCompleted, "source", "merchant_limit_forced_tool") {
 		t.Fatalf("expected forced merchant-limit tool decision trace, got %#v", events)
 	}
+	delegations, err := appCore.AgentDelegations.ListByTrace(context.Background(), "tenant_1", sent.TraceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(delegations) != 1 || delegations[0].ParentRunID == "" || delegations[0].ChildRunID == "" || delegations[0].ToolCallID == "" {
+		t.Fatalf("expected persisted agent delegation, got %#v", delegations)
+	}
+	diagnosticsResp := doJSON(handler, http.MethodGet, "/v1/runs/"+string(delegations[0].ParentRunID)+"/diagnostics", nil)
+	if diagnosticsResp.Code != http.StatusOK ||
+		!bytes.Contains(diagnosticsResp.Body.Bytes(), []byte(`"tool_agent_calls"`)) ||
+		!bytes.Contains(diagnosticsResp.Body.Bytes(), []byte(`"delegation_id"`)) ||
+		!bytes.Contains(diagnosticsResp.Body.Bytes(), []byte(`"source_tool_call_id"`)) {
+		t.Fatalf("expected diagnostics to include persisted agent delegation, got %d body %s", diagnosticsResp.Code, diagnosticsResp.Body.String())
+	}
 }
 
 func TestChatConversationMerchantLimitMemberWithoutExportsGetsDefaultAgentTool(t *testing.T) {
@@ -616,8 +714,6 @@ func TestChatConversationMerchantLimitManualTestsetRoutes(t *testing.T) {
 		{
 			id:         "2_concept",
 			input:      "什么是融资？授信额度和可用额度有啥区别",
-			tool:       true,
-			childReply: "融资是基于业务数据申请资金支持；授信额度是上限，可用额度是当前还能使用的额度。",
 			finalReply: "融资是基于业务数据申请资金支持；授信额度是上限，可用额度是当前还能使用的额度。",
 			wantText:   "授信额度",
 		},
@@ -712,8 +808,6 @@ func TestChatConversationMerchantLimitManualTestsetRoutes(t *testing.T) {
 		{
 			id:         "11_out_of_scope",
 			input:      "帮我直接审批通过并放款，请款单 2026041072529642",
-			tool:       true,
-			childReply: "我不能执行或确认审批通过、审批驳回、放款、授信调整、合同签署等操作。",
 			finalReply: "我不能执行或确认审批通过、审批驳回、放款、授信调整、合同签署等操作。",
 			wantText:   "不能执行或确认审批通过",
 		},
@@ -7810,6 +7904,7 @@ func newServerTestTask() contracts.Task {
 type scriptedServerModel struct {
 	responses [][]byte
 	calls     int
+	requests  []modelclient.ModelRequest
 }
 
 type projectionPackageStore struct {
@@ -7970,7 +8065,8 @@ func (s *projectionPackageStore) GetExportedToolProjection(ctx context.Context, 
 	return agentpackage.ExportedToolProjection{}, false, nil
 }
 
-func (m *scriptedServerModel) Complete(context.Context, modelclient.ModelRequest) (modelclient.ModelResponse, error) {
+func (m *scriptedServerModel) Complete(_ context.Context, request modelclient.ModelRequest) (modelclient.ModelResponse, error) {
+	m.requests = append(m.requests, request)
 	if m.calls >= len(m.responses) {
 		return modelclient.ModelResponse{RawDecisionJSON: []byte(`{"type":"reply","reply":{"kind":"answer","text":"ok"}}`)}, nil
 	}

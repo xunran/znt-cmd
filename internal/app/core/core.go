@@ -10,6 +10,7 @@ import (
 	"znt/internal/agentcapability"
 	"znt/internal/agentdef/loader"
 	agentpackage "znt/internal/agentdef/package"
+	"znt/internal/agentdelegation"
 	"znt/internal/agentfactory"
 	"znt/internal/app/config"
 	"znt/internal/asset/artifact"
@@ -87,6 +88,7 @@ type Core struct {
 	RuntimeHooks       *runtimehook.Service
 	ToolRepo           toolrepo.Repository
 	ToolRuntime        toolruntime.Runtime
+	AgentDelegations   agentdelegation.Repository
 	ExternalTools      toolinvoke.Service
 	Conversations      conversationstore.Store
 	Artifacts          artifact.Store
@@ -153,6 +155,7 @@ func New(cfg config.Config) (*Core, error) {
 	var memory artifact.MemoryStore = artifact.NewInMemoryMemoryStore(auditLogger)
 	var contextPackages artifact.ContextPackageStore = artifact.NewInMemoryContextPackageStore()
 	var toolRepo toolrepo.Repository = toolrepo.NewInMemoryRepository()
+	var agentDelegations agentdelegation.Repository = agentdelegation.NewInMemoryRepository()
 	var conversationStore conversationstore.Store = conversationstore.NewInMemoryStore()
 	var packageStore agentpackage.Store
 	var identityStore identity.Store
@@ -182,6 +185,7 @@ func New(cfg config.Config) (*Core, error) {
 		memory = pg.Memory
 		contextPackages = pg.ContextPackages
 		toolRepo = pg.Tools
+		agentDelegations = pg.AgentDelegations
 		conversationStore = pg.Conversations
 		packageStore = pg.Packages
 		identityStore = pg.GroupMembers
@@ -224,7 +228,7 @@ func New(cfg config.Config) (*Core, error) {
 	if err := registry.RegisterBuiltinsWithArtifacts(tools, artifacts); err != nil {
 		return nil, err
 	}
-	if err := parentcontext.Register(tools, conversationStore); err != nil {
+	if err := parentcontext.RegisterWithAudit(tools, conversationStore, auditLogger); err != nil {
 		return nil, err
 	}
 	toolCatalog := toolcatalog.NewServiceWithStore(tools, auditLogger, toolCatalogStore)
@@ -311,7 +315,8 @@ func New(cfg config.Config) (*Core, error) {
 				Error:        result.Error,
 			}, err
 		},
-		Trace: traceRecorder,
+		Trace:       traceRecorder,
+		Delegations: agentDelegations,
 	})
 	handoffs := taskhandoff.NewService(taskRuntime, taskRepo, taskEvents)
 	handoffs.ContextPackages = contextPackages
@@ -462,6 +467,7 @@ func New(cfg config.Config) (*Core, error) {
 		RuntimeHooks:        runtimeHooks,
 		ToolRepo:            toolRepo,
 		ToolRuntime:         toolRuntime,
+		AgentDelegations:    agentDelegations,
 		ExternalTools:       externalTools,
 		Conversations:       conversationStore,
 		Artifacts:           artifacts,

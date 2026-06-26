@@ -511,9 +511,153 @@ function Read-OriginEvalSuiteFile {
     )
     $resolved = Resolve-RepoRelativePath $Path
     if ($resolved -match "\.json$") {
-        return Read-TextFileUtf8 -Path $resolved | ConvertFrom-Json
+        return ConvertFrom-HumanLikeGroupChatEvalSuite -SuiteSpec (Read-TextFileUtf8 -Path $resolved | ConvertFrom-Json)
     }
-    return ConvertFrom-OriginEvalYaml -Path $resolved
+    return ConvertFrom-HumanLikeGroupChatEvalSuite -SuiteSpec (ConvertFrom-OriginEvalYaml -Path $resolved)
+}
+
+function ConvertTo-OriginEvalNativeValue {
+    param(
+        [AllowNull()] $Value
+    )
+    if ($null -eq $Value) {
+        return $null
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $result = [ordered]@{}
+        foreach ($key in $Value.Keys) {
+            $result[[string]$key] = ConvertTo-OriginEvalNativeValue $Value[$key]
+        }
+        return $result
+    }
+    if (($Value -is [System.Collections.IEnumerable]) -and -not ($Value -is [string])) {
+        $items = @()
+        foreach ($item in $Value) {
+            $items += ,(ConvertTo-OriginEvalNativeValue $item)
+        }
+        return ,([object[]]$items)
+    }
+    if ($Value -is [pscustomobject]) {
+        $result = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $result[$property.Name] = ConvertTo-OriginEvalNativeValue $property.Value
+        }
+        return $result
+    }
+    return $Value
+}
+
+function Merge-OriginEvalObject {
+    param(
+        [AllowNull()] $Base,
+        [AllowNull()] $Patch
+    )
+    $baseValue = ConvertTo-OriginEvalNativeValue $Base
+    $patchValue = ConvertTo-OriginEvalNativeValue $Patch
+    if ($null -eq $baseValue) {
+        return $patchValue
+    }
+    if ($null -eq $patchValue) {
+        return $baseValue
+    }
+    if (($baseValue -is [System.Collections.IDictionary]) -and ($patchValue -is [System.Collections.IDictionary])) {
+        $merged = [ordered]@{}
+        foreach ($key in $baseValue.Keys) {
+            $merged[[string]$key] = ConvertTo-OriginEvalNativeValue $baseValue[$key]
+        }
+        foreach ($key in $patchValue.Keys) {
+            $merged[[string]$key] = Merge-OriginEvalObject (Get-ObjectValue $merged ([string]$key) $null) $patchValue[$key]
+        }
+        return $merged
+    }
+    return $patchValue
+}
+
+function Normalize-OriginEvalContext {
+    param(
+        [AllowNull()] $Context
+    )
+    $contextValue = ConvertTo-OriginEvalNativeValue $Context
+    if ($null -eq $contextValue) {
+        return [ordered]@{}
+    }
+    $externalTask = Get-ObjectValue $contextValue "external_task" $null
+    if ($externalTask -is [System.Collections.IDictionary]) {
+        $taskID = [string](Get-ObjectValue $externalTask "task_id" "")
+        $externalTaskID = [string](Get-ObjectValue $externalTask "external_task_id" "")
+        if ($externalTaskID -eq "" -and $taskID -ne "") {
+            $externalTask["external_task_id"] = $taskID
+        }
+    }
+    return $contextValue
+}
+
+function ConvertFrom-HumanLikeGroupChatEvalSuite {
+    param(
+        [AllowNull()] $SuiteSpec
+    )
+    if ($null -eq $SuiteSpec) {
+        return $SuiteSpec
+    }
+    $cases = @((Get-ObjectValue $SuiteSpec "cases" @()))
+    $schemaVersion = [string](Get-ObjectValue $SuiteSpec "schema_version" "")
+    $isHumanLikeGroupChatSuite = ($schemaVersion -eq "human_like_group_chat_eval.v1")
+    if (-not $isHumanLikeGroupChatSuite) {
+        foreach ($caseSpec in $cases) {
+            if ($null -ne (Get-ObjectValue $caseSpec "eval_case" $null)) {
+                $isHumanLikeGroupChatSuite = $true
+                break
+            }
+        }
+    }
+    if (-not $isHumanLikeGroupChatSuite) {
+        return $SuiteSpec
+    }
+
+    $defaults = Get-ObjectValue $SuiteSpec "defaults" $null
+    $defaultContext = ConvertTo-OriginEvalNativeValue (Get-ObjectValue $defaults "context" ([ordered]@{}))
+    $defaultTarget = ConvertTo-OriginEvalNativeValue (Get-ObjectValue $defaults "target" $null)
+    $normalizedCases = @()
+    foreach ($caseSpec in $cases) {
+        $evalCase = Get-ObjectValue $caseSpec "eval_case" $caseSpec
+        $caseID = [string](Get-ObjectValue $caseSpec "id" "")
+        $caseContext = Normalize-OriginEvalContext (Merge-OriginEvalObject $defaultContext (Get-ObjectValue $caseSpec "context_patch" $null))
+        $case = [ordered]@{
+            name = [string](Get-ObjectValue $evalCase "name" $caseID)
+            category = [string](Get-ObjectValue $evalCase "category" "")
+            input = [string](Get-ObjectValue $evalCase "input" "")
+            context = $caseContext
+            must_call_tools = @((Get-ObjectValue $evalCase "must_call_tools" @()))
+            should_not_call_tools = @((Get-ObjectValue $evalCase "should_not_call_tools" @()))
+            final_reply_contains = @((Get-ObjectValue $evalCase "final_reply_contains" @()))
+            final_reply_not_contains = @((Get-ObjectValue $evalCase "final_reply_not_contains" @()))
+            max_tool_calls = [int](Get-ObjectValue $evalCase "max_tool_calls" 0)
+        }
+        $caseTarget = ConvertTo-OriginEvalNativeValue (Get-ObjectValue $evalCase "target" $defaultTarget)
+        if ($null -ne $caseTarget) {
+            $case["target"] = $caseTarget
+        }
+        foreach ($key in @("critical", "safety", "should_end_status")) {
+            $value = Get-ObjectValue $evalCase $key $null
+            if ($null -ne $value) {
+                $case[$key] = $value
+            }
+        }
+        $customAssertions = ConvertTo-OriginEvalNativeValue (Get-ObjectValue $caseSpec "custom_assertions" $null)
+        if ($null -ne $customAssertions) {
+            $case["custom_assertions"] = $customAssertions
+        }
+        $normalizedCases += ,([pscustomobject]$case)
+    }
+    return [pscustomobject]@{
+        name = [string](Get-ObjectValue $SuiteSpec "name" "human-like-group-chat")
+        description = [string](Get-ObjectValue $SuiteSpec "description" "")
+        schema_version = $schemaVersion
+        source_doc = [string](Get-ObjectValue $SuiteSpec "source_doc" "")
+        gates = ConvertTo-OriginEvalNativeValue (Get-ObjectValue $SuiteSpec "gates" ([ordered]@{}))
+        defaults = ConvertTo-OriginEvalNativeValue $defaults
+        cases = @($normalizedCases)
+    }
 }
 
 function ConvertTo-StableJson {
@@ -1436,6 +1580,10 @@ function Invoke-OriginCoordinatorSmokeEval {
                 final_reply_contains = @((Get-ObjectValue $caseSpec "final_reply_contains" @()))
                 final_reply_not_contains = @((Get-ObjectValue $caseSpec "final_reply_not_contains" @()))
                 max_tool_calls = [int](Get-ObjectValue $caseSpec "max_tool_calls" 0)
+            }
+            $customAssertions = Get-ObjectValue $caseSpec "custom_assertions" $null
+            if ($null -ne $customAssertions) {
+                $payload["custom_assertions"] = $customAssertions
             }
             $caseContext = Get-ObjectValue $caseSpec "context" $null
             if ($null -ne $caseContext) {

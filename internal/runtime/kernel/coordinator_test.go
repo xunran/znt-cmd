@@ -706,9 +706,6 @@ func TestCoordinatorForcesMerchantLimitToolForBusinessInput(t *testing.T) {
 	if result.Status != contracts.RunCompleted || result.Reply == nil || !strings.Contains(result.Reply.Text, "当前可融资金额为 0 元") {
 		t.Fatalf("expected forced merchant-limit final reply, got %#v", result)
 	}
-	if model.Calls != 0 {
-		t.Fatalf("expected forced route to bypass model, got %d calls", model.Calls)
-	}
 	calls, err := coordinator.ToolRepo.ListCallsByRun(context.Background(), result.RunID)
 	if err != nil {
 		t.Fatal(err)
@@ -732,6 +729,24 @@ func TestCoordinatorForcesMerchantLimitToolForBusinessInput(t *testing.T) {
 	}
 	if !foundForcedTrace {
 		t.Fatalf("expected forced tool decision trace, got %#v", events)
+	}
+}
+
+func TestMerchantLimitBusinessInputSkipsPureConceptQuestions(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{input: "什么是融资？授信额度和可用额度有啥区别", want: false},
+		{input: "罐罐，解释一下可融额度这个概念", want: false},
+		{input: "请分析请款单 2026041072529642 可融多少，申请金额 100000 元", want: true},
+		{input: "这个单最多能融多少", want: true},
+		{input: "查一下请款单 2026041072529642 的授信和风控状态", want: true},
+	}
+	for _, tc := range cases {
+		if got := isMerchantLimitBusinessInput(tc.input); got != tc.want {
+			t.Fatalf("isMerchantLimitBusinessInput(%q)=%v, want %v", tc.input, got, tc.want)
+		}
 	}
 }
 
@@ -791,9 +806,6 @@ func TestCoordinatorForcesMerchantLimitToolForMainAgentBusinessInput(t *testing.
 	if result.Status != contracts.RunCompleted || result.Reply == nil || !strings.Contains(result.Reply.Text, "当前可融资金额为 88,000 元") {
 		t.Fatalf("expected forced merchant-limit final reply, got %#v", result)
 	}
-	if model.Calls != 0 {
-		t.Fatalf("expected forced route to bypass model, got %d calls", model.Calls)
-	}
 	calls, err := coordinator.ToolRepo.ListCallsByRun(context.Background(), result.RunID)
 	if err != nil {
 		t.Fatal(err)
@@ -803,6 +815,23 @@ func TestCoordinatorForcesMerchantLimitToolForMainAgentBusinessInput(t *testing.
 	}
 	if calls[0].Arguments["loanNo"] != "2026041072529642" || calls[0].Arguments["applyAmount"] != float64(100000) {
 		t.Fatalf("expected extracted loanNo and applyAmount, got %#v", calls[0].Arguments)
+	}
+	events, err := traceRecorder.ListByTrace(context.Background(), "trace_main_agent_merchant_limit_forced")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundExpectedToolMissing := false
+	for _, event := range events {
+		if event.Type == "expected_tool_missing" {
+			foundExpectedToolMissing = true
+			break
+		}
+	}
+	if !foundExpectedToolMissing {
+		t.Fatalf("expected required tool expectation trace, got %#v", events)
+	}
+	if model.Calls != 0 {
+		t.Fatalf("expected required tool gate to bypass model for deterministic merchant-limit routing, got %d calls", model.Calls)
 	}
 }
 

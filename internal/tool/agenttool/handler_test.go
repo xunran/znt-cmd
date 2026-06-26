@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"znt/internal/agentdef/loader"
+	"znt/internal/agentdelegation"
 	"znt/internal/contracts"
 	"znt/internal/tool/catalog"
 )
@@ -26,7 +27,8 @@ func TestHandlerRunsProviderAgentForExportedTool(t *testing.T) {
 
 	var got contracts.AgentEnvelope
 	handler := Handler{
-		Agents: agents,
+		Agents:      agents,
+		Delegations: agentdelegation.NewInMemoryRepository(),
 		StartAgentRun: func(_ context.Context, envelope contracts.AgentEnvelope) (RunResult, error) {
 			got = envelope
 			return RunResult{
@@ -83,11 +85,25 @@ func TestHandlerRunsProviderAgentForExportedTool(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected tool_agent_result, got %#v", output)
 	}
-	if toolAgentResult["result_summary"] != "customer found" || toolAgentResult["safe_for_user"] != false {
+	if toolAgentResult["schema_version"] != "tool_agent_result.v1" || toolAgentResult["result_summary"] != "customer found" || toolAgentResult["safe_for_user"] != false {
 		t.Fatalf("unexpected tool_agent_result %#v", toolAgentResult)
 	}
 	if !stringSliceAnyContains(toolAgentResult["risk_flags"], "requires_main_agent_review") {
 		t.Fatalf("expected main-agent review flag, got %#v", toolAgentResult["risk_flags"])
+	}
+	review, _ := toolAgentResult["review"].(map[string]any)
+	if review == nil || review["permission_review"] == nil || review["business_sufficiency"] == nil {
+		t.Fatalf("expected tool_agent_result review gates, got %#v", toolAgentResult)
+	}
+	delegations, err := handler.Delegations.ListByParentRun(context.Background(), "tenant_1", "run_source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(delegations) != 1 {
+		t.Fatalf("expected one persisted agent delegation, got %#v", delegations)
+	}
+	if delegations[0].ToolCallID != "toolcall_1" || delegations[0].ChildRunID != "run_provider" || delegations[0].Status != agentdelegation.StatusCompleted {
+		t.Fatalf("unexpected delegation record %#v", delegations[0])
 	}
 }
 
@@ -127,8 +143,17 @@ func TestHandlerPassesParentConversationToProviderAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Context.Conversation == nil || got.Context.Conversation.ConversationID != "chat_1" || got.Context.Conversation.CurrentMessage.Text != "上下文" {
+	if got.Context.Conversation == nil || got.Context.Conversation.ConversationID != "chat_1" || got.Context.Conversation.CurrentMessage.Text != "find ACME" {
 		t.Fatalf("expected parent conversation context, got %#v", got.Context.Conversation)
+	}
+	if got.Payload["input"] != got.Context.Conversation.CurrentMessage.Text {
+		t.Fatalf("expected provider payload input to match current message, payload=%#v conversation=%#v", got.Payload, got.Context.Conversation.CurrentMessage)
+	}
+	if got.Context.Conversation.CurrentMessage.SpeakerType != "agent_tool" || got.Context.Conversation.CurrentMessage.SpeakerID != "customer.lookup" {
+		t.Fatalf("expected current message to describe the agent tool request, got %#v", got.Context.Conversation.CurrentMessage)
+	}
+	if len(got.Context.Conversation.RecentMessages) != 1 || got.Context.Conversation.RecentMessages[0].Text != "上下文" {
+		t.Fatalf("expected parent user message in recent context, got %#v", got.Context.Conversation.RecentMessages)
 	}
 	if got.Context.Conversation.ExternalRefs["chat_allowed_tool_ids"] != "parent_context.read" {
 		t.Fatalf("expected provider run to allow parent_context.read, got %#v", got.Context.Conversation.ExternalRefs)
@@ -211,6 +236,50 @@ func TestHandlerSanitizesToolAgentInternalText(t *testing.T) {
 	toolAgentResult, _ := output["tool_agent_result"].(map[string]any)
 	if toolAgentResult["result_summary"] != body || !stringSliceAnyContains(toolAgentResult["risk_flags"], "tool_agent_output_sanitized") {
 		t.Fatalf("expected sanitized tool_agent_result, got %#v", toolAgentResult)
+	}
+}
+
+func TestHandlerMarksMissingToolAgentSummaryInsufficient(t *testing.T) {
+	provider := loader.TestAgentDefinition()
+	provider.TenantID = "tenant_1"
+	provider.AgentID = "provider-agent"
+	provider.Exports = contracts.AgentExports{Tools: []contracts.AgentExportedTool{{
+		ToolID:      "customer.lookup",
+		Operation:   "lookup",
+		Name:        "Customer lookup",
+		Description: "Look up customer context.",
+		InputSchema: map[string]any{"type": "object"},
+		Status:      "enabled",
+	}}}
+	handler := Handler{
+		Agents: loader.NewStaticLoader(provider),
+		StartAgentRun: func(_ context.Context, _ contracts.AgentEnvelope) (RunResult, error) {
+			return RunResult{RunID: "run_provider", TaskID: "task_provider", Status: contracts.RunCompleted}, nil
+		},
+	}
+	output, _, err := handler.ExecuteAgentTool(context.Background(), contracts.ToolCall{
+		TenantID:  "tenant_1",
+		ToolID:    "customer.lookup",
+		Arguments: map[string]any{"input": "find ACME"},
+		TraceID:   "trace_agent_tool",
+		RunID:     "run_source",
+		TaskID:    "task_source",
+	}, catalog.ToolManifest{
+		TenantID: "tenant_1",
+		ToolID:   "customer.lookup",
+		Executor: catalog.ExecutorSpec{Type: catalog.ExecutorTypeAgentTool, ProviderID: "provider-agent", Operation: "lookup"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolAgentResult, _ := output["tool_agent_result"].(map[string]any)
+	if !stringSliceAnyContains(toolAgentResult["risk_flags"], "business_sufficiency_insufficient") {
+		t.Fatalf("expected insufficient business sufficiency flag, got %#v", toolAgentResult)
+	}
+	review, _ := toolAgentResult["review"].(map[string]any)
+	business, _ := review["business_sufficiency"].(map[string]any)
+	if business["status"] != "insufficient" {
+		t.Fatalf("expected insufficient business review, got %#v", toolAgentResult)
 	}
 }
 

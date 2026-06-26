@@ -27,6 +27,7 @@ type Case struct {
 	MaxToolCalls          int                      `json:"max_tool_calls,omitempty"`
 	ShouldEndStatus       contracts.RunStatus      `json:"should_end_status,omitempty"`
 	StrategyAssertions    StrategyAssertions       `json:"strategy_assertions,omitempty"`
+	CustomAssertions      CustomAssertions         `json:"custom_assertions,omitempty"`
 }
 
 type StrategyAssertions struct {
@@ -43,6 +44,10 @@ type StrategyEvidence struct {
 	ContextSources     []string `json:"context_sources,omitempty"`
 	CompressionApplied *bool    `json:"compression_applied,omitempty"`
 	CompressionMode    string   `json:"compression_mode,omitempty"`
+}
+
+type CustomAssertions struct {
+	ExpectExpectedToolMissing bool `json:"expect_expected_tool_missing,omitempty"`
 }
 
 type Result struct {
@@ -158,6 +163,7 @@ func (r Runner) Run(ctx context.Context, tc Case) Result {
 	}
 	strategyEvidence := r.strategyEvidence(ctx, traceID)
 	failures = append(failures, strategyAssertionFailures(tc.StrategyAssertions, strategyEvidence)...)
+	failures = append(failures, r.customAssertionFailures(ctx, traceID, tc.CustomAssertions)...)
 	out := Result{
 		EvalRunID:      evalRunID,
 		SuiteID:        tc.SuiteID,
@@ -196,6 +202,25 @@ func (r Runner) Run(ctx context.Context, tc Case) Result {
 		"strategy":           out.Strategy,
 	})
 	return out
+}
+
+func (r Runner) customAssertionFailures(ctx context.Context, traceID contracts.TraceID, assertions CustomAssertions) []string {
+	if !assertions.ExpectExpectedToolMissing {
+		return nil
+	}
+	if r.Coordinator.Trace == nil || traceID == "" {
+		return []string{"expected_tool_missing trace missing"}
+	}
+	events, err := r.Coordinator.Trace.ListByTrace(ctx, traceID)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	for _, event := range events {
+		if event.Type == "expected_tool_missing" {
+			return nil
+		}
+	}
+	return []string{"expected_tool_missing trace missing"}
 }
 
 func (r Runner) strategyEvidence(ctx context.Context, traceID contracts.TraceID) StrategyEvidence {

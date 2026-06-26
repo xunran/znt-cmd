@@ -294,3 +294,38 @@ func TestRunnerToolAssertions(t *testing.T) {
 		t.Fatalf("expected tool trace in eval result, got %#v", result)
 	}
 }
+
+func TestRunnerSupportsExpectedToolMissingAssertion(t *testing.T) {
+	taskRepo := taskrepo.NewInMemoryTaskRepository()
+	traceRecorder := trace.NewInMemoryRecorder()
+	coordinator := kernel.NewCoordinator(
+		loader.NewStaticLoader(loader.TestAgentDefinition()),
+		runrepo.NewInMemoryRepository(),
+		taskruntime.NewService(taskRepo, taskrepo.NewInMemoryEventRepository()),
+		taskRepo,
+		traceRecorder,
+		modelclient.StubModelClient{Response: modelclient.ModelResponse{RawDecisionJSON: []byte(`{"type":"reply","reply":{"kind":"answer","text":"ok"}}`)}},
+	)
+	if err := traceRecorder.Record(context.Background(), contracts.TraceEvent{
+		TraceID:  "trace_expected_tool_missing",
+		TenantID: "tenant_1",
+		Type:     "expected_tool_missing",
+		Payload:  map[string]any{"expected_tool_id": "echo"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := NewRunner(coordinator)
+	failures := runner.customAssertionFailures(context.Background(), "trace_expected_tool_missing", CustomAssertions{
+		ExpectExpectedToolMissing: true,
+	})
+	if len(failures) != 0 {
+		t.Fatalf("expected custom assertion to pass, got %#v", failures)
+	}
+
+	failures = runner.customAssertionFailures(context.Background(), "trace_without_expected_tool_missing", CustomAssertions{
+		ExpectExpectedToolMissing: true,
+	})
+	if len(failures) == 0 || !strings.Contains(strings.Join(failures, "\n"), "expected_tool_missing trace missing") {
+		t.Fatalf("expected missing custom assertion failure, got %#v", failures)
+	}
+}

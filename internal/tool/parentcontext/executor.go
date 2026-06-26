@@ -3,19 +3,28 @@ package parentcontext
 import (
 	"context"
 	"strings"
+	"time"
 
 	"znt/internal/contracts"
 	conversationstore "znt/internal/conversation"
+	"znt/internal/governance/audit"
 	"znt/internal/tool/registry"
+	"znt/pkg/idgen"
 )
 
 const ToolID = "parent_context.read"
 
 type Executor struct {
 	Conversations conversationstore.Store
+	Audit         audit.Logger
+	Now           func() time.Time
 }
 
 func Register(reg registry.Registry, conversations conversationstore.Store) error {
+	return RegisterWithAudit(reg, conversations, nil)
+}
+
+func RegisterWithAudit(reg registry.Registry, conversations conversationstore.Store, auditLogger audit.Logger) error {
 	return registry.RegisterInternal(reg, registry.Tool{
 		Definition: contracts.ToolDefinition{
 			ToolID:      ToolID,
@@ -36,7 +45,7 @@ func Register(reg registry.Registry, conversations conversationstore.Store) erro
 			ExecutionProfile: "local",
 			Version:          "v1",
 		},
-		Executor:  Executor{Conversations: conversations},
+		Executor:  Executor{Conversations: conversations, Audit: auditLogger},
 		WhenToUse: []string{"tool agent needs parent conversation context", "read recent group chat messages"},
 	})
 }
@@ -71,10 +80,14 @@ func (e Executor) Execute(ctx context.Context, call contracts.ToolCall) (map[str
 	if err != nil {
 		return nil, nil, err
 	}
+	e.auditRead(ctx, call, conversationID, threadID, len(messages))
 	return map[string]any{
 		"conversation_id": conversationID,
 		"thread_id":       threadID,
 		"limit":           limit,
+		"source_run_id":   call.RunID,
+		"tool_call_id":    call.ToolCallID,
+		"trust_level":     "untrusted_user_text",
 		"messages":        messageViews(messages),
 	}, nil, nil
 }
@@ -115,12 +128,78 @@ func messageViews(messages []contracts.ConversationMessage) []map[string]any {
 			"speaker_id":   message.SpeakerID,
 			"speaker_type": message.SpeakerType,
 			"speaker_name": message.SpeakerName,
-			"text":         message.Text,
+			"text":         sanitizeParentContextText(message.Text),
 			"thread_id":    message.ThreadID,
 			"created_at":   message.CreatedAt,
+			"trust_level":  trustLevelForMessage(message),
 		})
 	}
 	return out
+}
+
+func sanitizeParentContextText(value string) string {
+	text, _ := sanitizeText(value, 1200)
+	return text
+}
+
+func sanitizeText(value string, limit int) (string, bool) {
+	text := strings.TrimSpace(value)
+	if text == "" {
+		return "", false
+	}
+	lower := strings.ToLower(text)
+	internalMarkers := []string{"authorization:", "bearer ", "api_key", "api-key", "password=", "secret=", "token=", "stack trace", "panic:", "trace_id", "run_id", "tool_call_id"}
+	for _, marker := range internalMarkers {
+		if strings.Contains(lower, marker) {
+			return "[redacted parent context]", true
+		}
+	}
+	runes := []rune(text)
+	if limit > 0 && len(runes) > limit {
+		return string(runes[:limit]) + "...(truncated)", true
+	}
+	return text, false
+}
+
+func trustLevelForMessage(message contracts.ConversationMessage) string {
+	switch strings.ToLower(strings.TrimSpace(message.SpeakerType)) {
+	case "agent", "assistant", "tool", "agent_tool":
+		return "tool_result"
+	case "system":
+		return "system_record"
+	default:
+		return "untrusted_user_text"
+	}
+}
+
+func (e Executor) auditRead(ctx context.Context, call contracts.ToolCall, conversationID string, threadID string, messageCount int) {
+	if e.Audit == nil {
+		return
+	}
+	_ = e.Audit.Log(ctx, contracts.AuditEvent{
+		AuditID:      idgen.New("audit"),
+		TenantID:     call.TenantID,
+		ActorID:      string(call.ToolID),
+		ActorType:    "tool",
+		Action:       "parent_context.read",
+		ResourceType: "conversation",
+		ResourceID:   conversationID,
+		Decision:     "allowed",
+		Reason:       "tool agent read parent conversation context",
+		TraceID:      call.TraceID,
+		TaskID:       call.TaskID,
+		RunID:        call.RunID,
+		CreatedAt:    e.now(),
+	})
+	_ = messageCount
+	_ = threadID
+}
+
+func (e Executor) now() time.Time {
+	if e.Now != nil {
+		return e.Now()
+	}
+	return time.Now().UTC()
 }
 
 func stringArg(call contracts.ToolCall, key string) string {

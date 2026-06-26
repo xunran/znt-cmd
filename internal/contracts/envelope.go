@@ -25,9 +25,10 @@ type AgentTarget struct {
 }
 
 type AgentCaller struct {
-	CallerID   string   `json:"caller_id"`
-	CallerType string   `json:"caller_type"`
-	TenantID   TenantID `json:"tenant_id"`
+	CallerID    string   `json:"caller_id"`
+	CallerType  string   `json:"caller_type"`
+	DisplayName string   `json:"display_name,omitempty"`
+	TenantID    TenantID `json:"tenant_id"`
 }
 
 type RuntimeContext struct {

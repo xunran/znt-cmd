@@ -248,7 +248,7 @@ func approveTaskAction(r *http.Request, appCore *core.Core, task contracts.Task,
 		EnvelopeID: idgen.New("env"),
 		TraceID:    run.TraceID,
 		Target:     contracts.AgentTarget{AgentID: run.AgentID, Version: run.AgentVersion},
-		Caller:     contracts.AgentCaller{CallerID: caller.CallerID, CallerType: caller.CallerType, TenantID: caller.TenantID},
+		Caller:     contracts.AgentCaller{CallerID: caller.CallerID, CallerType: caller.CallerType, DisplayName: caller.DisplayName, TenantID: caller.TenantID},
 		Command:    "agent.run",
 		Payload:    map[string]any{},
 		Context: contracts.RuntimeContext{

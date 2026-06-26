@@ -75,6 +75,7 @@ func evalRun(r *http.Request, appCore *core.Core, envelope contracts.AgentEnvelo
 		MaxToolCalls:          payloadInt(envelope.Payload, "max_tool_calls"),
 		ShouldEndStatus:       status,
 		StrategyAssertions:    evalStrategyAssertionsFromPayload(envelope.Payload["strategy_assertions"]),
+		CustomAssertions:      evalCustomAssertionsFromPayload(envelope.Payload["custom_assertions"]),
 	})
 	suiteResult, err := appCore.Evals.SaveResult(r.Context(), eval.SuiteResult{
 		EvalRunID:      result.EvalRunID,
@@ -298,7 +299,18 @@ func evalCaseFromPayload(envelope contracts.AgentEnvelope, payload map[string]an
 		MaxToolCalls:          payloadInt(payload, "max_tool_calls"),
 		ShouldEndStatus:       status,
 		StrategyAssertions:    evalStrategyAssertionsFromPayload(payload["strategy_assertions"]),
+		CustomAssertions:      evalCustomAssertionsFromPayload(payload["custom_assertions"]),
 	}, nil
+}
+
+func evalCustomAssertionsFromPayload(value any) eval.CustomAssertions {
+	raw, ok := value.(map[string]any)
+	if !ok {
+		return eval.CustomAssertions{}
+	}
+	return eval.CustomAssertions{
+		ExpectExpectedToolMissing: payloadBool(raw, "expect_expected_tool_missing"),
+	}
 }
 
 func evalStrategyAssertionsFromPayload(value any) eval.StrategyAssertions {
