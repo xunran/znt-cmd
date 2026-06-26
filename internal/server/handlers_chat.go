@@ -332,7 +332,7 @@ func handleChatMessages(w http.ResponseWriter, r *http.Request, appCore *core.Co
 		writeRuntimeError(w, err)
 		return
 	}
-	writeJSON(w, map[string]any{"messages": chatMessageViews(messages, nil)}, http.StatusOK)
+	writeJSON(w, map[string]any{"messages": chatMessageViews(chatVisibleMessages(messages), nil)}, http.StatusOK)
 }
 
 func handleChatMessageSend(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity, conversationID string) {
@@ -549,6 +549,27 @@ func chatMessageViews(messages []contracts.ConversationMessage, refs map[string]
 		out = append(out, row)
 	}
 	return out
+}
+
+func chatVisibleMessages(messages []contracts.ConversationMessage) []contracts.ConversationMessage {
+	out := make([]contracts.ConversationMessage, 0, len(messages))
+	for _, message := range messages {
+		if chatMessageIsInternal(message) {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+func chatMessageIsInternal(message contracts.ConversationMessage) bool {
+	speakerType := strings.ToLower(strings.TrimSpace(message.SpeakerType))
+	switch speakerType {
+	case "agent_tool", "tool", "tool_agent":
+		return true
+	}
+	text := strings.TrimSpace(message.Text)
+	return strings.HasPrefix(text, "Execute exported tool ")
 }
 
 func chatConversationView(thread conversationstore.Thread, members []contracts.GroupMemberProfile) map[string]any {

@@ -22,6 +22,7 @@ import (
 	"znt/internal/app/core"
 	"znt/internal/app/logging"
 	"znt/internal/contracts"
+	conversationstore "znt/internal/conversation"
 	"znt/internal/eval"
 	"znt/internal/governance/replay"
 	modelclient "znt/internal/model/client"
@@ -240,6 +241,21 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 	if reply.SpeakerType != "agent" || reply.Text != "ok" || reply.RunID == "" || reply.TaskID == "" || reply.TraceID == "" {
 		t.Fatalf("expected visible agent reply with run refs, got %#v", reply)
 	}
+	if err := appCore.Conversations.AppendMessage(context.Background(), conversationstore.MessageRecord{
+		TenantID:       "tenant_1",
+		ConversationID: created.Conversation.ConversationID,
+		ThreadID:       created.Conversation.ConversationID,
+		Message: contracts.ConversationMessage{
+			MessageID:   "msg_internal_tool_call",
+			SpeakerID:   "tool-agent.run_tool",
+			SpeakerType: "agent_tool",
+			Text:        `Execute exported tool tool-agent.run_tool with arguments: {"input":"hidden"}`,
+			ThreadID:    created.Conversation.ConversationID,
+			CreatedAt:   time.Now().UTC().Add(time.Second),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	messages := doJSON(handler, http.MethodGet, "/v1/chat/conversations/"+created.Conversation.ConversationID+"/messages", nil)
 	var listed struct {
 		Messages []struct {
@@ -261,6 +277,9 @@ func TestChatConversationAPIRunsMainAgentAndStoresVisibleReply(t *testing.T) {
 		listed.Messages[1].Text != "ok" ||
 		listed.Messages[1].RunID == "" {
 		t.Fatalf("unexpected messages status %d body %s", messages.Code, messages.Body.String())
+	}
+	if bytes.Contains(messages.Body.Bytes(), []byte("Execute exported tool")) || bytes.Contains(messages.Body.Bytes(), []byte(`"speaker_type":"agent_tool"`)) {
+		t.Fatalf("chat messages should hide internal tool-agent records, body %s", messages.Body.String())
 	}
 }
 
