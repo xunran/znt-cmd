@@ -385,11 +385,84 @@ func TestOpenAICompatibleClientRequestOverridesModelOptions(t *testing.T) {
 		`"max_tokens":256`,
 		`"temperature":0.2`,
 		`"thinking":{"type":"disabled"}`,
-		`"reasoning_effort":"low"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("expected request body to contain %s, got %s", expected, body)
 		}
+	}
+	if strings.Contains(body, `"reasoning_effort"`) {
+		t.Fatalf("expected reasoning_effort to be omitted when thinking is disabled, got %s", body)
+	}
+}
+
+func TestOpenAICompatibleClientDefaultsDeepSeekThinkingDisabled(t *testing.T) {
+	var raw []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		raw, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "deepseek-v4-flash",
+			"choices": []any{
+				map[string]any{"message": map[string]any{"content": `{"type":"reply","reply":{"kind":"answer","text":"ok"}}`}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, err := OpenAICompatibleClient{
+		BaseURL: server.URL + "/deepseek",
+		Model:   "deepseek-v4-flash",
+	}.Complete(context.Background(), ModelRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	if !strings.Contains(body, `"thinking":{"type":"disabled"}`) {
+		t.Fatalf("expected DeepSeek request to disable thinking by default, got %s", body)
+	}
+	if strings.Contains(body, `"reasoning_effort"`) {
+		t.Fatalf("expected reasoning_effort to be omitted when DeepSeek thinking is disabled by default, got %s", body)
+	}
+}
+
+func TestOpenAICompatibleClientGlobalThinkingDisabledOverridesRequest(t *testing.T) {
+	var raw []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var err error
+		raw, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "test-model",
+			"choices": []any{
+				map[string]any{"message": map[string]any{"content": `{"type":"reply","reply":{"kind":"answer","text":"ok"}}`}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, err := OpenAICompatibleClient{
+		BaseURL:         server.URL,
+		Model:           "test-model",
+		Thinking:        "disabled",
+		ReasoningEffort: "max",
+	}.Complete(context.Background(), ModelRequest{
+		Thinking:        "enabled",
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(raw)
+	if !strings.Contains(body, `"thinking":{"type":"disabled"}`) {
+		t.Fatalf("expected global disabled thinking to override request thinking, got %s", body)
+	}
+	if strings.Contains(body, `"reasoning_effort"`) {
+		t.Fatalf("expected reasoning_effort to be omitted when global thinking is disabled, got %s", body)
 	}
 }
 

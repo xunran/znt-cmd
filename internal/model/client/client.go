@@ -261,6 +261,11 @@ type OpenAICompatibleClient struct {
 }
 
 func (c OpenAICompatibleClient) Capabilities() ModelCapabilityDescriptor {
+	thinking := defaultOpenAICompatibleThinking(c.BaseURL, c.Model, c.Thinking)
+	reasoningEffort := strings.TrimSpace(c.ReasoningEffort)
+	if strings.EqualFold(thinking, "disabled") {
+		reasoningEffort = ""
+	}
 	return ModelCapabilityDescriptor{
 		Provider:                 "openai-compatible",
 		Model:                    c.Model,
@@ -268,8 +273,8 @@ func (c OpenAICompatibleClient) Capabilities() ModelCapabilityDescriptor {
 		StructuredOutput:         true,
 		Streaming:                true,
 		OpenAICompatible:         true,
-		Thinking:                 strings.TrimSpace(c.Thinking),
-		ReasoningEffort:          strings.TrimSpace(c.ReasoningEffort),
+		Thinking:                 thinking,
+		ReasoningEffort:          reasoningEffort,
 		MaxOutputTokens:          c.MaxTokens,
 		SupportsJSONResponseMode: true,
 	}
@@ -414,10 +419,11 @@ func (c OpenAICompatibleClient) chatCompletionPayload(request ModelRequest, stre
 	if temperature := effectiveRequestTemperature(c.Temperature, request.Temperature); temperature != nil {
 		payload.Temperature = temperature
 	}
-	if thinking := effectiveRequestString(c.Thinking, request.Thinking); thinking != "" {
+	thinking := effectiveOpenAICompatibleThinking(c.BaseURL, c.Model, c.Thinking, request)
+	if thinking != "" {
 		payload.Thinking = map[string]string{"type": thinking}
 	}
-	if effort := effectiveRequestString(c.ReasoningEffort, request.ReasoningEffort); effort != "" {
+	if effort := effectiveOpenAICompatibleReasoningEffort(c.ReasoningEffort, request.ReasoningEffort, thinking); effort != "" {
 		payload.ReasoningEffort = effort
 	}
 	return payload
@@ -449,6 +455,47 @@ func effectiveRequestString(fallback string, requested string) string {
 		return strings.TrimSpace(requested)
 	}
 	return strings.TrimSpace(fallback)
+}
+
+func defaultOpenAICompatibleThinking(baseURL string, model string, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured != "" {
+		return configured
+	}
+	if isDeepSeekOpenAICompatible(baseURL, model) {
+		return "disabled"
+	}
+	return ""
+}
+
+func effectiveOpenAICompatibleThinking(baseURL string, model string, configured string, request ModelRequest) string {
+	configured = strings.TrimSpace(configured)
+	if strings.EqualFold(configured, "disabled") {
+		return "disabled"
+	}
+	if configured == "" && isDeepSeekOpenAICompatible(baseURL, model, request.ModelBaseURL, request.ModelName) {
+		return "disabled"
+	}
+	if requested := strings.TrimSpace(request.Thinking); requested != "" {
+		return requested
+	}
+	return configured
+}
+
+func effectiveOpenAICompatibleReasoningEffort(configured string, requested string, thinking string) string {
+	if strings.EqualFold(strings.TrimSpace(thinking), "disabled") {
+		return ""
+	}
+	return effectiveRequestString(configured, requested)
+}
+
+func isDeepSeekOpenAICompatible(values ...string) bool {
+	for _, value := range values {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(value)), "deepseek") {
+			return true
+		}
+	}
+	return false
 }
 
 func chatCompletionsURL(baseURL string) string {

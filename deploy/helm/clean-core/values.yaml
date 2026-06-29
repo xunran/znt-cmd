@@ -39,7 +39,7 @@ config:
   modelProvider: openai-compatible
   modelMaxTokens: "2048"
   modelTemperature: "0"
-  modelThinking: ""
+  modelThinking: "disabled"
   modelReasoningEffort: ""
   contextDefaultMode: balanced
   contextDefaultRecentMessageLimit: "20"
