@@ -45,6 +45,13 @@ type ExternalDeliveryOutboxItem struct {
 	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
+type ExternalDeliveryReplayOptions struct {
+	TenantID    TenantID
+	Statuses    []string
+	Limit       int
+	MaxAttempts int
+}
+
 type ParticipantSummary struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`

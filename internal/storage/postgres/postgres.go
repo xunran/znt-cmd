@@ -5769,7 +5769,7 @@ func (s *ExternalTaskBindingStore) MarkDeliveryAttempt(ctx context.Context, outb
 	result, err := s.db.ExecContext(ctx, `
 UPDATE external_delivery_outbox
 SET status=$2,
-    attempt_count=attempt_count+1,
+    attempt_count=attempt_count + CASE WHEN $2 IN ('delivered','failed') THEN 1 ELSE 0 END,
     last_error=$3,
     next_attempt_at=$4,
     updated_at=$5
@@ -5797,26 +5797,32 @@ func (s *ExternalTaskBindingStore) GetDelivery(ctx context.Context, tenantID con
 	return item, err == nil, err
 }
 
-func (s *ExternalTaskBindingStore) ListDeliveriesDue(ctx context.Context, tenantID contracts.TenantID, statuses []string, limit int, now time.Time) ([]contracts.ExternalDeliveryOutboxItem, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
+func (s *ExternalTaskBindingStore) ListDeliveriesDue(ctx context.Context, opts contracts.ExternalDeliveryReplayOptions, now time.Time) ([]contracts.ExternalDeliveryOutboxItem, error) {
+	if opts.Limit <= 0 || opts.Limit > 100 {
+		opts.Limit = 50
 	}
-	if len(statuses) == 0 {
-		statuses = []string{"failed", "pending"}
+	if len(opts.Statuses) == 0 {
+		opts.Statuses = []string{"failed", "pending"}
 	}
-	statusPlaceholders := make([]string, 0, len(statuses))
-	args := []any{tenantID}
-	for _, status := range statuses {
+	statusPlaceholders := make([]string, 0, len(opts.Statuses))
+	args := []any{}
+	clauses := []string{}
+	if opts.TenantID != "" {
+		args = append(args, opts.TenantID)
+		clauses = append(clauses, fmt.Sprintf("tenant_id=$%d", len(args)))
+	}
+	for _, status := range opts.Statuses {
 		args = append(args, status)
 		statusPlaceholders = append(statusPlaceholders, fmt.Sprintf("$%d", len(args)))
 	}
-	args = append(args, now.UTC(), limit)
+	clauses = append(clauses, fmt.Sprintf("status IN (%s)", strings.Join(statusPlaceholders, ",")))
+	args = append(args, now.UTC())
+	clauses = append(clauses, fmt.Sprintf("(next_attempt_at IS NULL OR next_attempt_at <= $%d)", len(args)))
+	args = append(args, opts.Limit)
 	rows, err := s.db.QueryContext(ctx, externalDeliverySelectSQL()+fmt.Sprintf(`
-WHERE tenant_id=$1
-  AND status IN (%s)
-  AND (next_attempt_at IS NULL OR next_attempt_at <= $%d)
+WHERE %s
 ORDER BY created_at ASC
-LIMIT $%d`, strings.Join(statusPlaceholders, ","), len(args)-1, len(args)), args...)
+LIMIT $%d`, strings.Join(clauses, " AND "), len(args)), args...)
 	if err != nil {
 		return nil, err
 	}

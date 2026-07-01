@@ -95,7 +95,9 @@ func (s *memoryOutboxStore) MarkDeliveryAttempt(_ context.Context, outboxID stri
 	item.LastError = lastError
 	item.NextAttemptAt = nextAttemptAt
 	item.UpdatedAt = updatedAt
-	item.AttemptCount++
+	if status == "delivered" || status == "failed" {
+		item.AttemptCount++
+	}
 	s.items[outboxID] = item
 	return nil
 }
@@ -110,23 +112,29 @@ func (s *memoryOutboxStore) GetDelivery(_ context.Context, tenantID contracts.Te
 	return item, true, nil
 }
 
-func (s *memoryOutboxStore) ListDeliveriesDue(_ context.Context, tenantID contracts.TenantID, statuses []string, limit int, now time.Time) ([]contracts.ExternalDeliveryOutboxItem, error) {
+func (s *memoryOutboxStore) ListDeliveriesDue(_ context.Context, opts contracts.ExternalDeliveryReplayOptions, now time.Time) ([]contracts.ExternalDeliveryOutboxItem, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
 	statusSet := map[string]bool{}
-	for _, status := range statuses {
+	for _, status := range opts.Statuses {
 		statusSet[status] = true
 	}
 	out := make([]contracts.ExternalDeliveryOutboxItem, 0)
 	for _, item := range s.items {
-		if item.TenantID != tenantID || !statusSet[item.Status] {
+		if opts.TenantID != "" && item.TenantID != opts.TenantID {
+			continue
+		}
+		if !statusSet[item.Status] {
 			continue
 		}
 		if !item.NextAttemptAt.IsZero() && item.NextAttemptAt.After(now) {
 			continue
 		}
 		out = append(out, item)
-		if limit > 0 && len(out) >= limit {
+		if len(out) >= opts.Limit {
 			break
 		}
 	}
@@ -342,6 +350,86 @@ func TestBridgeReplaysFailedDelivery(t *testing.T) {
 	}
 	if replayed.Status != "delivered" || len(bridge.Messages) != 1 || bridge.Messages[0].Message != "hello replay" {
 		t.Fatalf("expected replayed delivery, item=%#v messages=%#v", replayed, bridge.Messages)
+	}
+}
+
+func TestBridgeReplayDueDeliveriesMarksDeadLetterAtMaxAttempts(t *testing.T) {
+	store := newMemoryOutboxStore()
+	bridge := NewBridgeWithStore(store)
+	now := time.Now().Add(-time.Minute)
+	item, err := store.EnqueueDelivery(context.Background(), contracts.ExternalDeliveryOutboxItem{
+		OutboxID:       "outbox_maxed",
+		TenantID:       "tenant_1",
+		Provider:       "array",
+		ExternalTaskID: "ext_1",
+		CoreTaskID:     "task_1",
+		EventType:      "external_delivery",
+		Channel:        "message",
+		Payload:        map[string]any{"message": "hello"},
+		IdempotencyKey: "idem_maxed",
+		Status:         "failed",
+		AttemptCount:   3,
+		LastError:      "remote still down",
+		NextAttemptAt:  now,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := bridge.ReplayDueDeliveriesWithOptions(context.Background(), contracts.ExternalDeliveryReplayOptions{
+		TenantID:    "tenant_1",
+		Statuses:    []string{"failed"},
+		Limit:       10,
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].OutboxID != item.OutboxID || items[0].Status != "dead_letter" || items[0].AttemptCount != 3 {
+		t.Fatalf("expected dead letter without extra attempt, got %#v", items)
+	}
+	if len(bridge.Messages) != 0 {
+		t.Fatalf("dead letter should not be replayed, messages=%#v", bridge.Messages)
+	}
+}
+
+func TestDeliveryRetryWorkerReplaysDueDeliveries(t *testing.T) {
+	store := newMemoryOutboxStore()
+	bridge := NewBridgeWithStore(store)
+	now := time.Now().Add(-time.Minute)
+	item, err := store.EnqueueDelivery(context.Background(), contracts.ExternalDeliveryOutboxItem{
+		OutboxID:       "outbox_due",
+		TenantID:       "tenant_1",
+		Provider:       "array",
+		ExternalTaskID: "ext_1",
+		CoreTaskID:     "task_1",
+		EventType:      "external_delivery",
+		Channel:        "message",
+		Payload:        map[string]any{"message": "hello worker"},
+		IdempotencyKey: "idem_worker",
+		Status:         "failed",
+		NextAttemptAt:  now,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := DeliveryRetryWorker{
+		Bridge:      bridge,
+		BatchSize:   10,
+		MaxAttempts: 5,
+	}
+	items, err := worker.RunOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].OutboxID != item.OutboxID || items[0].Status != "delivered" {
+		t.Fatalf("expected worker to deliver due item, got %#v", items)
+	}
+	if len(bridge.Messages) != 1 || bridge.Messages[0].Message != "hello worker" {
+		t.Fatalf("expected replayed message, got %#v", bridge.Messages)
 	}
 }
 

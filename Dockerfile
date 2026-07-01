@@ -6,6 +6,8 @@ ARG GOSUMDB=sum.golang.org
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
 
+RUN test -s /etc/ssl/certs/ca-certificates.crt
+
 WORKDIR /src
 COPY go.mod ./
 COPY go.sum ./

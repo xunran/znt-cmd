@@ -12,3 +12,4 @@ tmp/
 !*.env.example
 !*.env.example.ps1
 .gocache
+.deploy/

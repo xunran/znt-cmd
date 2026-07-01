@@ -19,70 +19,77 @@ const (
 	DefaultEnv         = "local"
 	DefaultLogLevel    = "info"
 
-	DefaultReadinessMode                      = "shallow"
-	DefaultMetricsAuthMode                    = "auto"
-	DefaultAgentRunExecutionMode              = "sync"
-	DefaultDBMaxOpenConns                     = 25
-	DefaultDBMaxIdleConns                     = 10
-	DefaultDBReadinessMaxOpenConns            = 2
-	DefaultDBReadinessMaxIdleConns            = 2
-	DefaultDBConnMaxLifetimeSeconds           = 1800
-	DefaultDBConnMaxIdleTimeSeconds           = 300
-	DefaultHTTPReadHeaderTimeoutSeconds       = 5
-	DefaultHTTPReadTimeoutSeconds             = 30
-	DefaultHTTPWriteTimeoutSeconds            = 300
-	DefaultHTTPIdleTimeoutSeconds             = 120
-	DefaultHTTPMaxBodyBytes             int64 = 4 * 1024 * 1024
+	DefaultReadinessMode                              = "shallow"
+	DefaultMetricsAuthMode                            = "auto"
+	DefaultAgentRunExecutionMode                      = "sync"
+	DefaultDBMaxOpenConns                             = 25
+	DefaultDBMaxIdleConns                             = 10
+	DefaultDBReadinessMaxOpenConns                    = 2
+	DefaultDBReadinessMaxIdleConns                    = 2
+	DefaultDBConnMaxLifetimeSeconds                   = 1800
+	DefaultDBConnMaxIdleTimeSeconds                   = 300
+	DefaultHTTPReadHeaderTimeoutSeconds               = 5
+	DefaultHTTPReadTimeoutSeconds                     = 30
+	DefaultHTTPWriteTimeoutSeconds                    = 300
+	DefaultHTTPIdleTimeoutSeconds                     = 120
+	DefaultHTTPMaxBodyBytes                     int64 = 4 * 1024 * 1024
+	DefaultExternalDeliveryRetryIntervalSeconds       = 60
+	DefaultExternalDeliveryRetryBatchSize             = 50
+	DefaultExternalDeliveryRetryMaxAttempts           = 5
 )
 
 type Config struct {
-	ServiceName                       string   `json:"service_name"`
-	Version                           string   `json:"version"`
-	Env                               string   `json:"env"`
-	HTTPAddr                          string   `json:"http_addr"`
-	LogLevel                          string   `json:"log_level"`
-	DatabaseURL                       string   `json:"database_url,omitempty"`
-	Readiness                         bool     `json:"readiness"`
-	ReadinessMode                     string   `json:"readiness_mode,omitempty"`
-	MetricsAuthMode                   string   `json:"metrics_auth_mode,omitempty"`
-	ServiceToken                      string   `json:"service_token,omitempty"`
-	DBMaxOpenConns                    int      `json:"db_max_open_conns,omitempty"`
-	DBMaxIdleConns                    int      `json:"db_max_idle_conns,omitempty"`
-	DBReadinessMaxOpenConns           int      `json:"db_readiness_max_open_conns,omitempty"`
-	DBReadinessMaxIdleConns           int      `json:"db_readiness_max_idle_conns,omitempty"`
-	DBConnMaxLifetimeSeconds          int      `json:"db_conn_max_lifetime_seconds,omitempty"`
-	DBConnMaxIdleTimeSeconds          int      `json:"db_conn_max_idle_time_seconds,omitempty"`
-	HTTPReadHeaderTimeoutSeconds      int      `json:"http_read_header_timeout_seconds,omitempty"`
-	HTTPReadTimeoutSeconds            int      `json:"http_read_timeout_seconds,omitempty"`
-	HTTPWriteTimeoutSeconds           int      `json:"http_write_timeout_seconds,omitempty"`
-	HTTPIdleTimeoutSeconds            int      `json:"http_idle_timeout_seconds,omitempty"`
-	HTTPMaxBodyBytes                  int64    `json:"http_max_body_bytes,omitempty"`
-	RunMaxConcurrent                  int      `json:"run_max_concurrent,omitempty"`
-	TenantRunMaxConcurrent            int      `json:"tenant_run_max_concurrent,omitempty"`
-	AgentRunMaxConcurrent             int      `json:"agent_run_max_concurrent,omitempty"`
-	AgentRunExecutionMode             string   `json:"agent_run_execution_mode,omitempty"`
-	ModelProvider                     string   `json:"model_provider,omitempty"`
-	ModelBaseURL                      string   `json:"model_base_url,omitempty"`
-	ModelAPIKey                       string   `json:"model_api_key,omitempty"`
-	ModelName                         string   `json:"model_name,omitempty"`
-	ModelMaxTokens                    int      `json:"model_max_tokens,omitempty"`
-	ModelTemperature                  *float64 `json:"model_temperature,omitempty"`
-	ModelThinking                     string   `json:"model_thinking,omitempty"`
-	ModelReasoningEffort              string   `json:"model_reasoning_effort,omitempty"`
-	ConversationJudgeMode             string   `json:"conversation_judge_mode,omitempty"`
-	ConversationJudgeTimeoutMS        int      `json:"conversation_judge_timeout_ms,omitempty"`
-	ConversationDirectEnabled         bool     `json:"conversation_direct_enabled,omitempty"`
-	ConversationRetrievalEnabled      bool     `json:"conversation_retrieval_enabled,omitempty"`
-	ContextDefaultMode                string   `json:"context_default_mode,omitempty"`
-	ContextDefaultRecentMessageLimit  int      `json:"context_default_recent_message_limit,omitempty"`
-	ContextDefaultRetrievalMaxResults int      `json:"context_default_retrieval_max_results,omitempty"`
-	ContextDefaultTaskHistoryMaxItems int      `json:"context_default_task_history_max_items,omitempty"`
-	ContextDefaultTokenBudget         int      `json:"context_default_token_budget,omitempty"`
-	ContextCompressionDefaultEnabled  bool     `json:"context_compression_default_enabled,omitempty"`
-	ContextCompressionDefaultMode     string   `json:"context_compression_default_mode,omitempty"`
-	ExternalBridgeProvider            string   `json:"external_bridge_provider,omitempty"`
-	ExternalBridgeBaseURL             string   `json:"external_bridge_base_url,omitempty"`
-	ExternalBridgeToken               string   `json:"external_bridge_token,omitempty"`
+	ServiceName                          string   `json:"service_name"`
+	Version                              string   `json:"version"`
+	Env                                  string   `json:"env"`
+	HTTPAddr                             string   `json:"http_addr"`
+	LogLevel                             string   `json:"log_level"`
+	DatabaseURL                          string   `json:"database_url,omitempty"`
+	Readiness                            bool     `json:"readiness"`
+	ReadinessMode                        string   `json:"readiness_mode,omitempty"`
+	MetricsAuthMode                      string   `json:"metrics_auth_mode,omitempty"`
+	ServiceToken                         string   `json:"service_token,omitempty"`
+	DBMaxOpenConns                       int      `json:"db_max_open_conns,omitempty"`
+	DBMaxIdleConns                       int      `json:"db_max_idle_conns,omitempty"`
+	DBReadinessMaxOpenConns              int      `json:"db_readiness_max_open_conns,omitempty"`
+	DBReadinessMaxIdleConns              int      `json:"db_readiness_max_idle_conns,omitempty"`
+	DBConnMaxLifetimeSeconds             int      `json:"db_conn_max_lifetime_seconds,omitempty"`
+	DBConnMaxIdleTimeSeconds             int      `json:"db_conn_max_idle_time_seconds,omitempty"`
+	HTTPReadHeaderTimeoutSeconds         int      `json:"http_read_header_timeout_seconds,omitempty"`
+	HTTPReadTimeoutSeconds               int      `json:"http_read_timeout_seconds,omitempty"`
+	HTTPWriteTimeoutSeconds              int      `json:"http_write_timeout_seconds,omitempty"`
+	HTTPIdleTimeoutSeconds               int      `json:"http_idle_timeout_seconds,omitempty"`
+	HTTPMaxBodyBytes                     int64    `json:"http_max_body_bytes,omitempty"`
+	RunMaxConcurrent                     int      `json:"run_max_concurrent,omitempty"`
+	TenantRunMaxConcurrent               int      `json:"tenant_run_max_concurrent,omitempty"`
+	AgentRunMaxConcurrent                int      `json:"agent_run_max_concurrent,omitempty"`
+	AgentRunExecutionMode                string   `json:"agent_run_execution_mode,omitempty"`
+	ModelProvider                        string   `json:"model_provider,omitempty"`
+	ModelBaseURL                         string   `json:"model_base_url,omitempty"`
+	ModelAPIKey                          string   `json:"model_api_key,omitempty"`
+	ModelName                            string   `json:"model_name,omitempty"`
+	ModelMaxTokens                       int      `json:"model_max_tokens,omitempty"`
+	ModelTemperature                     *float64 `json:"model_temperature,omitempty"`
+	ModelThinking                        string   `json:"model_thinking,omitempty"`
+	ModelReasoningEffort                 string   `json:"model_reasoning_effort,omitempty"`
+	ConversationJudgeMode                string   `json:"conversation_judge_mode,omitempty"`
+	ConversationJudgeTimeoutMS           int      `json:"conversation_judge_timeout_ms,omitempty"`
+	ConversationDirectEnabled            bool     `json:"conversation_direct_enabled,omitempty"`
+	ConversationRetrievalEnabled         bool     `json:"conversation_retrieval_enabled,omitempty"`
+	ContextDefaultMode                   string   `json:"context_default_mode,omitempty"`
+	ContextDefaultRecentMessageLimit     int      `json:"context_default_recent_message_limit,omitempty"`
+	ContextDefaultRetrievalMaxResults    int      `json:"context_default_retrieval_max_results,omitempty"`
+	ContextDefaultTaskHistoryMaxItems    int      `json:"context_default_task_history_max_items,omitempty"`
+	ContextDefaultTokenBudget            int      `json:"context_default_token_budget,omitempty"`
+	ContextCompressionDefaultEnabled     bool     `json:"context_compression_default_enabled,omitempty"`
+	ContextCompressionDefaultMode        string   `json:"context_compression_default_mode,omitempty"`
+	ExternalBridgeProvider               string   `json:"external_bridge_provider,omitempty"`
+	ExternalBridgeBaseURL                string   `json:"external_bridge_base_url,omitempty"`
+	ExternalBridgeToken                  string   `json:"external_bridge_token,omitempty"`
+	ExternalDeliveryRetryEnabled         bool     `json:"external_delivery_retry_enabled,omitempty"`
+	ExternalDeliveryRetryIntervalSeconds int      `json:"external_delivery_retry_interval_seconds,omitempty"`
+	ExternalDeliveryRetryBatchSize       int      `json:"external_delivery_retry_batch_size,omitempty"`
+	ExternalDeliveryRetryMaxAttempts     int      `json:"external_delivery_retry_max_attempts,omitempty"`
 
 	DisabledAgentIDs           []string `json:"disabled_agent_ids,omitempty"`
 	DisabledToolIDs            []string `json:"disabled_tool_ids,omitempty"`
@@ -96,6 +103,9 @@ type Config struct {
 	contextDefaultTaskHistoryMaxItemsSet bool
 	contextDefaultTokenBudgetSet         bool
 	contextCompressionDefaultEnabledSet  bool
+	externalDeliveryRetryIntervalSet     bool
+	externalDeliveryRetryBatchSizeSet    bool
+	externalDeliveryRetryMaxAttemptsSet  bool
 	disableHandoffSet                    bool
 	disableExternalToolsInvokeSet        bool
 }
@@ -118,6 +128,9 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	_, c.contextDefaultTaskHistoryMaxItemsSet = raw["context_default_task_history_max_items"]
 	_, c.contextDefaultTokenBudgetSet = raw["context_default_token_budget"]
 	_, c.contextCompressionDefaultEnabledSet = raw["context_compression_default_enabled"]
+	_, c.externalDeliveryRetryIntervalSet = raw["external_delivery_retry_interval_seconds"]
+	_, c.externalDeliveryRetryBatchSizeSet = raw["external_delivery_retry_batch_size"]
+	_, c.externalDeliveryRetryMaxAttemptsSet = raw["external_delivery_retry_max_attempts"]
 	_, c.disableHandoffSet = raw["disable_handoff"]
 	_, c.disableExternalToolsInvokeSet = raw["disable_external_tools_invoke"]
 	return nil
@@ -125,34 +138,37 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 
 func Default() Config {
 	return Config{
-		ServiceName:                       DefaultServiceName,
-		Version:                           DefaultVersion,
-		Env:                               DefaultEnv,
-		HTTPAddr:                          DefaultHTTPAddr,
-		LogLevel:                          DefaultLogLevel,
-		Readiness:                         true,
-		ReadinessMode:                     DefaultReadinessMode,
-		MetricsAuthMode:                   DefaultMetricsAuthMode,
-		DBMaxOpenConns:                    DefaultDBMaxOpenConns,
-		DBMaxIdleConns:                    DefaultDBMaxIdleConns,
-		DBReadinessMaxOpenConns:           DefaultDBReadinessMaxOpenConns,
-		DBReadinessMaxIdleConns:           DefaultDBReadinessMaxIdleConns,
-		DBConnMaxLifetimeSeconds:          DefaultDBConnMaxLifetimeSeconds,
-		DBConnMaxIdleTimeSeconds:          DefaultDBConnMaxIdleTimeSeconds,
-		HTTPReadHeaderTimeoutSeconds:      DefaultHTTPReadHeaderTimeoutSeconds,
-		HTTPReadTimeoutSeconds:            DefaultHTTPReadTimeoutSeconds,
-		HTTPWriteTimeoutSeconds:           DefaultHTTPWriteTimeoutSeconds,
-		HTTPIdleTimeoutSeconds:            DefaultHTTPIdleTimeoutSeconds,
-		HTTPMaxBodyBytes:                  DefaultHTTPMaxBodyBytes,
-		AgentRunExecutionMode:             DefaultAgentRunExecutionMode,
-		ConversationRetrievalEnabled:      true,
-		ContextDefaultMode:                "balanced",
-		ContextDefaultRecentMessageLimit:  20,
-		ContextDefaultRetrievalMaxResults: 8,
-		ContextDefaultTaskHistoryMaxItems: 30,
-		ContextDefaultTokenBudget:         4000,
-		ContextCompressionDefaultEnabled:  true,
-		ContextCompressionDefaultMode:     "truncate",
+		ServiceName:                          DefaultServiceName,
+		Version:                              DefaultVersion,
+		Env:                                  DefaultEnv,
+		HTTPAddr:                             DefaultHTTPAddr,
+		LogLevel:                             DefaultLogLevel,
+		Readiness:                            true,
+		ReadinessMode:                        DefaultReadinessMode,
+		MetricsAuthMode:                      DefaultMetricsAuthMode,
+		DBMaxOpenConns:                       DefaultDBMaxOpenConns,
+		DBMaxIdleConns:                       DefaultDBMaxIdleConns,
+		DBReadinessMaxOpenConns:              DefaultDBReadinessMaxOpenConns,
+		DBReadinessMaxIdleConns:              DefaultDBReadinessMaxIdleConns,
+		DBConnMaxLifetimeSeconds:             DefaultDBConnMaxLifetimeSeconds,
+		DBConnMaxIdleTimeSeconds:             DefaultDBConnMaxIdleTimeSeconds,
+		HTTPReadHeaderTimeoutSeconds:         DefaultHTTPReadHeaderTimeoutSeconds,
+		HTTPReadTimeoutSeconds:               DefaultHTTPReadTimeoutSeconds,
+		HTTPWriteTimeoutSeconds:              DefaultHTTPWriteTimeoutSeconds,
+		HTTPIdleTimeoutSeconds:               DefaultHTTPIdleTimeoutSeconds,
+		HTTPMaxBodyBytes:                     DefaultHTTPMaxBodyBytes,
+		AgentRunExecutionMode:                DefaultAgentRunExecutionMode,
+		ConversationRetrievalEnabled:         true,
+		ContextDefaultMode:                   "balanced",
+		ContextDefaultRecentMessageLimit:     20,
+		ContextDefaultRetrievalMaxResults:    8,
+		ContextDefaultTaskHistoryMaxItems:    30,
+		ContextDefaultTokenBudget:            4000,
+		ContextCompressionDefaultEnabled:     true,
+		ContextCompressionDefaultMode:        "truncate",
+		ExternalDeliveryRetryIntervalSeconds: DefaultExternalDeliveryRetryIntervalSeconds,
+		ExternalDeliveryRetryBatchSize:       DefaultExternalDeliveryRetryBatchSize,
+		ExternalDeliveryRetryMaxAttempts:     DefaultExternalDeliveryRetryMaxAttempts,
 	}
 }
 
@@ -349,15 +365,18 @@ func (c Config) Validate() error {
 		return fmt.Errorf("db_readiness_max_idle_conns must be less than or equal to db_readiness_max_open_conns")
 	}
 	for name, value := range map[string]int{
-		"db_conn_max_lifetime_seconds":     c.DBConnMaxLifetimeSeconds,
-		"db_conn_max_idle_time_seconds":    c.DBConnMaxIdleTimeSeconds,
-		"http_read_header_timeout_seconds": c.HTTPReadHeaderTimeoutSeconds,
-		"http_read_timeout_seconds":        c.HTTPReadTimeoutSeconds,
-		"http_write_timeout_seconds":       c.HTTPWriteTimeoutSeconds,
-		"http_idle_timeout_seconds":        c.HTTPIdleTimeoutSeconds,
-		"run_max_concurrent":               c.RunMaxConcurrent,
-		"tenant_run_max_concurrent":        c.TenantRunMaxConcurrent,
-		"agent_run_max_concurrent":         c.AgentRunMaxConcurrent,
+		"db_conn_max_lifetime_seconds":             c.DBConnMaxLifetimeSeconds,
+		"db_conn_max_idle_time_seconds":            c.DBConnMaxIdleTimeSeconds,
+		"http_read_header_timeout_seconds":         c.HTTPReadHeaderTimeoutSeconds,
+		"http_read_timeout_seconds":                c.HTTPReadTimeoutSeconds,
+		"http_write_timeout_seconds":               c.HTTPWriteTimeoutSeconds,
+		"http_idle_timeout_seconds":                c.HTTPIdleTimeoutSeconds,
+		"run_max_concurrent":                       c.RunMaxConcurrent,
+		"tenant_run_max_concurrent":                c.TenantRunMaxConcurrent,
+		"agent_run_max_concurrent":                 c.AgentRunMaxConcurrent,
+		"external_delivery_retry_interval_seconds": c.ExternalDeliveryRetryIntervalSeconds,
+		"external_delivery_retry_batch_size":       c.ExternalDeliveryRetryBatchSize,
+		"external_delivery_retry_max_attempts":     c.ExternalDeliveryRetryMaxAttempts,
 	} {
 		if value < 0 {
 			return fmt.Errorf("%s must be non-negative", name)
@@ -533,6 +552,21 @@ func merge(base Config, override Config) Config {
 	if override.ExternalBridgeToken != "" {
 		base.ExternalBridgeToken = override.ExternalBridgeToken
 	}
+	if override.ExternalDeliveryRetryEnabled {
+		base.ExternalDeliveryRetryEnabled = true
+	}
+	if override.externalDeliveryRetryIntervalSet || override.ExternalDeliveryRetryIntervalSeconds > 0 {
+		base.ExternalDeliveryRetryIntervalSeconds = override.ExternalDeliveryRetryIntervalSeconds
+		base.externalDeliveryRetryIntervalSet = override.externalDeliveryRetryIntervalSet
+	}
+	if override.externalDeliveryRetryBatchSizeSet || override.ExternalDeliveryRetryBatchSize > 0 {
+		base.ExternalDeliveryRetryBatchSize = override.ExternalDeliveryRetryBatchSize
+		base.externalDeliveryRetryBatchSizeSet = override.externalDeliveryRetryBatchSizeSet
+	}
+	if override.externalDeliveryRetryMaxAttemptsSet || override.ExternalDeliveryRetryMaxAttempts > 0 {
+		base.ExternalDeliveryRetryMaxAttempts = override.ExternalDeliveryRetryMaxAttempts
+		base.externalDeliveryRetryMaxAttemptsSet = override.externalDeliveryRetryMaxAttemptsSet
+	}
 	if len(override.DisabledAgentIDs) > 0 {
 		base.DisabledAgentIDs = override.DisabledAgentIDs
 	}
@@ -636,6 +670,9 @@ func applyEnvMap(cfg Config, env map[string]string) Config {
 	setInt("CLEAN_CORE_RUN_MAX_CONCURRENT", &cfg.RunMaxConcurrent)
 	setInt("CLEAN_CORE_TENANT_RUN_MAX_CONCURRENT", &cfg.TenantRunMaxConcurrent)
 	setInt("CLEAN_CORE_AGENT_RUN_MAX_CONCURRENT", &cfg.AgentRunMaxConcurrent)
+	setInt("CLEAN_CORE_EXTERNAL_DELIVERY_RETRY_INTERVAL_SECONDS", &cfg.ExternalDeliveryRetryIntervalSeconds)
+	setInt("CLEAN_CORE_EXTERNAL_DELIVERY_RETRY_BATCH_SIZE", &cfg.ExternalDeliveryRetryBatchSize)
+	setInt("CLEAN_CORE_EXTERNAL_DELIVERY_RETRY_MAX_ATTEMPTS", &cfg.ExternalDeliveryRetryMaxAttempts)
 	setIntWithFlag("CLEAN_CORE_CONTEXT_DEFAULT_RECENT_MESSAGE_LIMIT", &cfg.ContextDefaultRecentMessageLimit, &cfg.contextDefaultRecentMessageLimitSet)
 	setIntWithFlag("CLEAN_CORE_CONTEXT_DEFAULT_RETRIEVAL_MAX_RESULTS", &cfg.ContextDefaultRetrievalMaxResults, &cfg.contextDefaultRetrievalMaxResultsSet)
 	setIntWithFlag("CLEAN_CORE_CONTEXT_DEFAULT_TASK_HISTORY_MAX_ITEMS", &cfg.ContextDefaultTaskHistoryMaxItems, &cfg.contextDefaultTaskHistoryMaxItemsSet)
@@ -665,6 +702,11 @@ func applyEnvMap(cfg Config, env map[string]string) Config {
 		if parsed, err := strconv.ParseBool(v); err == nil {
 			cfg.ContextCompressionDefaultEnabled = parsed
 			cfg.contextCompressionDefaultEnabledSet = true
+		}
+	}
+	if v := strings.TrimSpace(env["CLEAN_CORE_EXTERNAL_DELIVERY_RETRY_ENABLED"]); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			cfg.ExternalDeliveryRetryEnabled = parsed
 		}
 	}
 	if v := strings.TrimSpace(env["CLEAN_CORE_DISABLED_AGENT_IDS"]); v != "" {
@@ -978,6 +1020,33 @@ func parseSimpleYAML(data []byte) (Config, error) {
 			cfg.ExternalBridgeProvider = value
 		case "external_bridge_token":
 			cfg.ExternalBridgeToken = value
+		case "external_delivery_retry_enabled":
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("parse yaml config line %d external_delivery_retry_enabled: %w", i+1, err)
+			}
+			cfg.ExternalDeliveryRetryEnabled = parsed
+		case "external_delivery_retry_interval_seconds":
+			parsed, err := parseYAMLInt(i+1, key, value)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.ExternalDeliveryRetryIntervalSeconds = parsed
+			cfg.externalDeliveryRetryIntervalSet = true
+		case "external_delivery_retry_batch_size":
+			parsed, err := parseYAMLInt(i+1, key, value)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.ExternalDeliveryRetryBatchSize = parsed
+			cfg.externalDeliveryRetryBatchSizeSet = true
+		case "external_delivery_retry_max_attempts":
+			parsed, err := parseYAMLInt(i+1, key, value)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.ExternalDeliveryRetryMaxAttempts = parsed
+			cfg.externalDeliveryRetryMaxAttemptsSet = true
 		case "readiness":
 			parsed, err := strconv.ParseBool(value)
 			if err != nil {

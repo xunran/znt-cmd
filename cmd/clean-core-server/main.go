@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"znt/internal/app/config"
+	"znt/internal/app/core"
 	"znt/internal/app/logging"
+	"znt/internal/bridge/array"
 	"znt/internal/server"
 )
 
@@ -50,10 +52,24 @@ func main() {
 	logger := logging.New(cfg.LogLevel)
 	logger.Info("clean core starting", slog.String("version", cfg.Version), slog.String("addr", cfg.HTTPAddr))
 
-	handler, err := server.NewHandler(cfg, logger)
+	appCore, err := core.New(cfg)
 	if err != nil {
 		logger.Error("server init failed", slog.String("error", err.Error()))
 		os.Exit(1)
+	}
+	handler := server.NewHandlerWithCore(appCore, logger)
+
+	runtimeCtx, stopRuntime := context.WithCancel(context.Background())
+	defer stopRuntime()
+	if cfg.ExternalDeliveryRetryEnabled {
+		worker := array.DeliveryRetryWorker{
+			Bridge:      appCore.ArrayBridge,
+			Logger:      logger,
+			Interval:    time.Duration(cfg.ExternalDeliveryRetryIntervalSeconds) * time.Second,
+			BatchSize:   cfg.ExternalDeliveryRetryBatchSize,
+			MaxAttempts: cfg.ExternalDeliveryRetryMaxAttempts,
+		}
+		go worker.Run(runtimeCtx)
 	}
 
 	srv := &http.Server{
@@ -83,6 +99,7 @@ func main() {
 		}
 	}
 
+	stopRuntime()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

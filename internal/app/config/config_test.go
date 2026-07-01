@@ -51,6 +51,10 @@ func TestLoadModelRequestOptionsFromEnv(t *testing.T) {
 	t.Setenv("CLEAN_CORE_CONVERSATION_RETRIEVAL_ENABLED", "false")
 	t.Setenv("CLEAN_CORE_EXTERNAL_BRIDGE_PROVIDER", "a2a")
 	t.Setenv("CLEAN_CORE_EXTERNAL_BRIDGE_BASE_URL", "https://bridge.example.test")
+	t.Setenv("CLEAN_CORE_EXTERNAL_DELIVERY_RETRY_ENABLED", "true")
+	t.Setenv("CLEAN_CORE_EXTERNAL_DELIVERY_RETRY_INTERVAL_SECONDS", "30")
+	t.Setenv("CLEAN_CORE_EXTERNAL_DELIVERY_RETRY_BATCH_SIZE", "20")
+	t.Setenv("CLEAN_CORE_EXTERNAL_DELIVERY_RETRY_MAX_ATTEMPTS", "4")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -73,6 +77,9 @@ func TestLoadModelRequestOptionsFromEnv(t *testing.T) {
 	}
 	if cfg.ExternalBridgeProvider != "a2a" || cfg.ExternalBridgeBaseURL != "https://bridge.example.test" {
 		t.Fatalf("expected external bridge options from env, got %#v", cfg)
+	}
+	if !cfg.ExternalDeliveryRetryEnabled || cfg.ExternalDeliveryRetryIntervalSeconds != 30 || cfg.ExternalDeliveryRetryBatchSize != 20 || cfg.ExternalDeliveryRetryMaxAttempts != 4 {
+		t.Fatalf("expected external delivery retry options from env, got %#v", cfg)
 	}
 }
 
@@ -266,6 +273,10 @@ context_compression_default_enabled: false
 context_compression_default_mode: truncate
 external_bridge_provider: a2a
 external_bridge_base_url: https://bridge.example.test
+external_delivery_retry_enabled: true
+external_delivery_retry_interval_seconds: 45
+external_delivery_retry_batch_size: 12
+external_delivery_retry_max_attempts: 6
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -287,6 +298,9 @@ external_bridge_base_url: https://bridge.example.test
 	}
 	if cfg.ExternalBridgeProvider != "a2a" || cfg.ExternalBridgeBaseURL != "https://bridge.example.test" {
 		t.Fatalf("expected yaml external bridge options, got %#v", cfg)
+	}
+	if !cfg.ExternalDeliveryRetryEnabled || cfg.ExternalDeliveryRetryIntervalSeconds != 45 || cfg.ExternalDeliveryRetryBatchSize != 12 || cfg.ExternalDeliveryRetryMaxAttempts != 6 {
+		t.Fatalf("expected yaml external delivery retry options, got %#v", cfg)
 	}
 	strategy := cfg.ContextDefaultStrategy()
 	if strategy.Mode != "concise" {
@@ -348,5 +362,63 @@ func TestExternalBridgeProviderValidation(t *testing.T) {
 	cfg.ExternalBridgeProvider = "grpc"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected invalid external_bridge_provider to fail validation")
+	}
+}
+
+func TestLoadExternalDeliveryRetryExplicitZeroFromJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"external_delivery_retry_enabled": true,
+		"external_delivery_retry_interval_seconds": 0,
+		"external_delivery_retry_batch_size": 0,
+		"external_delivery_retry_max_attempts": 0
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ExternalDeliveryRetryEnabled || cfg.ExternalDeliveryRetryIntervalSeconds != 0 || cfg.ExternalDeliveryRetryBatchSize != 0 || cfg.ExternalDeliveryRetryMaxAttempts != 0 {
+		t.Fatalf("expected explicit zero retry options from json, got %#v", cfg)
+	}
+}
+
+func TestLoadExternalDeliveryRetryExplicitZeroFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+external_delivery_retry_enabled: true
+external_delivery_retry_interval_seconds: 0
+external_delivery_retry_batch_size: 0
+external_delivery_retry_max_attempts: 0
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ExternalDeliveryRetryEnabled || cfg.ExternalDeliveryRetryIntervalSeconds != 0 || cfg.ExternalDeliveryRetryBatchSize != 0 || cfg.ExternalDeliveryRetryMaxAttempts != 0 {
+		t.Fatalf("expected explicit zero retry options from yaml, got %#v", cfg)
+	}
+}
+
+func TestExternalDeliveryRetryOptionValidation(t *testing.T) {
+	cfg := Default()
+	cfg.ExternalDeliveryRetryIntervalSeconds = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative external_delivery_retry_interval_seconds to fail validation")
+	}
+	cfg = Default()
+	cfg.ExternalDeliveryRetryBatchSize = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative external_delivery_retry_batch_size to fail validation")
+	}
+	cfg = Default()
+	cfg.ExternalDeliveryRetryMaxAttempts = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected negative external_delivery_retry_max_attempts to fail validation")
 	}
 }

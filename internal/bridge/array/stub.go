@@ -31,7 +31,7 @@ type DeliveryOutboxStore interface {
 	EnqueueDelivery(ctx context.Context, item contracts.ExternalDeliveryOutboxItem) (contracts.ExternalDeliveryOutboxItem, error)
 	MarkDeliveryAttempt(ctx context.Context, outboxID string, status string, lastError string, nextAttemptAt time.Time, updatedAt time.Time) error
 	GetDelivery(ctx context.Context, tenantID contracts.TenantID, outboxID string) (contracts.ExternalDeliveryOutboxItem, bool, error)
-	ListDeliveriesDue(ctx context.Context, tenantID contracts.TenantID, statuses []string, limit int, now time.Time) ([]contracts.ExternalDeliveryOutboxItem, error)
+	ListDeliveriesDue(ctx context.Context, opts contracts.ExternalDeliveryReplayOptions, now time.Time) ([]contracts.ExternalDeliveryOutboxItem, error)
 }
 
 func NewBridge() *Bridge {
@@ -118,22 +118,43 @@ func (b *Bridge) ReplayDelivery(ctx context.Context, tenantID contracts.TenantID
 }
 
 func (b *Bridge) ReplayDueDeliveries(ctx context.Context, tenantID contracts.TenantID, statuses []string, limit int) ([]contracts.ExternalDeliveryOutboxItem, error) {
+	return b.ReplayDueDeliveriesWithOptions(ctx, contracts.ExternalDeliveryReplayOptions{
+		TenantID: tenantID,
+		Statuses: statuses,
+		Limit:    limit,
+	})
+}
+
+func (b *Bridge) ReplayDueDeliveriesWithOptions(ctx context.Context, opts contracts.ExternalDeliveryReplayOptions) ([]contracts.ExternalDeliveryOutboxItem, error) {
 	store, ok := b.store.(DeliveryOutboxStore)
 	if !ok || store == nil {
 		return nil, storagerepo.ErrNotFound
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 50
+	if opts.Limit <= 0 || opts.Limit > 100 {
+		opts.Limit = 50
 	}
-	if len(statuses) == 0 {
-		statuses = []string{"failed", "pending"}
+	if len(opts.Statuses) == 0 {
+		opts.Statuses = []string{"failed", "pending"}
 	}
-	items, err := store.ListDeliveriesDue(ctx, tenantID, statuses, limit, b.now())
+	items, err := store.ListDeliveriesDue(ctx, opts, b.now())
 	if err != nil {
 		return nil, err
 	}
 	out := make([]contracts.ExternalDeliveryOutboxItem, 0, len(items))
 	for _, item := range items {
+		if opts.MaxAttempts > 0 && item.AttemptCount >= opts.MaxAttempts {
+			lastError := item.LastError
+			if lastError == "" {
+				lastError = "max delivery attempts reached"
+			}
+			_ = b.markDelivery(ctx, item.OutboxID, "dead_letter", lastError)
+			item.Status = "dead_letter"
+			item.LastError = lastError
+			item.NextAttemptAt = time.Time{}
+			item.UpdatedAt = b.now()
+			out = append(out, item)
+			continue
+		}
 		replayed, err := b.replayDeliveryItem(ctx, item)
 		if err != nil {
 			replayed = item
