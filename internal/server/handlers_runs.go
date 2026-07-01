@@ -335,11 +335,7 @@ func handleRunResource(w http.ResponseWriter, r *http.Request, appCore *core.Cor
 
 func handleRunList(w http.ResponseWriter, r *http.Request, appCore *core.Core, caller auth.CallerIdentity) {
 	query := r.URL.Query()
-	limit := queryInt(query.Get("limit"), 50, 200)
-	offset := queryInt(query.Get("offset"), 0, 0)
-	if offset == 0 {
-		offset = queryInt(query.Get("cursor"), 0, 0)
-	}
+	limit, offset := queryLimitOffset(query, 50, 200)
 	from, err := queryTime(query.Get("from"))
 	if err != nil {
 		writeInvalidRunTimeFilter(w, "from")
@@ -370,6 +366,7 @@ func handleRunList(w http.ResponseWriter, r *http.Request, appCore *core.Core, c
 		Status:   contracts.RunStatus(strings.TrimSpace(query.Get("status"))),
 		TraceID:  contracts.TraceID(strings.TrimSpace(query.Get("trace_id"))),
 		TaskID:   contracts.TaskID(strings.TrimSpace(query.Get("task_id"))),
+		Query:    strings.TrimSpace(firstQueryValue(query, "q", "search")),
 		From:     from,
 		To:       to,
 		Limit:    limit,
@@ -386,10 +383,19 @@ func handleRunList(w http.ResponseWriter, r *http.Request, appCore *core.Core, c
 		writeRuntimeError(w, err)
 		return
 	}
+	total, err := appCore.Runs.Count(r.Context(), filter)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
 	meta := runResponseMeta(caller, filter.TraceID)
 	meta["limit"] = limit
 	meta["offset"] = offset
 	meta["count"] = len(runs)
+	meta["total"] = total
+	if filter.Query != "" {
+		meta["q"] = filter.Query
+	}
 	if !filter.From.IsZero() {
 		meta["from"] = filter.From
 	}
@@ -399,7 +405,7 @@ func handleRunList(w http.ResponseWriter, r *http.Request, appCore *core.Core, c
 	if len(runs) == limit {
 		meta["next_cursor"] = strconv.Itoa(offset + limit)
 	}
-	writeJSON(w, map[string]any{"runs": runs, "meta": meta}, http.StatusOK)
+	writeJSON(w, map[string]any{"runs": runs, "total": total, "meta": meta}, http.StatusOK)
 }
 
 func buildRunDetail(r *http.Request, appCore *core.Core, caller auth.CallerIdentity, run contracts.AgentRun) (map[string]any, error) {

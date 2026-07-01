@@ -820,33 +820,7 @@ func (r *RunRepository) Get(ctx context.Context, runID contracts.AgentRunID) (co
 }
 
 func (r *RunRepository) List(ctx context.Context, filter runrepo.ListFilter) ([]contracts.AgentRun, error) {
-	where := make([]string, 0)
-	args := make([]any, 0)
-	add := func(clause string, value any) {
-		args = append(args, value)
-		where = append(where, fmt.Sprintf(clause, len(args)))
-	}
-	if filter.TenantID != "" {
-		add("tenant_id=$%d", filter.TenantID)
-	}
-	if filter.AgentID != "" {
-		add("agent_id=$%d", filter.AgentID)
-	}
-	if filter.Status != "" {
-		add("status=$%d", filter.Status)
-	}
-	if filter.TraceID != "" {
-		add("trace_id=$%d", filter.TraceID)
-	}
-	if filter.TaskID != "" {
-		add("task_id=$%d", filter.TaskID)
-	}
-	if !filter.From.IsZero() {
-		add("started_at >= $%d", filter.From.UTC())
-	}
-	if !filter.To.IsZero() {
-		add("started_at <= $%d", filter.To.UTC())
-	}
+	where, args := runListWhere(filter)
 	query := runSelectSQL()
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -874,6 +848,63 @@ func (r *RunRepository) List(ctx context.Context, filter runrepo.ListFilter) ([]
 		out = append(out, run)
 	}
 	return out, rows.Err()
+}
+
+func (r *RunRepository) Count(ctx context.Context, filter runrepo.ListFilter) (int, error) {
+	where, args := runListWhere(filter)
+	query := `SELECT COUNT(*) FROM agent_runs`
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&total)
+	return total, err
+}
+
+func runListWhere(filter runrepo.ListFilter) ([]string, []any) {
+	where := make([]string, 0)
+	args := make([]any, 0)
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if filter.TenantID != "" {
+		add("tenant_id=$%d", filter.TenantID)
+	}
+	if filter.AgentID != "" {
+		add("agent_id=$%d", filter.AgentID)
+	}
+	if filter.Status != "" {
+		add("status=$%d", filter.Status)
+	}
+	if filter.TraceID != "" {
+		add("trace_id=$%d", filter.TraceID)
+	}
+	if filter.TaskID != "" {
+		add("task_id=$%d", filter.TaskID)
+	}
+	if !filter.From.IsZero() {
+		add("started_at >= $%d", filter.From.UTC())
+	}
+	if !filter.To.IsZero() {
+		add("started_at <= $%d", filter.To.UTC())
+	}
+	if query := strings.ToLower(strings.TrimSpace(filter.Query)); query != "" {
+		pattern := "%" + query + "%"
+		args = append(args, pattern)
+		placeholder := len(args)
+		where = append(where, fmt.Sprintf(`(
+LOWER(run_id) LIKE $%[1]d OR
+LOWER(trace_id) LIKE $%[1]d OR
+LOWER(COALESCE(task_id, '')) LIKE $%[1]d OR
+LOWER(agent_id) LIKE $%[1]d OR
+LOWER(status) LIKE $%[1]d OR
+LOWER(input) LIKE $%[1]d OR
+LOWER(agent_version) LIKE $%[1]d OR
+LOWER(policy_set_id) LIKE $%[1]d
+)`, placeholder))
+	}
+	return where, args
 }
 
 func (r *RunRepository) MarkRunning(ctx context.Context, runID contracts.AgentRunID) (contracts.AgentRun, error) {
@@ -2715,6 +2746,19 @@ func (r *TraceRecorder) List(ctx context.Context, filter tracequery.ListFilter) 
 	if filter.To != nil {
 		add("created_at <= $%d", filter.To.UTC())
 	}
+	if query := strings.ToLower(strings.TrimSpace(filter.Query)); query != "" {
+		pattern := "%" + query + "%"
+		args = append(args, pattern)
+		placeholder := len(args)
+		where = append(where, fmt.Sprintf(`(
+LOWER(trace_id) LIKE $%[1]d OR
+LOWER(span_id) LIKE $%[1]d OR
+LOWER(COALESCE(run_id, '')) LIKE $%[1]d OR
+LOWER(COALESCE(task_id, '')) LIKE $%[1]d OR
+LOWER(type) LIKE $%[1]d OR
+LOWER(payload::text) LIKE $%[1]d
+)`, placeholder))
+	}
 	query := `SELECT trace_id, tenant_id, span_id, run_id, task_id, type, payload, created_at FROM trace_events`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -2729,6 +2773,156 @@ func (r *TraceRecorder) List(ctx context.Context, filter tracequery.ListFilter) 
 		query += fmt.Sprintf(" OFFSET $%d", len(args))
 	}
 	return r.scanEvents(ctx, query, args...)
+}
+
+func (r *TraceRecorder) ListSummaries(ctx context.Context, filter tracequery.SummaryFilter) ([]tracequery.Summary, error) {
+	query, args := traceSummaryBaseQuery(filter)
+	query += `
+SELECT trace_id, tenant_id, run_id, task_id, agent_id, status, event_count, first_at, last_at, latest_event_type
+FROM summaries`
+	if filter.Status != "" {
+		args = append(args, filter.Status)
+		query += fmt.Sprintf(" WHERE status=$%d", len(args))
+	}
+	query += " ORDER BY last_at DESC, trace_id DESC"
+	if filter.Limit > 0 {
+		args = append(args, filter.Limit)
+		query += fmt.Sprintf(" LIMIT $%d", len(args))
+	}
+	if filter.Offset > 0 {
+		args = append(args, filter.Offset)
+		query += fmt.Sprintf(" OFFSET $%d", len(args))
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]tracequery.Summary, 0)
+	for rows.Next() {
+		var traceID, tenantID string
+		var runID, taskID, agentID, latestEventType sql.NullString
+		var status string
+		summary := tracequery.Summary{}
+		if err := rows.Scan(&traceID, &tenantID, &runID, &taskID, &agentID, &status, &summary.EventCount, &summary.FirstAt, &summary.LastAt, &latestEventType); err != nil {
+			return nil, err
+		}
+		summary.TraceID = contracts.TraceID(traceID)
+		summary.TenantID = contracts.TenantID(tenantID)
+		summary.PrimaryRunID = contracts.AgentRunID(runID.String)
+		summary.TaskID = contracts.TaskID(taskID.String)
+		summary.AgentID = contracts.AgentID(agentID.String)
+		summary.Status = contracts.RunStatus(status)
+		summary.LatestEventType = latestEventType.String
+		summary.FirstAt = summary.FirstAt.UTC()
+		summary.LastAt = summary.LastAt.UTC()
+		out = append(out, summary)
+	}
+	return out, rows.Err()
+}
+
+func (r *TraceRecorder) CountSummaries(ctx context.Context, filter tracequery.SummaryFilter) (int, error) {
+	query, args := traceSummaryBaseQuery(filter)
+	query += `SELECT COUNT(*) FROM summaries`
+	if filter.Status != "" {
+		args = append(args, filter.Status)
+		query += fmt.Sprintf(" WHERE status=$%d", len(args))
+	}
+	var total int
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&total)
+	return total, err
+}
+
+func traceSummaryBaseQuery(filter tracequery.SummaryFilter) (string, []any) {
+	where, args := traceSummaryWhere(filter)
+	query := `
+WITH filtered_trace_events AS (
+	SELECT trace_id, tenant_id, span_id, run_id, task_id, type, payload, created_at
+	FROM trace_events`
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += `
+),
+grouped_traces AS (
+	SELECT tenant_id, trace_id, COUNT(*)::int AS event_count, MIN(created_at) AS first_at, MAX(created_at) AS last_at
+	FROM filtered_trace_events
+	GROUP BY tenant_id, trace_id
+),
+summaries AS (
+	SELECT
+		g.trace_id,
+		g.tenant_id,
+		latest_run.run_id,
+		latest_run.task_id,
+		latest_run.agent_id,
+		COALESCE(latest_run.status, 'completed') AS status,
+		g.event_count,
+		g.first_at,
+		g.last_at,
+		latest_event.type AS latest_event_type
+	FROM grouped_traces g
+	LEFT JOIN LATERAL (
+		SELECT run_id, task_id, agent_id, status
+		FROM agent_runs
+		WHERE tenant_id = g.tenant_id AND trace_id = g.trace_id
+		ORDER BY started_at DESC, run_id DESC
+		LIMIT 1
+	) latest_run ON TRUE
+	LEFT JOIN LATERAL (
+		SELECT type
+		FROM trace_events
+		WHERE tenant_id = g.tenant_id AND trace_id = g.trace_id
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	) latest_event ON TRUE
+)
+`
+	return query, args
+}
+
+func traceSummaryWhere(filter tracequery.SummaryFilter) ([]string, []any) {
+	where := make([]string, 0)
+	args := make([]any, 0)
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if filter.TenantID != "" {
+		add("tenant_id=$%d", filter.TenantID)
+	}
+	if filter.TraceID != "" {
+		add("trace_id=$%d", filter.TraceID)
+	}
+	if filter.RunID != "" {
+		add("run_id=$%d", filter.RunID)
+	}
+	if filter.TaskID != "" {
+		add("task_id=$%d", filter.TaskID)
+	}
+	if filter.Type != "" {
+		add("type=$%d", filter.Type)
+	}
+	if filter.From != nil {
+		add("created_at >= $%d", filter.From.UTC())
+	}
+	if filter.To != nil {
+		add("created_at <= $%d", filter.To.UTC())
+	}
+	if query := strings.ToLower(strings.TrimSpace(filter.Query)); query != "" {
+		pattern := "%" + query + "%"
+		args = append(args, pattern)
+		placeholder := len(args)
+		where = append(where, fmt.Sprintf(`(
+LOWER(trace_id) LIKE $%[1]d OR
+LOWER(span_id) LIKE $%[1]d OR
+LOWER(COALESCE(run_id, '')) LIKE $%[1]d OR
+LOWER(COALESCE(task_id, '')) LIKE $%[1]d OR
+LOWER(type) LIKE $%[1]d OR
+LOWER(payload::text) LIKE $%[1]d
+)`, placeholder))
+	}
+	return where, args
 }
 
 func (r *TraceRecorder) list(ctx context.Context, where string, arg any) ([]contracts.TraceEvent, error) {
@@ -2794,36 +2988,25 @@ ON CONFLICT (audit_id) DO NOTHING`,
 }
 
 func (l *AuditLogger) Search(ctx context.Context, filter audit.Filter) ([]contracts.AuditEvent, error) {
-	where := make([]string, 0)
-	args := make([]any, 0)
-	add := func(clause string, value any) {
-		args = append(args, value)
-		where = append(where, fmt.Sprintf(clause, len(args)))
-	}
-	if filter.TenantID != "" {
-		add("tenant_id=$%d", filter.TenantID)
-	}
-	if filter.Action != "" {
-		add("action=$%d", filter.Action)
-	}
-	if filter.ResourceID != "" {
-		add("resource_id=$%d", filter.ResourceID)
-	}
-	if filter.ResourceType != "" {
-		add("resource_type=$%d", filter.ResourceType)
-	}
-	if filter.RunID != "" {
-		add("run_id=$%d", filter.RunID)
-	}
-	if filter.TaskID != "" {
-		add("task_id=$%d", filter.TaskID)
-	}
+	where, args := auditSearchWhere(filter)
 	query := `SELECT audit_id, tenant_id, actor_id, actor_type, action, resource_type, resource_id,
 decision, reason, trace_id, task_id, run_id, created_at FROM audit_events`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
-	query += " ORDER BY created_at ASC, audit_id ASC"
+	if filter.Desc {
+		query += " ORDER BY created_at DESC, audit_id DESC"
+	} else {
+		query += " ORDER BY created_at ASC, audit_id ASC"
+	}
+	if filter.Limit > 0 {
+		args = append(args, filter.Limit)
+		query += fmt.Sprintf(" LIMIT $%d", len(args))
+	}
+	if filter.Offset > 0 {
+		args = append(args, filter.Offset)
+		query += fmt.Sprintf(" OFFSET $%d", len(args))
+	}
 	rows, err := l.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -2847,6 +3030,78 @@ decision, reason, trace_id, task_id, run_id, created_at FROM audit_events`
 		out = append(out, event)
 	}
 	return out, rows.Err()
+}
+
+func (l *AuditLogger) Count(ctx context.Context, filter audit.Filter) (int, error) {
+	where, args := auditSearchWhere(filter)
+	query := `SELECT COUNT(*) FROM audit_events`
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	err := l.db.QueryRowContext(ctx, query, args...).Scan(&total)
+	return total, err
+}
+
+func auditSearchWhere(filter audit.Filter) ([]string, []any) {
+	where := make([]string, 0)
+	args := make([]any, 0)
+	add := func(clause string, value any) {
+		args = append(args, value)
+		where = append(where, fmt.Sprintf(clause, len(args)))
+	}
+	if filter.TenantID != "" {
+		add("tenant_id=$%d", filter.TenantID)
+	}
+	if filter.Action != "" {
+		add("action=$%d", filter.Action)
+	}
+	if filter.ResourceID != "" {
+		add("resource_id=$%d", filter.ResourceID)
+	}
+	if filter.ResourceType != "" {
+		add("resource_type=$%d", filter.ResourceType)
+	}
+	if filter.TraceID != "" {
+		add("trace_id=$%d", filter.TraceID)
+	}
+	if filter.RunID != "" {
+		add("run_id=$%d", filter.RunID)
+	}
+	if filter.TaskID != "" {
+		add("task_id=$%d", filter.TaskID)
+	}
+	if filter.ActorID != "" {
+		add("actor_id=$%d", filter.ActorID)
+	}
+	if filter.Decision != "" {
+		add("decision=$%d", filter.Decision)
+	}
+	if !filter.From.IsZero() {
+		add("created_at >= $%d", filter.From.UTC())
+	}
+	if !filter.To.IsZero() {
+		add("created_at <= $%d", filter.To.UTC())
+	}
+	if query := strings.ToLower(strings.TrimSpace(filter.Query)); query != "" {
+		pattern := "%" + query + "%"
+		args = append(args, pattern)
+		placeholder := len(args)
+		where = append(where, fmt.Sprintf(`(
+LOWER(audit_id) LIKE $%[1]d OR
+LOWER(actor_id) LIKE $%[1]d OR
+LOWER(actor_type) LIKE $%[1]d OR
+LOWER(action) LIKE $%[1]d OR
+LOWER(resource_type) LIKE $%[1]d OR
+LOWER(resource_id) LIKE $%[1]d OR
+LOWER(decision) LIKE $%[1]d OR
+LOWER(COALESCE(reason, '')) LIKE $%[1]d OR
+LOWER(COALESCE(trace_id, '')) LIKE $%[1]d OR
+LOWER(COALESCE(task_id, '')) LIKE $%[1]d OR
+LOWER(COALESCE(run_id, '')) LIKE $%[1]d
+)`, placeholder))
+	}
+	return where, args
 }
 
 type ArtifactStore struct {

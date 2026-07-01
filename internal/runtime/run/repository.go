@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ type ListFilter struct {
 	Status   contracts.RunStatus
 	TraceID  contracts.TraceID
 	TaskID   contracts.TaskID
+	Query    string
 	From     time.Time
 	To       time.Time
 	Limit    int
@@ -26,6 +28,7 @@ type Repository interface {
 	Create(ctx context.Context, run contracts.AgentRun) error
 	Get(ctx context.Context, runID contracts.AgentRunID) (contracts.AgentRun, error)
 	List(ctx context.Context, filter ListFilter) ([]contracts.AgentRun, error)
+	Count(ctx context.Context, filter ListFilter) (int, error)
 	MarkRunning(ctx context.Context, runID contracts.AgentRunID) (contracts.AgentRun, error)
 	MarkCompleted(ctx context.Context, runID contracts.AgentRunID) (contracts.AgentRun, error)
 	MarkFailed(ctx context.Context, runID contracts.AgentRunID, runtimeErr *contracts.RuntimeError) (contracts.AgentRun, error)
@@ -76,28 +79,9 @@ func (r *InMemoryRepository) List(_ context.Context, filter ListFilter) ([]contr
 	defer r.mu.RUnlock()
 	out := make([]contracts.AgentRun, 0, len(r.runs))
 	for _, run := range r.runs {
-		if filter.TenantID != "" && run.TenantID != filter.TenantID {
-			continue
+		if runMatchesListFilter(run, filter) {
+			out = append(out, run)
 		}
-		if filter.AgentID != "" && run.AgentID != filter.AgentID {
-			continue
-		}
-		if filter.Status != "" && run.Status != filter.Status {
-			continue
-		}
-		if filter.TraceID != "" && run.TraceID != filter.TraceID {
-			continue
-		}
-		if filter.TaskID != "" && run.TaskID != filter.TaskID {
-			continue
-		}
-		if !filter.From.IsZero() && run.StartedAt.Before(filter.From) {
-			continue
-		}
-		if !filter.To.IsZero() && run.StartedAt.After(filter.To) {
-			continue
-		}
-		out = append(out, run)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].StartedAt.Equal(out[j].StartedAt) {
@@ -106,6 +90,62 @@ func (r *InMemoryRepository) List(_ context.Context, filter ListFilter) ([]contr
 		return out[i].StartedAt.After(out[j].StartedAt)
 	})
 	return pageRuns(out, filter.Limit, filter.Offset), nil
+}
+
+func (r *InMemoryRepository) Count(_ context.Context, filter ListFilter) (int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	total := 0
+	for _, run := range r.runs {
+		if runMatchesListFilter(run, filter) {
+			total++
+		}
+	}
+	return total, nil
+}
+
+func runMatchesListFilter(run contracts.AgentRun, filter ListFilter) bool {
+	if filter.TenantID != "" && run.TenantID != filter.TenantID {
+		return false
+	}
+	if filter.AgentID != "" && run.AgentID != filter.AgentID {
+		return false
+	}
+	if filter.Status != "" && run.Status != filter.Status {
+		return false
+	}
+	if filter.TraceID != "" && run.TraceID != filter.TraceID {
+		return false
+	}
+	if filter.TaskID != "" && run.TaskID != filter.TaskID {
+		return false
+	}
+	if !filter.From.IsZero() && run.StartedAt.Before(filter.From) {
+		return false
+	}
+	if !filter.To.IsZero() && run.StartedAt.After(filter.To) {
+		return false
+	}
+	query := strings.ToLower(strings.TrimSpace(filter.Query))
+	if query == "" {
+		return true
+	}
+	values := []string{
+		string(run.RunID),
+		string(run.TraceID),
+		string(run.TaskID),
+		string(run.AgentID),
+		string(run.Status),
+		run.Input,
+		string(run.AgentVersion),
+		string(run.PolicySetID),
+	}
+	for _, value := range values {
+		if strings.Contains(strings.ToLower(value), query) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *InMemoryRepository) MarkRunning(_ context.Context, runID contracts.AgentRunID) (contracts.AgentRun, error) {

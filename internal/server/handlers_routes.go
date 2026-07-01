@@ -12,7 +12,6 @@ import (
 	"znt/internal/app/core"
 	"znt/internal/contracts"
 	agentdiscovery "znt/internal/discovery/agent"
-	auditlog "znt/internal/governance/audit"
 	"znt/internal/governance/replay"
 	releasereport "znt/internal/release"
 	taskrecovery "znt/internal/task/recovery"
@@ -73,6 +72,9 @@ func NewHandlerWithCore(appCore *core.Core, logger *slog.Logger) http.Handler {
 	}))
 	mux.HandleFunc("/v1/approvals/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		handleApprovalResource(w, r, appCore, caller, contracts.ApprovalID(strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/approvals/"), "/")))
+	}))
+	mux.HandleFunc("/v1/traces", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
+		handleTraceList(w, r, appCore, caller)
 	}))
 	mux.HandleFunc("/v1/traces/", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		path := strings.TrimPrefix(r.URL.Path, "/v1/traces/")
@@ -187,17 +189,7 @@ func NewHandlerWithCore(appCore *core.Core, logger *slog.Logger) http.Handler {
 		writeJSON(w, task, http.StatusOK)
 	}))
 	mux.HandleFunc("/v1/audit", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
-		filter := auditlog.Filter{
-			TenantID:   caller.TenantID,
-			Action:     r.URL.Query().Get("action"),
-			ResourceID: r.URL.Query().Get("resource_id"),
-		}
-		events, err := appCore.Audit.Search(r.Context(), filter)
-		if err != nil {
-			writeError(w, contracts.NewRuntimeError(contracts.CodeModelError, err.Error(), nil), http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, map[string]any{"events": events}, http.StatusOK)
+		handleAuditList(w, r, appCore, caller)
 	}))
 	mux.HandleFunc("/v1/intake/policies", requireAuth(authenticator, func(w http.ResponseWriter, r *http.Request, caller auth.CallerIdentity) {
 		handleIntakePolicies(w, r, appCore, caller)
