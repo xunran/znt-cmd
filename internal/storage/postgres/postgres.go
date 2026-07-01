@@ -1074,7 +1074,7 @@ func (s *ConversationStore) ListThreads(ctx context.Context, tenantID contracts.
 		args = append(args, kind)
 		query += fmt.Sprintf(" AND kind=$%d", len(args))
 	}
-	query += ` ORDER BY updated_at DESC, conversation_id DESC`
+	query += ` ORDER BY COALESCE(last_message_at, updated_at, created_at) DESC, conversation_id DESC`
 	if limit > 0 {
 		args = append(args, limit)
 		query += fmt.Sprintf(" LIMIT $%d", len(args))

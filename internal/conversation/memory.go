@@ -70,11 +70,17 @@ func (s *InMemoryStore) ListThreads(_ context.Context, tenantID contracts.Tenant
 		out = append(out, cloneThread(thread))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		left := out[i].UpdatedAt
+		left := out[i].LastMessageAt
+		if left.IsZero() {
+			left = out[i].UpdatedAt
+		}
 		if left.IsZero() {
 			left = out[i].CreatedAt
 		}
-		right := out[j].UpdatedAt
+		right := out[j].LastMessageAt
+		if right.IsZero() {
+			right = out[j].UpdatedAt
+		}
 		if right.IsZero() {
 			right = out[j].CreatedAt
 		}
